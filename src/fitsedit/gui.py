@@ -454,7 +454,10 @@ class FitsEditApp:
         out_path = os.path.join(os.path.dirname(entry.path), f"mask_{stem}.fits")
         header = entry.image.header.copy()
         header["OBJECT"] = "MASK"
-        hdu = fits.PrimaryHDU(data=entry.image.mask.astype("uint8"), header=header)
+        # entry.image.mask is True where the user painted a mask; exported convention
+        # is inverted (0 = masked/excluded, 1 = kept), matching typical good-pixel maps.
+        exported = (~entry.image.mask).astype("uint8")
+        hdu = fits.PrimaryHDU(data=exported, header=header)
         hdu.writeto(out_path, overwrite=True)
         self.status.config(text=f"exported mask to {out_path}")
 
