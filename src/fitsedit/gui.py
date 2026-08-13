@@ -9,8 +9,9 @@ import numpy as np
 from astropy.io import fits
 from PIL import Image, ImageTk
 
+from fitsedit.colormaps import COLORMAP_LUTS, COLORMAP_NAMES
 from fitsedit.cuts_dialog import ManualCutsWindow
-from fitsedit.imagedata import FitsImage, load_fits_image, minmax_cuts, zscale_cuts
+from fitsedit.imagedata import STRETCH_NAMES, STRETCHES, FitsImage, load_fits_image, minmax_cuts, zscale_cuts
 from fitsedit.masking import (
     ellipse_mask,
     ellipse_polygon_points,
@@ -50,6 +51,8 @@ LINE_STYLES = [
     ("line", "Line"),
 ]
 
+SCALE_OPTIONS = [(name, name.capitalize()) for name in STRETCH_NAMES]
+
 
 class Entry:
     """A single loaded (or not-yet-loaded) FITS file slot."""
@@ -86,6 +89,8 @@ class FitsEditApp:
         self.index = 0
 
         self.stretch = "zscale"
+        self.scale_function = tk.StringVar(value="linear")
+        self.colormap = tk.StringVar(value="Grayscale")
         self.tool = tk.StringVar(value="ellipse")
         self.axis_a = tk.IntVar(value=40)
         self.axis_b = tk.IntVar(value=40)
@@ -113,6 +118,8 @@ class FitsEditApp:
 
         self.tool.trace_add("write", lambda *_: self._on_tool_changed())
         self.line_style.trace_add("write", lambda *_: self._cancel_pending_line())
+        self.scale_function.trace_add("write", lambda *_: self.render())
+        self.colormap.trace_add("write", lambda *_: self.render())
         self.root.bind("<Control-z>", self._on_undo)
         self.root.bind("<Escape>", lambda e: self._cancel_pending_line())
 
@@ -143,6 +150,16 @@ class FitsEditApp:
         cuts_menu.add_separator()
         cuts_menu.add_command(label="Manual...", command=self.open_manual_cuts)
         menubar.add_cascade(label="Cuts", menu=cuts_menu)
+
+        scale_menu = tk.Menu(menubar, tearoff=0)
+        for value, label in SCALE_OPTIONS:
+            scale_menu.add_radiobutton(label=label, variable=self.scale_function, value=value)
+        menubar.add_cascade(label="Scale", menu=scale_menu)
+
+        color_menu = tk.Menu(menubar, tearoff=0)
+        for name in COLORMAP_NAMES:
+            color_menu.add_radiobutton(label=name, variable=self.colormap, value=name)
+        menubar.add_cascade(label="Color", menu=color_menu)
 
         help_menu = tk.Menu(menubar, tearoff=0)
         help_menu.add_command(label="About", command=self._show_help)
@@ -210,7 +227,9 @@ class FitsEditApp:
         status_panel = RoundedPanel(status_container, outer_bg=APP_BG, bg=PANEL_BG, radius=10, mode="hug")
         status_panel.pack(fill="x")
         self.status = tk.Label(status_panel.inner, text="new file", bg=PANEL_BG, fg=TEXT_DIM, anchor="w", font=FONT_SMALL)
-        self.status.pack(fill="x", padx=14, pady=8)
+        self.status.pack(side="left", fill="x", expand=True, padx=14, pady=8)
+        tk.Label(status_panel.inner, text="\u00A9 Jan-Niklas Pippert · built with Claude", bg=PANEL_BG, fg=TEXT_DIM,
+                 anchor="e", font=FONT_SMALL).pack(side="right", padx=14, pady=8)
 
     def _build_toolbar(self, parent: tk.Frame) -> None:
         parent.configure(bg=PANEL_BG)
@@ -259,6 +278,15 @@ class FitsEditApp:
         tk.Label(cuts, text="highcut:", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).grid(row=1, column=0, sticky="w")
         self.highcut_label = tk.Label(cuts, text="1", bg=PANEL_BG, fg=TEXT, font=FONT_SMALL)
         self.highcut_label.grid(row=1, column=1, sticky="w", padx=(8, 0))
+
+        scale_frame = tk.Frame(parent, bg=PANEL_BG)
+        scale_frame.pack(fill="x", padx=14, pady=(0, 10))
+        tk.Label(scale_frame, text="scale", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).pack(anchor="w")
+        scale_row = tk.Frame(scale_frame, bg=PANEL_BG)
+        scale_row.pack(fill="x", pady=(4, 0))
+        SegmentedControl(scale_row, SCALE_OPTIONS, self.scale_function, outer_bg=PANEL_BG).pack(side="left")
+        RoundButton(scale_row, "reset", command=self.reset_scale, outer_bg=PANEL_BG, height=26).pack(
+            side="left", padx=(6, 0))
 
         RoundButton(parent, "export mask", command=self.export_mask, outer_bg=PANEL_BG, accent=True,
                     width=SIDEBAR_W - 28).pack(padx=14, pady=(4, 12))
@@ -382,6 +410,9 @@ class FitsEditApp:
         self.lowcut_label.config(text=self._fmt(self.entry.lowcut))
         self.highcut_label.config(text=self._fmt(self.entry.highcut))
         self.render()
+
+    def reset_scale(self) -> None:
+        self.scale_function.set("linear")
 
     def open_manual_cuts(self) -> None:
         if self.image is None:
@@ -531,8 +562,8 @@ class FitsEditApp:
         crop = data[y0:y1, x0:x1]
         span = max(entry.highcut - entry.lowcut, 1e-12)
         norm = np.clip((crop - entry.lowcut) / span, 0, 1)
-        gray = (norm * 255).astype(np.uint8)
-        rgb = np.stack([gray, gray, gray], axis=-1)
+        norm = np.nan_to_num(norm, nan=0.0)
+        rgb = self._scale_and_color(norm)
 
         mask_crop = image.mask[y0:y1, x0:x1]
         if mask_crop.any():
@@ -553,6 +584,14 @@ class FitsEditApp:
         self._photo = ImageTk.PhotoImage(pil_img)
         self.canvas.create_image(cx0, cy0, image=self._photo, anchor="nw", tags="img")
         self.canvas.tag_lower("img")
+
+    def _scale_and_color(self, norm: np.ndarray) -> np.ndarray:
+        """Map cut-normalized [0, 1] values (no NaN) to a uint8 RGB array via the
+        current scale function (stretch curve) and colormap."""
+        stretch = STRETCHES[self.scale_function.get()]
+        stretched = np.clip(np.asarray(stretch(norm)), 0.0, 1.0)
+        gray = (stretched * 255).astype(np.uint8)
+        return COLORMAP_LUTS[self.colormap.get()][gray]
 
     def render_magnifier(self) -> None:
         canvas = self.magnifier_canvas
@@ -580,9 +619,8 @@ class FitsEditApp:
         entry = self.entry
         span = max(entry.highcut - entry.lowcut, 1e-12)
         norm = np.clip((crop - entry.lowcut) / span, 0, 1)
-        gray = np.where(np.isnan(crop), 0.12, norm)
-        gray_u8 = (gray * 255).astype(np.uint8)
-        rgb = np.stack([gray_u8, gray_u8, gray_u8], axis=-1)
+        norm = np.where(np.isnan(crop), 0.12, norm)
+        rgb = self._scale_and_color(norm)
 
         if mask_crop.any():
             alpha = 0.55

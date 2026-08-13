@@ -5,8 +5,17 @@ from dataclasses import dataclass, field
 
 import numpy as np
 from astropy.io import fits
-from astropy.visualization import ZScaleInterval
+from astropy.visualization import AsinhStretch, LinearStretch, LogStretch, ZScaleInterval
 from astropy.wcs import WCS, FITSFixedWarning
+
+# Display stretch functions (map cut-normalized [0, 1] values through a non-linear
+# curve before colormapping), independent of the cut levels themselves.
+STRETCHES = {
+    "linear": LinearStretch(),
+    "log": LogStretch(a=1000),
+    "asinh": AsinhStretch(a=0.1),
+}
+STRETCH_NAMES = ["linear", "log", "asinh"]
 
 
 @dataclass
