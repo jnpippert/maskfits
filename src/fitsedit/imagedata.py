@@ -1,11 +1,12 @@
 """Loading FITS images and computing display stretch levels."""
 
+import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
 from astropy.io import fits
 from astropy.visualization import ZScaleInterval
-from astropy.wcs import WCS
+from astropy.wcs import WCS, FITSFixedWarning
 
 
 @dataclass
@@ -38,7 +39,9 @@ def load_fits_image(path: str) -> FitsImage:
 
         wcs: WCS | None
         try:
-            candidate_wcs = WCS(header)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=FITSFixedWarning)
+                candidate_wcs = WCS(header)
             wcs = candidate_wcs if candidate_wcs.has_celestial else None
         except Exception:
             wcs = None

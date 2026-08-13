@@ -9,6 +9,7 @@ import numpy as np
 from astropy.io import fits
 from PIL import Image, ImageTk
 
+from fitsedit.cuts_dialog import ManualCutsWindow
 from fitsedit.imagedata import FitsImage, load_fits_image, minmax_cuts, zscale_cuts
 from fitsedit.masking import (
     ellipse_mask,
@@ -23,26 +24,27 @@ from fitsedit.theme import (
     CANVAS_BG,
     FONT,
     FONT_SMALL,
+    GREEN,
     PANEL_BG,
     PANEL_BORDER,
     TEXT,
     TEXT_DIM,
     hex_to_rgb,
 )
-from fitsedit.widgets import RoundButton, RoundedPanel, RoundSlider, SegmentedControl, rounded_rect_points
+from fitsedit.widgets import RoundButton, RoundedPanel, RoundSlider, SegmentedControl
 
-PAN_W, PAN_H = 220, 150
-PREVIEW_W, PREVIEW_H = 150, 120
+MAG_SIZE = 31
+MAG_BLOCK = 6
+PAN_W = PAN_H = MAG_SIZE * MAG_BLOCK
+PREVIEW_W, PREVIEW_H = 210, 170
+MAX_SHAPE_SIZE = 500
 SIDEBAR_W = 240
 ZOOM_STEP = 1.25
 ZOOM_MULT_MIN = 1.0
 ZOOM_MULT_MAX = 40.0
-MAG_SIZE = 25
-MAGNIFIER_GREEN = "#22c55e"
 ACCENT_RGB = hex_to_rgb(ACCENT)
 
 LINE_STYLES = [
-    ("draw", "Draw"),
     ("segment", "Segment"),
     ("arrow", "Arrow"),
     ("line", "Line"),
@@ -88,8 +90,9 @@ class FitsEditApp:
         self.axis_a = tk.IntVar(value=40)
         self.axis_b = tk.IntVar(value=40)
         self.angle = tk.IntVar(value=0)
+        self.radius = tk.IntVar(value=40)
         self.thickness = tk.IntVar(value=15)
-        self.line_style = tk.StringVar(value="draw")
+        self.line_style = tk.StringVar(value="segment")
 
         self.fit_zoom = 1.0
         self.zoom_mult = 1.0
@@ -100,8 +103,6 @@ class FitsEditApp:
         self._cursor_img_pos: Optional[tuple[float, float]] = None
 
         self._pan_drag: Optional[tuple[int, int, float, float]] = None
-        self._line_drag_start: Optional[tuple[float, float]] = None
-        self._line_drag_erase = False
         self._line_anchor: Optional[tuple[float, float]] = None
         self._line_anchor_erase = False
         self._preview_item: Optional[int] = None
@@ -131,13 +132,16 @@ class FitsEditApp:
         menubar.add_cascade(label="File", menu=file_menu)
 
         mode_menu = tk.Menu(menubar, tearoff=0)
-        mode_menu.add_radiobutton(label="Circle / Ellipse Mask", variable=self.tool, value="ellipse")
+        mode_menu.add_radiobutton(label="Ellipse Mask", variable=self.tool, value="ellipse")
+        mode_menu.add_radiobutton(label="Circle Mask", variable=self.tool, value="circle")
         mode_menu.add_radiobutton(label="Line Mask (satellite trail)", variable=self.tool, value="line")
         menubar.add_cascade(label="Mode", menu=mode_menu)
 
         cuts_menu = tk.Menu(menubar, tearoff=0)
         cuts_menu.add_command(label="Min/Max", command=lambda: self.set_stretch("minmax"))
         cuts_menu.add_command(label="ZScale", command=lambda: self.set_stretch("zscale"))
+        cuts_menu.add_separator()
+        cuts_menu.add_command(label="Manual...", command=self.open_manual_cuts)
         menubar.add_cascade(label="Cuts", menu=cuts_menu)
 
         help_menu = tk.Menu(menubar, tearoff=0)
@@ -156,9 +160,9 @@ class FitsEditApp:
             "Mouse wheel: zoom in (zoom 1 shows the full image; you can only zoom in from there)\n"
             "Ctrl+Z: undo last mask stroke\n"
             "Esc: cancel a pending line click\n\n"
-            "Ellipse mode: stamp shapes sized by the major/minor axis and angle sliders\n\n"
+            "Ellipse mode: stamp shapes sized by the major/minor axis and angle sliders\n"
+            "Circle mode: stamp circles sized by the radius slider\n\n"
             "Satellite mode styles:\n"
-            "  Draw    - click and drag a trail freehand\n"
             "  Segment - click a start point, click an end point\n"
             "  Arrow   - click start, click a second point; the trail extends\n"
             "            past it to the image border\n"
@@ -192,10 +196,8 @@ class FitsEditApp:
         self.canvas.bind("<Motion>", self._on_motion)
         self.canvas.bind("<ButtonPress-1>", lambda e: self._on_button(e, erase=False))
         self.canvas.bind("<B1-Motion>", lambda e: self._on_drag(e, erase=False))
-        self.canvas.bind("<ButtonRelease-1>", lambda e: self._on_release(e, erase=False))
         self.canvas.bind("<ButtonPress-3>", lambda e: self._on_button(e, erase=True))
         self.canvas.bind("<B3-Motion>", lambda e: self._on_drag(e, erase=True))
-        self.canvas.bind("<ButtonRelease-3>", lambda e: self._on_release(e, erase=True))
         self.canvas.bind("<ButtonPress-2>", self._on_pan_start)
         self.canvas.bind("<B2-Motion>", self._on_pan_drag)
         self.canvas.bind("<ButtonRelease-2>", lambda e: setattr(self, "_pan_drag", None))
@@ -230,6 +232,7 @@ class FitsEditApp:
         self.filename_label.pack(side="left")
 
         RoundButton(parent, "kill", command=self.kill_current, outer_bg=PANEL_BG, danger=True).pack(side="right", padx=14, pady=10)
+        RoundButton(parent, "reset mask", command=self.reset_mask, outer_bg=PANEL_BG).pack(side="right", pady=10)
 
     def _build_sidebar(self, parent: tk.Frame) -> None:
         parent.configure(bg=PANEL_BG)
@@ -266,7 +269,8 @@ class FitsEditApp:
         mode_frame.pack(fill="x", padx=14, pady=(10, 4))
         tk.Label(mode_frame, text="mode", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).pack(anchor="w")
         SegmentedControl(
-            mode_frame, [("ellipse", "Ellipse"), ("line", "Satellite")], self.tool, outer_bg=PANEL_BG,
+            mode_frame, [("ellipse", "Ellipse"), ("circle", "Circle"), ("line", "Satellite")], self.tool,
+            outer_bg=PANEL_BG,
         ).pack(anchor="w", pady=(4, 0))
 
         self.tool_options_frame = tk.Frame(parent, bg=PANEL_BG)
@@ -277,13 +281,14 @@ class FitsEditApp:
     def _divider(self, parent: tk.Frame) -> None:
         tk.Frame(parent, bg=PANEL_BORDER, height=1).pack(fill="x", padx=14)
 
-    def _build_slider_row(self, parent: tk.Frame, name: str, var: tk.IntVar, lo: int, hi: int) -> None:
+    def _build_slider_row(self, parent: tk.Frame, name: str, var: tk.IntVar, lo: int, hi: int,
+                           suffix: str = "") -> None:
         label = tk.Label(parent, bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL, anchor="w")
         label.pack(fill="x", padx=14, pady=(6, 2))
 
         def update_label(*_args: object) -> None:
             if label.winfo_exists():
-                label.config(text=f"{name}: {var.get()}")
+                label.config(text=f"{name}: {var.get()}{suffix}")
 
         trace_id = var.trace_add("write", update_label)
         label.bind("<Destroy>", lambda e: var.trace_remove("write", trace_id), add="+")
@@ -297,21 +302,23 @@ class FitsEditApp:
         self._cancel_pending_line()
 
         if self.tool.get() == "ellipse":
-            self._build_slider_row(self.tool_options_frame, "major axis", self.axis_a, 1, 300)
-            self._build_slider_row(self.tool_options_frame, "minor axis", self.axis_b, 1, 300)
-            self._build_slider_row(self.tool_options_frame, "angle", self.angle, 0, 180)
+            self._build_slider_row(self.tool_options_frame, "major axis", self.axis_a, 1, MAX_SHAPE_SIZE, suffix=" px")
+            self._build_slider_row(self.tool_options_frame, "minor axis", self.axis_b, 1, MAX_SHAPE_SIZE, suffix=" px")
+            self._build_slider_row(self.tool_options_frame, "angle", self.angle, 0, 180, suffix="°")
+        elif self.tool.get() == "circle":
+            self._build_slider_row(self.tool_options_frame, "radius", self.radius, 1, MAX_SHAPE_SIZE, suffix=" px")
         else:
-            self._build_slider_row(self.tool_options_frame, "thickness", self.thickness, 1, 100)
+            self._build_slider_row(self.tool_options_frame, "thickness", self.thickness, 1, 100, suffix=" px")
             style_frame = tk.Frame(self.tool_options_frame, bg=PANEL_BG)
             style_frame.pack(fill="x", padx=14, pady=(8, 4))
             tk.Label(style_frame, text="style", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).pack(anchor="w")
             SegmentedControl(style_frame, LINE_STYLES, self.line_style, outer_bg=PANEL_BG).pack(anchor="w", pady=(4, 0))
 
         self.preview_canvas = tk.Canvas(self.tool_options_frame, width=PREVIEW_W, height=PREVIEW_H,
-                                         bg=CANVAS_BG, highlightthickness=0)
+                                         bg=PANEL_BG, highlightthickness=0)
         self.preview_canvas.pack(padx=14, pady=14)
 
-        for var in (self.axis_a, self.axis_b, self.angle, self.thickness):
+        for var in (self.axis_a, self.axis_b, self.angle, self.radius, self.thickness):
             var.trace_add("write", lambda *_: self.render_tool_preview())
         self.render_tool_preview()
 
@@ -321,9 +328,15 @@ class FitsEditApp:
 
     def _cancel_pending_line(self) -> None:
         self._line_anchor = None
-        self._line_drag_start = None
         if hasattr(self, "canvas"):
             self.canvas.delete("line_preview")
+
+    def _current_round_params(self) -> tuple[float, float, float]:
+        """(semi-major axis, semi-minor axis, angle) for the current ellipse/circle tool."""
+        if self.tool.get() == "circle":
+            r = self.radius.get()
+            return r, r, 0
+        return self.axis_a.get(), self.axis_b.get(), self.angle.get()
 
     # --------------------------------------------------------- image state
 
@@ -370,6 +383,19 @@ class FitsEditApp:
         self.highcut_label.config(text=self._fmt(self.entry.highcut))
         self.render()
 
+    def open_manual_cuts(self) -> None:
+        if self.image is None:
+            messagebox.showwarning("fitsedit", "No image loaded.")
+            return
+        ManualCutsWindow(self.root, self.image.data, self.entry.lowcut, self.entry.highcut, self._apply_manual_cuts)
+
+    def _apply_manual_cuts(self, lowcut: float, highcut: float) -> None:
+        self.entry.lowcut = lowcut
+        self.entry.highcut = highcut
+        self.lowcut_label.config(text=self._fmt(lowcut))
+        self.highcut_label.config(text=self._fmt(highcut))
+        self.render()
+
     # ------------------------------------------------------------- navigation
 
     def open_files(self) -> None:
@@ -405,6 +431,14 @@ class FitsEditApp:
             self.index = min(self.index, len(self.entries) - 1)
         self.load_current(reset_view=True)
 
+    def reset_mask(self) -> None:
+        if self.image is None:
+            return
+        self._push_undo()
+        self.image.mask[:] = False
+        self.render()
+        self.status.config(text="mask cleared")
+
     # -------------------------------------------------------------- export
 
     def export_mask(self) -> None:
@@ -412,11 +446,15 @@ class FitsEditApp:
         if entry.image is None or entry.path is None:
             messagebox.showwarning("fitsedit", "No image loaded to export a mask for.")
             return
-        base, _ = os.path.splitext(entry.path)
-        if base.endswith(".fits"):
-            base, _ = os.path.splitext(base)
-        out_path = f"{base}_mask.fits"
-        hdu = fits.PrimaryHDU(data=entry.image.mask.astype("uint8"), header=entry.image.header.copy())
+        stem = os.path.basename(entry.path)
+        if stem.endswith(".fits.gz"):
+            stem = stem[: -len(".fits.gz")]
+        else:
+            stem, _ = os.path.splitext(stem)
+        out_path = os.path.join(os.path.dirname(entry.path), f"mask_{stem}.fits")
+        header = entry.image.header.copy()
+        header["OBJECT"] = "MASK"
+        hdu = fits.PrimaryHDU(data=entry.image.mask.astype("uint8"), header=header)
         hdu.writeto(out_path, overwrite=True)
         self.status.config(text=f"exported mask to {out_path}")
 
@@ -469,6 +507,7 @@ class FitsEditApp:
 
     def render(self) -> None:
         self.render_magnifier()
+        self.render_tool_preview()
         self.canvas.delete("img")
         image = self.image
         if image is None or self.canvas_w <= 1:
@@ -559,7 +598,7 @@ class FitsEditApp:
         canvas.create_image(ox, oy, image=self._mag_photo, anchor="nw")
 
         cxp, cyp = ox + half * block, oy + half * block
-        canvas.create_rectangle(cxp, cyp, cxp + block, cyp + block, outline=MAGNIFIER_GREEN, width=2)
+        canvas.create_rectangle(cxp, cyp, cxp + block, cyp + block, outline=GREEN, width=2)
 
     @staticmethod
     def _draw_grid(canvas: tk.Canvas, w: int, h: int, step: int = 10) -> None:
@@ -569,20 +608,29 @@ class FitsEditApp:
             canvas.create_line(0, y, w, y, fill=PANEL_BORDER)
 
     def render_tool_preview(self) -> None:
+        """Draw the shape at the same on-screen scale it currently has on the main canvas.
+
+        Uses self.zoom (fit_zoom * zoom_mult), not a fixed 1:1 pixel scale - a radius
+        of 100 should look exactly as big here as it does when you hover the image,
+        so this panel is a true stand-in for "move the mouse onto the image and look".
+        Deliberately not auto-fit-to-box either: it should really grow with the
+        slider and clip against the panel edges once it outgrows it.
+        """
         if self.preview_canvas is None or not self.preview_canvas.winfo_exists():
             return
         self.preview_canvas.delete("all")
         w, h = PREVIEW_W, PREVIEW_H
-        if self.tool.get() == "ellipse":
-            a, b = self.axis_a.get(), self.axis_b.get()
-            scale = (min(w, h) / 2 * 0.75) / max(a, b, 1)
-            pts = ellipse_polygon_points(w / 2, h / 2, a * scale, b * scale, self.angle.get())
-            self.preview_canvas.create_polygon(pts, fill=ACCENT, outline="")
+        zoom = self.zoom
+        if self.tool.get() in ("ellipse", "circle"):
+            a, b, angle = self._current_round_params()
+            pts = ellipse_polygon_points(w / 2, h / 2, a * zoom, b * zoom, angle)
+            self.preview_canvas.create_polygon(pts, fill=ACCENT, outline=ACCENT, smooth=True)
         else:
-            thickness = min(self.thickness.get(), h * 0.6)
-            y0, y1 = h / 2 - thickness / 2, h / 2 + thickness / 2
-            pts = rounded_rect_points(12, y0, w - 12, y1, thickness / 2)
-            self.preview_canvas.create_polygon(pts, smooth=True, fill=ACCENT, outline="")
+            thickness = max(self.thickness.get() * zoom, 1)
+            self.preview_canvas.create_line(
+                0, h / 2, w, h / 2,
+                fill=ACCENT, width=thickness, capstyle=tk.ROUND, joinstyle=tk.ROUND,
+            )
 
     # ---------------------------------------------------------------- input
 
@@ -604,7 +652,7 @@ class FitsEditApp:
             try:
                 sky = image.wcs.pixel_to_world(ix, iy)
                 self.readout["RA"].config(text=sky.ra.to_string(unit="hourangle", sep=":", precision=2))
-                self.readout["DEC"].config(text=sky.dec.to_string(sep=":", precision=1, alwaysign=True))
+                self.readout["DEC"].config(text=sky.dec.to_string(sep=":", precision=1, alwayssign=True))
             except Exception:
                 self.readout["RA"].config(text="")
                 self.readout["DEC"].config(text="")
@@ -612,20 +660,19 @@ class FitsEditApp:
             self.readout["RA"].config(text="")
             self.readout["DEC"].config(text="")
 
-        if self.tool.get() == "ellipse":
+        if self.tool.get() in ("ellipse", "circle"):
             self._update_shape_preview(event.x, event.y)
-        elif self._line_anchor is not None and self.line_style.get() != "draw":
+        elif self._line_anchor is not None:
             self._update_click_line_preview(event.x, event.y)
 
     def _update_shape_preview(self, cx: float, cy: float) -> None:
         if self._preview_item is not None:
             self.canvas.delete(self._preview_item)
             self._preview_item = None
-        if self.tool.get() != "ellipse" or self.image is None:
+        if self.tool.get() not in ("ellipse", "circle") or self.image is None:
             return
-        a = self.axis_a.get() * self.zoom
-        b = self.axis_b.get() * self.zoom
-        pts = ellipse_polygon_points(cx, cy, a, b, self.angle.get())
+        a, b, angle = self._current_round_params()
+        pts = ellipse_polygon_points(cx, cy, a * self.zoom, b * self.zoom, angle)
         self._preview_item = self.canvas.create_polygon(pts, outline=TEXT_DIM, fill="", width=2)
 
     def _update_click_line_preview(self, cx: float, cy: float) -> None:
@@ -656,15 +703,11 @@ class FitsEditApp:
         if self.image is None:
             return
         tool = self.tool.get()
-        if tool == "ellipse":
+        if tool in ("ellipse", "circle"):
             self._push_undo()
-            self._stamp_ellipse(event.x, event.y, erase)
+            self._stamp_round(event.x, event.y, erase)
         elif tool == "line":
-            if self.line_style.get() == "draw":
-                self._push_undo()
-                self._line_drag_start = self.canvas_to_img(event.x, event.y)
-                self._line_drag_erase = erase
-            elif self._line_anchor is None:
+            if self._line_anchor is None:
                 self._push_undo()
                 self._line_anchor = self.canvas_to_img(event.x, event.y)
                 self._line_anchor_erase = erase
@@ -673,24 +716,10 @@ class FitsEditApp:
 
     def _on_drag(self, event: tk.Event, erase: bool) -> None:
         tool = self.tool.get()
-        if tool == "ellipse" and self.image is not None:
-            self._stamp_ellipse(event.x, event.y, erase)
+        if tool in ("ellipse", "circle") and self.image is not None:
+            self._stamp_round(event.x, event.y, erase)
             self._update_shape_preview(event.x, event.y)
-        elif tool == "line" and self.line_style.get() == "draw" and self._line_drag_start is not None:
-            self.canvas.delete("line_preview")
-            sx, sy = self.img_to_canvas(*self._line_drag_start)
-            self.canvas.create_line(sx, sy, event.x, event.y, fill=TEXT_DIM, width=2, tags="line_preview")
 
-    def _on_release(self, event: tk.Event, erase: bool) -> None:
-        tool = self.tool.get()
-        if tool == "line" and self.line_style.get() == "draw" and self._line_drag_start is not None and self.image is not None:
-            self.canvas.delete("line_preview")
-            x0, y0 = self._line_drag_start
-            x1, y1 = self.canvas_to_img(event.x, event.y)
-            stamp = line_mask(self.image.data.shape, x0, y0, x1, y1, self.thickness.get())
-            self.image.mask = (self.image.mask & ~stamp) if self._line_drag_erase else (self.image.mask | stamp)
-            self._line_drag_start = None
-            self.render()
 
     def _finalize_click_line(self, cx: float, cy: float) -> None:
         if self.image is None or self._line_anchor is None:
@@ -704,12 +733,13 @@ class FitsEditApp:
         self.canvas.delete("line_preview")
         self.render()
 
-    def _stamp_ellipse(self, cx: float, cy: float, erase: bool) -> None:
+    def _stamp_round(self, cx: float, cy: float, erase: bool) -> None:
         image = self.image
         if image is None:
             return
         ix, iy = self.canvas_to_img(cx, cy)
-        stamp = ellipse_mask(image.data.shape, ix, iy, self.axis_a.get(), self.axis_b.get(), self.angle.get())
+        a, b, angle = self._current_round_params()
+        stamp = ellipse_mask(image.data.shape, ix, iy, a, b, angle)
         image.mask = (image.mask & ~stamp) if erase else (image.mask | stamp)
         self.render()
 
