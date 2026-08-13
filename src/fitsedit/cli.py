@@ -55,10 +55,25 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+SUBCOMMANDS = {"show", "get", "set"}
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    return args.func(args)
+    argv = sys.argv[1:] if argv is None else argv
+
+    if argv and argv[0] in SUBCOMMANDS:
+        parser = build_parser()
+        args = parser.parse_args(argv)
+        return args.func(args)
+
+    if argv and argv[0] in {"-h", "--help"}:
+        print("usage: fitsedit [IMAGE ...]         open the mask-editor GUI")
+        print("       fitsedit {show,get,set} ...  header inspection/editing on the command line")
+        return 0
+
+    from fitsedit.gui import run_gui
+
+    return run_gui(argv)
 
 
 if __name__ == "__main__":
