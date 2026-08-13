@@ -1,6 +1,10 @@
 """Display color palettes: 256-entry RGB lookup tables built from a few control points."""
 
+import colorsys
+
 import numpy as np
+
+from fitsedit.theme import ACCENT, hex_to_rgb
 
 # (t, r, g, b) control points, t and colors in [0, 1]. Viridis/Inferno are close
 # perceptual approximations (a handful of anchor points interpolated), not exact
@@ -54,3 +58,27 @@ def _build_lut(stops: list[tuple[float, float, float, float]]) -> np.ndarray:
 
 
 COLORMAP_LUTS: dict[str, np.ndarray] = {name: _build_lut(stops) for name, stops in _STOPS.items()}
+
+
+def _complementary_rgb(rgb: tuple[int, int, int]) -> tuple[int, int, int]:
+    """Hue-rotate 180 degrees (same saturation/value) - the classic color-wheel opposite."""
+    r, g, b = (c / 255.0 for c in rgb)
+    h, s, v = colorsys.rgb_to_hsv(r, g, b)
+    h = (h + 0.5) % 1.0
+    r2, g2, b2 = colorsys.hsv_to_rgb(h, s, v)
+    return tuple(int(round(c * 255)) for c in (r2, g2, b2))
+
+
+def _mask_tint_color(name: str, lut: np.ndarray) -> tuple[int, int, int]:
+    if name == "Grayscale":
+        # grayscale has no hue to complement - use the Claude accent color instead.
+        return hex_to_rgb(ACCENT)
+    mid = tuple(int(c) for c in lut[len(lut) // 2])
+    return _complementary_rgb(mid)
+
+
+# Mask overlay color per colormap: the color-wheel complement of that colormap's
+# midpoint color, so painted regions read clearly against any palette.
+MASK_TINT_COLORS: dict[str, tuple[int, int, int]] = {
+    name: _mask_tint_color(name, lut) for name, lut in COLORMAP_LUTS.items()
+}

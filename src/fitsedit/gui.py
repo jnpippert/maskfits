@@ -9,7 +9,7 @@ import numpy as np
 from astropy.io import fits
 from PIL import Image, ImageTk
 
-from fitsedit.colormaps import COLORMAP_LUTS, COLORMAP_NAMES
+from fitsedit.colormaps import COLORMAP_LUTS, COLORMAP_NAMES, MASK_TINT_COLORS
 from fitsedit.cuts_dialog import ManualCutsWindow
 from fitsedit.imagedata import STRETCH_NAMES, STRETCHES, FitsImage, load_fits_image, minmax_cuts, zscale_cuts
 from fitsedit.masking import (
@@ -30,7 +30,6 @@ from fitsedit.theme import (
     PANEL_BORDER,
     TEXT,
     TEXT_DIM,
-    hex_to_rgb,
 )
 from fitsedit.widgets import RoundButton, RoundedPanel, RoundSlider, SegmentedControl
 
@@ -43,7 +42,6 @@ SIDEBAR_W = 240
 ZOOM_STEP = 1.25
 ZOOM_MULT_MIN = 1.0
 ZOOM_MULT_MAX = 40.0
-ACCENT_RGB = hex_to_rgb(ACCENT)
 
 LINE_STYLES = [
     ("segment", "Segment"),
@@ -91,7 +89,8 @@ class FitsEditApp:
         self.stretch = "zscale"
         self.scale_function = tk.StringVar(value="linear")
         self.colormap = tk.StringVar(value="Grayscale")
-        self.tool = tk.StringVar(value="ellipse")
+        self.mask_alpha = tk.IntVar(value=100)
+        self.tool = tk.StringVar(value="circle")
         self.axis_a = tk.IntVar(value=40)
         self.axis_b = tk.IntVar(value=40)
         self.angle = tk.IntVar(value=0)
@@ -154,6 +153,8 @@ class FitsEditApp:
         scale_menu = tk.Menu(menubar, tearoff=0)
         for value, label in SCALE_OPTIONS:
             scale_menu.add_radiobutton(label=label, variable=self.scale_function, value=value)
+        scale_menu.add_separator()
+        scale_menu.add_command(label="Reset", command=self.reset_scale)
         menubar.add_cascade(label="Scale", menu=scale_menu)
 
         color_menu = tk.Menu(menubar, tearoff=0)
@@ -262,11 +263,23 @@ class FitsEditApp:
         info = tk.Frame(parent, bg=PANEL_BG)
         info.pack(fill="x", padx=14, pady=(0, 10))
         self.readout = {}
-        for row, key in enumerate(["x", "y", "value", "RA", "DEC"]):
-            tk.Label(info, text=f"{key}:", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).grid(row=row, column=0, sticky="w")
-            lbl = tk.Label(info, text="", bg=PANEL_BG, fg=TEXT, font=FONT_SMALL)
-            lbl.grid(row=row, column=1, sticky="w", padx=(8, 0))
-            self.readout[key] = lbl
+        for row, (left_key, right_key) in enumerate((("x", "RA"), ("y", "DEC"))):
+            tk.Label(info, text=f"{left_key}:", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).grid(
+                row=row, column=0, sticky="w")
+            left_lbl = tk.Label(info, text="", bg=PANEL_BG, fg=TEXT, font=FONT_SMALL)
+            left_lbl.grid(row=row, column=1, sticky="w", padx=(8, 14))
+            self.readout[left_key] = left_lbl
+
+            tk.Label(info, text=f"{right_key}:", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).grid(
+                row=row, column=2, sticky="w")
+            right_lbl = tk.Label(info, text="", bg=PANEL_BG, fg=TEXT, font=FONT_SMALL)
+            right_lbl.grid(row=row, column=3, sticky="w", padx=(8, 0))
+            self.readout[right_key] = right_lbl
+
+        tk.Label(info, text="value:", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).grid(row=2, column=0, sticky="w")
+        value_lbl = tk.Label(info, text="", bg=PANEL_BG, fg=TEXT, font=FONT_SMALL)
+        value_lbl.grid(row=2, column=1, columnspan=3, sticky="w", padx=(8, 0))
+        self.readout["value"] = value_lbl
 
         self._divider(parent)
 
@@ -282,11 +295,26 @@ class FitsEditApp:
         scale_frame = tk.Frame(parent, bg=PANEL_BG)
         scale_frame.pack(fill="x", padx=14, pady=(0, 10))
         tk.Label(scale_frame, text="scale", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).pack(anchor="w")
-        scale_row = tk.Frame(scale_frame, bg=PANEL_BG)
-        scale_row.pack(fill="x", pady=(4, 0))
-        SegmentedControl(scale_row, SCALE_OPTIONS, self.scale_function, outer_bg=PANEL_BG).pack(side="left")
-        RoundButton(scale_row, "reset", command=self.reset_scale, outer_bg=PANEL_BG, height=26).pack(
-            side="left", padx=(6, 0))
+        SegmentedControl(scale_frame, SCALE_OPTIONS, self.scale_function, outer_bg=PANEL_BG).pack(
+            anchor="w", pady=(4, 0))
+
+        alpha_frame = tk.Frame(parent, bg=PANEL_BG)
+        alpha_frame.pack(fill="x", padx=14, pady=(0, 10))
+        alpha_label = tk.Label(alpha_frame, bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL, anchor="w")
+        alpha_label.pack(fill="x")
+
+        def _update_alpha_label(*_args: object) -> None:
+            alpha_label.config(text=f"mask opacity: {self.mask_alpha.get()}%")
+
+        self.mask_alpha.trace_add("write", _update_alpha_label)
+        _update_alpha_label()
+        alpha_slider = RoundSlider(alpha_frame, self.mask_alpha, 0, 100, width=SIDEBAR_W - 40, height=22,
+                                    outer_bg=PANEL_BG)
+        alpha_slider.pack(pady=(4, 0))
+        # Re-render only once the slider is released, not on every drag step -
+        # this drives a full main-canvas repaint, same reasoning as the manual
+        # cuts dialog: continuous re-rendering during a drag is what feels slow.
+        alpha_slider.bind("<ButtonRelease-1>", lambda e: self.render())
 
         RoundButton(parent, "export mask", command=self.export_mask, outer_bg=PANEL_BG, accent=True,
                     width=SIDEBAR_W - 28).pack(padx=14, pady=(4, 12))
@@ -566,13 +594,7 @@ class FitsEditApp:
         rgb = self._scale_and_color(norm)
 
         mask_crop = image.mask[y0:y1, x0:x1]
-        if mask_crop.any():
-            alpha = 0.55
-            ar, ag, ab = ACCENT_RGB
-            for ch, accent_v in enumerate((ar, ag, ab)):
-                channel = rgb[..., ch].astype(np.float32)
-                blended = channel * (1 - alpha) + accent_v * alpha
-                rgb[..., ch] = np.where(mask_crop, blended, channel).astype(np.uint8)
+        self._tint_masked(rgb, mask_crop)
 
         pil_img = Image.fromarray(rgb, mode="RGB")
         disp_w = max(int(round((x1 - x0) * self.zoom)), 1)
@@ -592,6 +614,17 @@ class FitsEditApp:
         stretched = np.clip(np.asarray(stretch(norm)), 0.0, 1.0)
         gray = (stretched * 255).astype(np.uint8)
         return COLORMAP_LUTS[self.colormap.get()][gray]
+
+    def _tint_masked(self, rgb: np.ndarray, mask_crop: np.ndarray) -> None:
+        """Blend the current colormap's complementary tint into masked pixels, in place."""
+        if not mask_crop.any():
+            return
+        alpha = self.mask_alpha.get() / 100.0
+        tint = MASK_TINT_COLORS[self.colormap.get()]
+        for ch, tint_v in enumerate(tint):
+            channel = rgb[..., ch].astype(np.float32)
+            blended = channel * (1 - alpha) + tint_v * alpha
+            rgb[..., ch] = np.where(mask_crop, blended, channel).astype(np.uint8)
 
     def render_magnifier(self) -> None:
         canvas = self.magnifier_canvas
@@ -622,13 +655,7 @@ class FitsEditApp:
         norm = np.where(np.isnan(crop), 0.12, norm)
         rgb = self._scale_and_color(norm)
 
-        if mask_crop.any():
-            alpha = 0.55
-            ar, ag, ab = ACCENT_RGB
-            for ch, accent_v in enumerate((ar, ag, ab)):
-                channel = rgb[..., ch].astype(np.float32)
-                blended = channel * (1 - alpha) + accent_v * alpha
-                rgb[..., ch] = np.where(mask_crop, blended, channel).astype(np.uint8)
+        self._tint_masked(rgb, mask_crop)
 
         square = min(w, h)
         block = max(square // MAG_SIZE, 1)
@@ -829,8 +856,17 @@ class FitsEditApp:
         self.render()
 
 
-def run_gui(paths: list[str]) -> int:
+MODE_FLAGS = {"s": "line", "e": "ellipse", "c": "circle"}
+
+
+def run_gui(paths: list[str], zoom: Optional[float] = None, mode: Optional[str] = None) -> int:
     root = tk.Tk()
-    FitsEditApp(root, paths)
+    app = FitsEditApp(root, paths)
+    if mode is not None:
+        app.tool.set(MODE_FLAGS[mode])
+    if zoom is not None:
+        app.zoom_mult = max(min(zoom, ZOOM_MULT_MAX), ZOOM_MULT_MIN)
+        app._update_zoom_label()
+        app.render()
     root.mainloop()
     return 0

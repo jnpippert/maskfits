@@ -58,6 +58,16 @@ def build_parser() -> argparse.ArgumentParser:
 SUBCOMMANDS = {"show", "get", "set"}
 
 
+def build_gui_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="fitsedit", description="Open the fitsedit mask-editor GUI")
+    parser.add_argument("files", nargs="*", help="FITS files to open")
+    parser.add_argument("-z", "--zoom", type=float, default=None,
+                         help="initial zoom multiplier relative to fit-to-window (e.g. 2 for 2x)")
+    parser.add_argument("-m", "--mode", choices=["s", "e", "c"], default=None,
+                         help="initial mask mode: s=satellite, e=ellipse, c=circle")
+    return parser
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
 
@@ -67,13 +77,18 @@ def main(argv: list[str] | None = None) -> int:
         return args.func(args)
 
     if argv and argv[0] in {"-h", "--help"}:
-        print("usage: fitsedit [IMAGE ...]         open the mask-editor GUI")
-        print("       fitsedit {show,get,set} ...  header inspection/editing on the command line")
+        print("usage: fitsedit [-z ZOOM] [-m {s,e,c}] [IMAGE ...]  open the mask-editor GUI")
+        print("       fitsedit {show,get,set} ...                 header inspection/editing on the command line")
+        print()
+        print("  -z, --zoom ZOOM     initial zoom multiplier relative to fit-to-window (e.g. 2 for 2x)")
+        print("  -m, --mode {s,e,c}  initial mask mode: s=satellite, e=ellipse, c=circle")
         return 0
+
+    gui_args = build_gui_parser().parse_args(argv)
 
     from fitsedit.gui import run_gui
 
-    return run_gui(argv)
+    return run_gui(gui_args.files, zoom=gui_args.zoom, mode=gui_args.mode)
 
 
 if __name__ == "__main__":

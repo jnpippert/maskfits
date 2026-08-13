@@ -185,7 +185,11 @@ class RoundButton(tk.Canvas):
 
 
 class SegmentedControl(tk.Frame):
-    """A row of toggle buttons acting as a single-select group bound to a StringVar."""
+    """A row of toggle buttons acting as a single-select group bound to a StringVar.
+
+    Stays in sync regardless of what changes the variable - a menu radiobutton, a
+    CLI startup flag, or a plain `.set()` - not just its own button clicks.
+    """
 
     def __init__(self, parent: tk.Widget, options: list[tuple[str, str]], variable: tk.StringVar, *,
                  outer_bg: Optional[str] = None, command: Optional[Callable[[str], None]] = None):
@@ -203,12 +207,25 @@ class SegmentedControl(tk.Frame):
             btn.pack(side="left", padx=(0, 4), pady=2)
             self.buttons[value] = btn
 
+        self._trace_id = variable.trace_add("write", self._on_variable_changed)
+        self.bind("<Destroy>", self._on_destroy, add="+")
+
+    def _on_variable_changed(self, *_args: object) -> None:
+        current = self.variable.get()
+        for value, btn in self.buttons.items():
+            if btn.winfo_exists():
+                btn.set_active(value == current)
+
     def _select(self, value: str) -> None:
         self.variable.set(value)
-        for v, btn in self.buttons.items():
-            btn.set_active(v == value)
         if self.command:
             self.command(value)
+
+    def _on_destroy(self, _event: tk.Event) -> None:
+        try:
+            self.variable.trace_remove("write", self._trace_id)
+        except tk.TclError:
+            pass
 
 
 class RoundSlider(tk.Canvas):
