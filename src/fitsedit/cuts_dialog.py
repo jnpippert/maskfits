@@ -120,7 +120,14 @@ class ManualCutsWindow(tk.Toplevel):
         hi_entry.bind("<Return>", self._on_hi_entry)
         hi_entry.bind("<FocusOut>", self._on_hi_entry)
 
-        RoundButton(frame, "Close", command=self.destroy, outer_bg=APP_BG, accent=True).pack(anchor="e", pady=(14, 0))
+        button_row = tk.Frame(frame, bg=APP_BG)
+        button_row.pack(fill="x", pady=(14, 0))
+        RoundButton(button_row, "Close", command=self.destroy, outer_bg=APP_BG).pack(side="right")
+        RoundButton(button_row, "Apply", command=self._apply_now, outer_bg=APP_BG, accent=True).pack(
+            side="right", padx=(0, 8))
+
+    def _apply_now(self) -> None:
+        self.on_apply(self.vmin_var.get(), self.vmax_var.get())
 
     def _toggle_range_view(self) -> None:
         self.show_full_range = not self.show_full_range

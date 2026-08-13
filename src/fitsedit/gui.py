@@ -91,8 +91,7 @@ class FitsEditApp:
         self.colormap = tk.StringVar(value="Grayscale")
         self.mask_alpha = tk.IntVar(value=100)
         self.tool = tk.StringVar(value="circle")
-        self.axis_a = tk.IntVar(value=40)
-        self.axis_b = tk.IntVar(value=40)
+        self.ellipticity = tk.IntVar(value=0)
         self.angle = tk.IntVar(value=0)
         self.radius = tk.IntVar(value=40)
         self.thickness = tk.IntVar(value=15)
@@ -121,6 +120,12 @@ class FitsEditApp:
         self.colormap.trace_add("write", lambda *_: self.render())
         self.root.bind("<Control-z>", self._on_undo)
         self.root.bind("<Escape>", lambda e: self._cancel_pending_line())
+        self.root.bind("<Left>", lambda e: self.prev_image())
+        self.root.bind("<Right>", lambda e: self.next_image())
+        self.root.bind("<u>", self._on_undo)
+        self.root.bind("<r>", lambda e: self.reset_mask())
+        self.root.bind("<e>", lambda e: self._adjust_shape_size(1))
+        self.root.bind("<w>", lambda e: self._adjust_shape_size(-1))
 
         self._rebuild_tool_options()
         self.load_current(reset_view=True)
@@ -176,9 +181,12 @@ class FitsEditApp:
             "Right-click / drag: erase mask\n"
             "Middle-click drag: pan the view\n"
             "Mouse wheel: zoom in (zoom 1 shows the full image; you can only zoom in from there)\n"
-            "Ctrl+Z: undo last mask stroke\n"
+            "Ctrl+Z or U: undo last mask stroke\n"
+            "R: clear the whole mask\n"
+            "← / →: previous / next image\n"
+            "E / W: grow / shrink the active tool's radius or thickness\n"
             "Esc: cancel a pending line click\n\n"
-            "Ellipse mode: stamp shapes sized by the major/minor axis and angle sliders\n"
+            "Ellipse mode: stamp shapes sized by the radius, ellipticity, and angle sliders\n"
             "Circle mode: stamp circles sized by the radius slider\n\n"
             "Satellite mode styles:\n"
             "  Segment - click a start point, click an end point\n"
@@ -287,16 +295,10 @@ class FitsEditApp:
         cuts.pack(fill="x", padx=14, pady=10)
         tk.Label(cuts, text="lowcut:", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).grid(row=0, column=0, sticky="w")
         self.lowcut_label = tk.Label(cuts, text="0", bg=PANEL_BG, fg=TEXT, font=FONT_SMALL)
-        self.lowcut_label.grid(row=0, column=1, sticky="w", padx=(8, 0))
-        tk.Label(cuts, text="highcut:", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).grid(row=1, column=0, sticky="w")
+        self.lowcut_label.grid(row=0, column=1, sticky="w", padx=(8, 14))
+        tk.Label(cuts, text="highcut:", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).grid(row=0, column=2, sticky="w")
         self.highcut_label = tk.Label(cuts, text="1", bg=PANEL_BG, fg=TEXT, font=FONT_SMALL)
-        self.highcut_label.grid(row=1, column=1, sticky="w", padx=(8, 0))
-
-        scale_frame = tk.Frame(parent, bg=PANEL_BG)
-        scale_frame.pack(fill="x", padx=14, pady=(0, 10))
-        tk.Label(scale_frame, text="scale", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).pack(anchor="w")
-        SegmentedControl(scale_frame, SCALE_OPTIONS, self.scale_function, outer_bg=PANEL_BG).pack(
-            anchor="w", pady=(4, 0))
+        self.highcut_label.grid(row=0, column=3, sticky="w", padx=(8, 0))
 
         alpha_frame = tk.Frame(parent, bg=PANEL_BG)
         alpha_frame.pack(fill="x", padx=14, pady=(0, 10))
@@ -358,8 +360,8 @@ class FitsEditApp:
         self._cancel_pending_line()
 
         if self.tool.get() == "ellipse":
-            self._build_slider_row(self.tool_options_frame, "major axis", self.axis_a, 1, MAX_SHAPE_SIZE, suffix=" px")
-            self._build_slider_row(self.tool_options_frame, "minor axis", self.axis_b, 1, MAX_SHAPE_SIZE, suffix=" px")
+            self._build_slider_row(self.tool_options_frame, "radius", self.radius, 1, MAX_SHAPE_SIZE, suffix=" px")
+            self._build_slider_row(self.tool_options_frame, "ellipticity", self.ellipticity, 0, 90, suffix="%")
             self._build_slider_row(self.tool_options_frame, "angle", self.angle, 0, 180, suffix="°")
         elif self.tool.get() == "circle":
             self._build_slider_row(self.tool_options_frame, "radius", self.radius, 1, MAX_SHAPE_SIZE, suffix=" px")
@@ -374,7 +376,7 @@ class FitsEditApp:
                                          bg=PANEL_BG, highlightthickness=0)
         self.preview_canvas.pack(padx=14, pady=14)
 
-        for var in (self.axis_a, self.axis_b, self.angle, self.radius, self.thickness):
+        for var in (self.ellipticity, self.angle, self.radius, self.thickness):
             var.trace_add("write", lambda *_: self.render_tool_preview())
         self.render_tool_preview()
 
@@ -388,11 +390,17 @@ class FitsEditApp:
             self.canvas.delete("line_preview")
 
     def _current_round_params(self) -> tuple[float, float, float]:
-        """(semi-major axis, semi-minor axis, angle) for the current ellipse/circle tool."""
+        """(semi-major axis, semi-minor axis, angle) for the current ellipse/circle tool.
+
+        Ellipse mode shares the same radius slider as circle mode for overall size
+        (a); the ellipticity slider (0-90%) shrinks b = a * (1 - ellipticity/100),
+        so ellipticity=0 is exactly a circle of that radius.
+        """
+        r = self.radius.get()
         if self.tool.get() == "circle":
-            r = self.radius.get()
             return r, r, 0
-        return self.axis_a.get(), self.axis_b.get(), self.angle.get()
+        b = r * (1 - self.ellipticity.get() / 100.0)
+        return r, b, self.angle.get()
 
     # --------------------------------------------------------- image state
 
@@ -497,6 +505,21 @@ class FitsEditApp:
         self.image.mask[:] = False
         self.render()
         self.status.config(text="mask cleared")
+
+    def _adjust_shape_size(self, direction: int) -> None:
+        """Hotkey e/w: grow/shrink the active tool's size (radius/thickness)."""
+        step = 5
+        tool = self.tool.get()
+        if tool in ("circle", "ellipse"):
+            var, hi = self.radius, MAX_SHAPE_SIZE
+        elif tool == "line":
+            var, hi = self.thickness, 100
+        else:
+            return
+        var.set(max(1, min(var.get() + direction * step, hi)))
+        if tool in ("ellipse", "circle") and self._cursor_img_pos is not None:
+            cx, cy = self.img_to_canvas(*self._cursor_img_pos)
+            self._update_shape_preview(cx, cy)
 
     # -------------------------------------------------------------- export
 
