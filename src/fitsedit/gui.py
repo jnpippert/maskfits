@@ -34,10 +34,11 @@ from fitsedit.widgets import RoundButton, RoundedPanel, RoundSlider, SegmentedCo
 PAN_W, PAN_H = 220, 150
 PREVIEW_W, PREVIEW_H = 150, 120
 SIDEBAR_W = 240
-COLORBAR_W = 90
 ZOOM_STEP = 1.25
-ZOOM_MIN = 1.0
-ZOOM_MAX = 40.0
+ZOOM_MULT_MIN = 1.0
+ZOOM_MULT_MAX = 40.0
+MAG_SIZE = 25
+MAGNIFIER_GREEN = "#22c55e"
 ACCENT_RGB = hex_to_rgb(ACCENT)
 
 LINE_STYLES = [
@@ -82,7 +83,7 @@ class FitsEditApp:
         self.entries: list[Entry] = [Entry(p) for p in paths] or [Entry(None)]
         self.index = 0
 
-        self.stretch = "minmax"
+        self.stretch = "zscale"
         self.tool = tk.StringVar(value="ellipse")
         self.axis_a = tk.IntVar(value=40)
         self.axis_b = tk.IntVar(value=40)
@@ -90,11 +91,13 @@ class FitsEditApp:
         self.thickness = tk.IntVar(value=15)
         self.line_style = tk.StringVar(value="draw")
 
-        self.zoom = ZOOM_MIN
+        self.fit_zoom = 1.0
+        self.zoom_mult = 1.0
         self.view_cx = 0.0
         self.view_cy = 0.0
         self.canvas_w = 1
         self.canvas_h = 1
+        self._cursor_img_pos: Optional[tuple[float, float]] = None
 
         self._pan_drag: Optional[tuple[int, int, float, float]] = None
         self._line_drag_start: Optional[tuple[float, float]] = None
@@ -150,7 +153,7 @@ class FitsEditApp:
             "Left-click / drag: paint mask with the current tool\n"
             "Right-click / drag: erase mask\n"
             "Middle-click drag: pan the view\n"
-            "Mouse wheel: zoom in (zoom is capped at 100% minimum)\n"
+            "Mouse wheel: zoom in (zoom 1 shows the full image; you can only zoom in from there)\n"
             "Ctrl+Z: undo last mask stroke\n"
             "Esc: cancel a pending line click\n\n"
             "Ellipse mode: stamp shapes sized by the major/minor axis and angle sliders\n\n"
@@ -167,7 +170,7 @@ class FitsEditApp:
     def _build_layout(self) -> None:
         toolbar_container = tk.Frame(self.root, bg=APP_BG)
         toolbar_container.pack(side="top", fill="x", padx=10, pady=(10, 6))
-        toolbar_panel = RoundedPanel(toolbar_container, outer_bg=APP_BG, bg=PANEL_BG, radius=14)
+        toolbar_panel = RoundedPanel(toolbar_container, outer_bg=APP_BG, bg=PANEL_BG, radius=14, mode="hug")
         toolbar_panel.pack(fill="x")
         self._build_toolbar(toolbar_panel.inner)
 
@@ -177,12 +180,12 @@ class FitsEditApp:
         sidebar_container = tk.Frame(body, width=SIDEBAR_W, bg=APP_BG)
         sidebar_container.pack(side="left", fill="y", padx=(0, 6))
         sidebar_container.pack_propagate(False)
-        sidebar_panel = RoundedPanel(sidebar_container, outer_bg=APP_BG, bg=PANEL_BG, radius=16)
+        sidebar_panel = RoundedPanel(sidebar_container, outer_bg=APP_BG, bg=PANEL_BG, radius=16, scrollable=True)
         sidebar_panel.pack(fill="both", expand=True)
         self._build_sidebar(sidebar_panel.inner)
 
         canvas_container = tk.Frame(body, bg=APP_BG)
-        canvas_container.pack(side="left", fill="both", expand=True, padx=(0, 6))
+        canvas_container.pack(side="left", fill="both", expand=True)
         self.canvas = tk.Canvas(canvas_container, bg=CANVAS_BG, highlightthickness=1, highlightbackground=PANEL_BORDER)
         self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Configure>", self._on_canvas_resize)
@@ -200,18 +203,9 @@ class FitsEditApp:
         self.canvas.bind("<Button-4>", lambda e: self._zoom_at(e.x, e.y, ZOOM_STEP))
         self.canvas.bind("<Button-5>", lambda e: self._zoom_at(e.x, e.y, 1 / ZOOM_STEP))
 
-        colorbar_container = tk.Frame(body, width=COLORBAR_W, bg=APP_BG)
-        colorbar_container.pack(side="left", fill="y")
-        colorbar_container.pack_propagate(False)
-        colorbar_panel = RoundedPanel(colorbar_container, outer_bg=APP_BG, bg=PANEL_BG, radius=14)
-        colorbar_panel.pack(fill="both", expand=True)
-        self.colorbar = tk.Canvas(colorbar_panel.inner, bg=PANEL_BG, highlightthickness=0)
-        self.colorbar.pack(fill="both", expand=True, padx=10, pady=10)
-        self.colorbar.bind("<Configure>", lambda e: self.render_colorbar())
-
         status_container = tk.Frame(self.root, bg=APP_BG)
         status_container.pack(side="bottom", fill="x", padx=10, pady=(6, 10))
-        status_panel = RoundedPanel(status_container, outer_bg=APP_BG, bg=PANEL_BG, radius=10)
+        status_panel = RoundedPanel(status_container, outer_bg=APP_BG, bg=PANEL_BG, radius=10, mode="hug")
         status_panel.pack(fill="x")
         self.status = tk.Label(status_panel.inner, text="new file", bg=PANEL_BG, fg=TEXT_DIM, anchor="w", font=FONT_SMALL)
         self.status.pack(fill="x", padx=14, pady=8)
@@ -221,11 +215,11 @@ class FitsEditApp:
         pad = dict(padx=4, pady=10)
 
         tk.Label(parent, text="Zoom:", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).pack(side="left", padx=(14, 4))
-        self.zoom_label = tk.Label(parent, text="100%", bg=PANEL_BG, fg=TEXT, font=FONT, width=5)
+        self.zoom_label = tk.Label(parent, text="1", bg=PANEL_BG, fg=TEXT, font=FONT, width=5)
         self.zoom_label.pack(side="left")
         RoundButton(parent, "-", command=self.zoom_out, outer_bg=PANEL_BG, width=32).pack(side="left", **pad)
         RoundButton(parent, "+", command=self.zoom_in, outer_bg=PANEL_BG, width=32).pack(side="left", **pad)
-        RoundButton(parent, "100%", command=self.reset_zoom, outer_bg=PANEL_BG).pack(side="left", padx=(0, 16), pady=10)
+        RoundButton(parent, "reset", command=self.reset_zoom, outer_bg=PANEL_BG).pack(side="left", padx=(0, 16), pady=10)
 
         RoundButton(parent, "<-", command=self.prev_image, outer_bg=PANEL_BG, width=36).pack(side="left", **pad)
         self.counter_label = tk.Label(parent, text="1/1", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL, width=6)
@@ -240,9 +234,8 @@ class FitsEditApp:
     def _build_sidebar(self, parent: tk.Frame) -> None:
         parent.configure(bg=PANEL_BG)
 
-        self.pan_canvas = tk.Canvas(parent, width=PAN_W, height=PAN_H, bg=CANVAS_BG, highlightthickness=0)
-        self.pan_canvas.pack(padx=10, pady=10)
-        self.pan_canvas.bind("<Button-1>", self._on_pan_click)
+        self.magnifier_canvas = tk.Canvas(parent, width=PAN_W, height=PAN_H, bg=CANVAS_BG, highlightthickness=0)
+        self.magnifier_canvas.pack(padx=10, pady=10)
 
         info = tk.Frame(parent, bg=PANEL_BG)
         info.pack(fill="x", padx=14, pady=(0, 10))
@@ -342,6 +335,11 @@ class FitsEditApp:
     def image(self) -> Optional[FitsImage]:
         return self.entry.image
 
+    @property
+    def zoom(self) -> float:
+        """Effective image-to-canvas pixel scale: fit-to-window baseline times the user multiplier."""
+        return self.fit_zoom * self.zoom_mult
+
     def load_current(self, reset_view: bool = False) -> None:
         entry = self.entry
         try:
@@ -360,8 +358,6 @@ class FitsEditApp:
         self.status.config(text=f"loaded {entry.path}" if entry.path else "new file")
 
         self.render()
-        self.render_pan()
-        self.render_colorbar()
 
     @staticmethod
     def _fmt(value: float) -> str:
@@ -373,8 +369,6 @@ class FitsEditApp:
         self.lowcut_label.config(text=self._fmt(self.entry.lowcut))
         self.highcut_label.config(text=self._fmt(self.entry.highcut))
         self.render()
-        self.render_pan()
-        self.render_colorbar()
 
     # ------------------------------------------------------------- navigation
 
@@ -457,12 +451,24 @@ class FitsEditApp:
 
     # ------------------------------------------------------------ rendering
 
+    def _compute_fit_zoom(self) -> float:
+        if self.image is None or self.canvas_w <= 1 or self.canvas_h <= 1:
+            return 1.0
+        ny, nx = self.image.data.shape
+        return min(self.canvas_w / nx, self.canvas_h / ny) or 1.0
+
+    def _update_zoom_label(self) -> None:
+        text = f"{self.zoom_mult:.2f}".rstrip("0").rstrip(".")
+        self.zoom_label.config(text=text or "1")
+
     def _on_canvas_resize(self, event: tk.Event) -> None:
         self.canvas_w, self.canvas_h = event.width, event.height
+        if self.image is not None:
+            self.fit_zoom = self._compute_fit_zoom()
         self.render()
-        self.render_pan()
 
     def render(self) -> None:
+        self.render_magnifier()
         self.canvas.delete("img")
         image = self.image
         if image is None or self.canvas_w <= 1:
@@ -506,36 +512,54 @@ class FitsEditApp:
         self.canvas.create_image(cx0, cy0, image=self._photo, anchor="nw", tags="img")
         self.canvas.tag_lower("img")
 
-    def render_pan(self) -> None:
-        self.pan_canvas.delete("all")
+    def render_magnifier(self) -> None:
+        canvas = self.magnifier_canvas
+        canvas.delete("all")
         w, h = PAN_W, PAN_H
         image = self.image
-        if image is None:
-            self._draw_grid(self.pan_canvas, w, h)
+        if image is None or self._cursor_img_pos is None:
+            self._draw_grid(canvas, w, h)
             return
 
-        data = image.data
-        ny, nx = data.shape
-        scale = min(w / nx, h / ny)
-        disp_w = max(int(nx * scale), 1)
-        disp_h = max(int(ny * scale), 1)
+        ny, nx = image.data.shape
+        half = MAG_SIZE // 2
+        cx_i = int(round(self._cursor_img_pos[0]))
+        cy_i = int(round(self._cursor_img_pos[1]))
+        x0, y0 = cx_i - half, cy_i - half
+
+        crop = np.full((MAG_SIZE, MAG_SIZE), np.nan, dtype=np.float64)
+        mask_crop = np.zeros((MAG_SIZE, MAG_SIZE), dtype=bool)
+        sx0, sx1 = max(x0, 0), min(x0 + MAG_SIZE, nx)
+        sy0, sy1 = max(y0, 0), min(y0 + MAG_SIZE, ny)
+        if sx1 > sx0 and sy1 > sy0:
+            crop[sy0 - y0:sy1 - y0, sx0 - x0:sx1 - x0] = image.data[sy0:sy1, sx0:sx1]
+            mask_crop[sy0 - y0:sy1 - y0, sx0 - x0:sx1 - x0] = image.mask[sy0:sy1, sx0:sx1]
 
         entry = self.entry
         span = max(entry.highcut - entry.lowcut, 1e-12)
-        norm = np.clip((data - entry.lowcut) / span, 0, 1)
-        gray = (norm * 255).astype(np.uint8)
-        pil_img = Image.fromarray(gray, mode="L").resize((disp_w, disp_h), Image.BOX)
-        self._pan_photo = ImageTk.PhotoImage(pil_img)
-        ox, oy = (w - disp_w) // 2, (h - disp_h) // 2
-        self.pan_canvas.create_image(ox, oy, image=self._pan_photo, anchor="nw")
+        norm = np.clip((crop - entry.lowcut) / span, 0, 1)
+        gray = np.where(np.isnan(crop), 0.12, norm)
+        gray_u8 = (gray * 255).astype(np.uint8)
+        rgb = np.stack([gray_u8, gray_u8, gray_u8], axis=-1)
 
-        ix0, iy0 = self.canvas_to_img(0, 0)
-        ix1, iy1 = self.canvas_to_img(self.canvas_w, self.canvas_h)
-        rx0 = ox + np.clip(min(ix0, ix1), 0, nx) * scale
-        rx1 = ox + np.clip(max(ix0, ix1), 0, nx) * scale
-        ry0 = oy + np.clip(min(iy0, iy1), 0, ny) * scale
-        ry1 = oy + np.clip(max(iy0, iy1), 0, ny) * scale
-        self.pan_canvas.create_rectangle(rx0, ry0, rx1, ry1, outline=ACCENT, width=2)
+        if mask_crop.any():
+            alpha = 0.55
+            ar, ag, ab = ACCENT_RGB
+            for ch, accent_v in enumerate((ar, ag, ab)):
+                channel = rgb[..., ch].astype(np.float32)
+                blended = channel * (1 - alpha) + accent_v * alpha
+                rgb[..., ch] = np.where(mask_crop, blended, channel).astype(np.uint8)
+
+        square = min(w, h)
+        block = max(square // MAG_SIZE, 1)
+        disp = block * MAG_SIZE
+        pil_img = Image.fromarray(rgb, mode="RGB").resize((disp, disp), Image.NEAREST)
+        self._mag_photo = ImageTk.PhotoImage(pil_img)
+        ox, oy = (w - disp) // 2, (h - disp) // 2
+        canvas.create_image(ox, oy, image=self._mag_photo, anchor="nw")
+
+        cxp, cyp = ox + half * block, oy + half * block
+        canvas.create_rectangle(cxp, cyp, cxp + block, cyp + block, outline=MAGNIFIER_GREEN, width=2)
 
     @staticmethod
     def _draw_grid(canvas: tk.Canvas, w: int, h: int, step: int = 10) -> None:
@@ -543,19 +567,6 @@ class FitsEditApp:
             canvas.create_line(x, 0, x, h, fill=PANEL_BORDER)
         for y in range(0, h, step):
             canvas.create_line(0, y, w, y, fill=PANEL_BORDER)
-
-    def render_colorbar(self) -> None:
-        self.colorbar.delete("all")
-        image = self.image
-        w = self.colorbar.winfo_width() or COLORBAR_W
-        h = self.colorbar.winfo_height() or 400
-        if image is None or w <= 1 or h <= 1:
-            return
-        grad = np.linspace(255, 0, h, dtype=np.uint8).reshape(h, 1)
-        grad = np.repeat(grad, w, axis=1)
-        pil_img = Image.fromarray(grad, mode="L")
-        self._colorbar_photo = ImageTk.PhotoImage(pil_img)
-        self.colorbar.create_image(0, 0, image=self._colorbar_photo, anchor="nw")
 
     def render_tool_preview(self) -> None:
         if self.preview_canvas is None or not self.preview_canvas.winfo_exists():
@@ -577,6 +588,8 @@ class FitsEditApp:
 
     def _on_motion(self, event: tk.Event) -> None:
         ix, iy = self.canvas_to_img(event.x, event.y)
+        self._cursor_img_pos = (ix, iy)
+        self.render_magnifier()
         ix_i, iy_i = int(round(ix)), int(round(iy))
         self.readout["x"].config(text=str(ix_i))
         self.readout["y"].config(text=str(iy_i))
@@ -700,20 +713,6 @@ class FitsEditApp:
         image.mask = (image.mask & ~stamp) if erase else (image.mask | stamp)
         self.render()
 
-    def _on_pan_click(self, event: tk.Event) -> None:
-        image = self.image
-        if image is None:
-            return
-        w, h = PAN_W, PAN_H
-        ny, nx = image.data.shape
-        scale = min(w / nx, h / ny)
-        disp_w, disp_h = nx * scale, ny * scale
-        ox, oy = (w - disp_w) / 2, (h - disp_h) / 2
-        self.view_cx = (event.x - ox) / scale
-        self.view_cy = (event.y - oy) / scale
-        self.render()
-        self.render_pan()
-
     def _on_pan_start(self, event: tk.Event) -> None:
         self._pan_drag = (event.x, event.y, self.view_cx, self.view_cy)
 
@@ -724,16 +723,15 @@ class FitsEditApp:
         self.view_cx = ocx - (event.x - sx) / self.zoom
         self.view_cy = ocy - (event.y - sy) / self.zoom
         self.render()
-        self.render_pan()
 
     def reset_zoom(self) -> None:
-        self.zoom = ZOOM_MIN
+        self.zoom_mult = 1.0
         if self.image is not None:
             ny, nx = self.image.data.shape
             self.view_cx, self.view_cy = nx / 2, ny / 2
-        self.zoom_label.config(text="100%")
+            self.fit_zoom = self._compute_fit_zoom()
+        self._update_zoom_label()
         self.render()
-        self.render_pan()
 
     def zoom_in(self) -> None:
         self._zoom_at(self.canvas_w / 2, self.canvas_h / 2, ZOOM_STEP)
@@ -748,17 +746,16 @@ class FitsEditApp:
     def _zoom_at(self, cx: float, cy: float, factor: float) -> None:
         if self.image is None:
             return
-        new_zoom = max(min(self.zoom * factor, ZOOM_MAX), ZOOM_MIN)
-        if new_zoom == self.zoom:
+        new_mult = max(min(self.zoom_mult * factor, ZOOM_MULT_MAX), ZOOM_MULT_MIN)
+        if new_mult == self.zoom_mult:
             return
         ix, iy = self.canvas_to_img(cx, cy)
-        self.zoom = new_zoom
+        self.zoom_mult = new_mult
         new_cx, new_cy = self.canvas_to_img(cx, cy)
         self.view_cx += ix - new_cx
         self.view_cy += iy - new_cy
-        self.zoom_label.config(text=f"{round(self.zoom * 100)}%")
+        self._update_zoom_label()
         self.render()
-        self.render_pan()
 
 
 def run_gui(paths: list[str]) -> int:

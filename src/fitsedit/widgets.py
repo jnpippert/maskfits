@@ -39,29 +39,78 @@ def rounded_rect_points(x0: float, y0: float, x1: float, y1: float, r: float) ->
 
 
 class RoundedPanel(tk.Frame):
-    """A card-like panel with rounded corners. Pack/grid children into `.inner`."""
+    """A card-like panel with rounded corners. Pack/grid children into `.inner`.
+
+    mode="fill" (default): the panel takes whatever size its parent gives it
+      (e.g. a sidebar stretched to the window height by its container).
+    mode="hug": the panel sizes itself to its content's natural height instead
+      (e.g. a toolbar or status bar that should stay compact).
+    scrollable: only meaningful with mode="fill" - if the content's natural
+      height exceeds the space available, scroll instead of clipping it.
+    """
 
     def __init__(self, parent: tk.Widget, *, radius: int = 14, bg: str = PANEL_BG,
-                 outer_bg: str = None, border: str = PANEL_BORDER):
+                 outer_bg: Optional[str] = None, border: str = PANEL_BORDER,
+                 mode: str = "fill", scrollable: bool = False):
         outer_bg = outer_bg if outer_bg is not None else parent["bg"]
         super().__init__(parent, bg=outer_bg)
         self.radius = radius
         self.bg_color = bg
         self.border_color = border
-        self.canvas = tk.Canvas(self, bg=outer_bg, highlightthickness=0)
+        self.mode = mode
+        self.scrollable = scrollable and mode == "fill"
+
+        self.canvas = tk.Canvas(self, bg=outer_bg, highlightthickness=0, width=1, height=1)
         self.canvas.pack(fill="both", expand=True)
         self.inner = tk.Frame(self.canvas, bg=bg)
         self._win = self.canvas.create_window(0, 0, window=self.inner, anchor="nw")
-        self.canvas.bind("<Configure>", self._redraw)
 
-    def _redraw(self, event: tk.Event) -> None:
-        w, h = event.width, event.height
+        self.bind("<Configure>", self._sync)
+        self.inner.bind("<Configure>", self._sync)
+        if self.scrollable:
+            self.canvas.bind("<Enter>", lambda e: self._bind_wheel())
+            self.canvas.bind("<Leave>", lambda e: self._unbind_wheel())
+
+    def _sync(self, _event: Optional[tk.Event] = None) -> None:
+        if self.mode == "hug":
+            w = self.winfo_width()
+            h = self.inner.winfo_reqheight()
+            if w <= 1:
+                return
+            self.canvas.configure(width=w, height=h)
+            self.canvas.itemconfig(self._win, width=w, height=h)
+            self._draw_bg(w, h)
+        else:
+            w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
+            if w <= 1 or h <= 1:
+                return
+            if self.scrollable:
+                content_h = max(self.inner.winfo_reqheight(), h)
+                self.canvas.itemconfig(self._win, width=w)
+                self.canvas.configure(scrollregion=(0, 0, w, content_h))
+            else:
+                self.canvas.itemconfig(self._win, width=w, height=h)
+            self._draw_bg(w, h)
+
+    def _draw_bg(self, w: int, h: int) -> None:
         self.canvas.delete("bg")
         if w > 2 and h > 2:
             pts = rounded_rect_points(1, 1, w - 1, h - 1, self.radius)
             self.canvas.create_polygon(pts, smooth=True, fill=self.bg_color, outline=self.border_color, tags="bg")
             self.canvas.tag_lower("bg")
-        self.canvas.itemconfig(self._win, width=w, height=h)
+
+    def _bind_wheel(self) -> None:
+        self.canvas.bind_all("<MouseWheel>", self._on_wheel)
+        self.canvas.bind_all("<Button-4>", lambda e: self.canvas.yview_scroll(-3, "units"))
+        self.canvas.bind_all("<Button-5>", lambda e: self.canvas.yview_scroll(3, "units"))
+
+    def _unbind_wheel(self) -> None:
+        self.canvas.unbind_all("<MouseWheel>")
+        self.canvas.unbind_all("<Button-4>")
+        self.canvas.unbind_all("<Button-5>")
+
+    def _on_wheel(self, event: tk.Event) -> None:
+        self.canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
 
 
 class RoundButton(tk.Canvas):
