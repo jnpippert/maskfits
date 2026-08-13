@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fitsedit"
+version = "0.1.0"
+description = "A command-line tool for editing FITS file headers and data"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "astropy>=6.0",
+]
+
+[project.scripts]
+fitsedit = "fitsedit.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fitsedit"]
