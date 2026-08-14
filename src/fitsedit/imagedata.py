@@ -9,10 +9,14 @@ from astropy.visualization import AsinhStretch, LinearStretch, LogStretch, ZScal
 from astropy.wcs import WCS, FITSFixedWarning
 
 # Display stretch functions (map cut-normalized [0, 1] values through a non-linear
-# curve before colormapping), independent of the cut levels themselves.
+# curve before colormapping), independent of the cut levels themselves. astropy's
+# LogStretch default (a=1000) is tuned for raw high-dynamic-range data and badly
+# washes out a zscale-normalized [0, 1] range (background ends up ~85% gray); a=2
+# still compresses bright sources and lifts faint signal, without blowing out the
+# background.
 STRETCHES = {
     "linear": LinearStretch(),
-    "log": LogStretch(a=1000),
+    "log": LogStretch(a=2),
     "asinh": AsinhStretch(a=0.1),
 }
 STRETCH_NAMES = ["linear", "log", "asinh"]
@@ -71,5 +75,20 @@ def zscale_cuts(data: np.ndarray) -> tuple[float, float]:
     if finite.size == 0:
         return 0.0, 1.0
     lo, hi = ZScaleInterval().get_limits(finite)
+    lo, hi = float(lo), float(hi)
+    return (lo, hi) if hi > lo else minmax_cuts(data)
+
+
+# ds9-style percentile cut presets: e.g. "99.5%" shows the middle 99.5% of pixel
+# values, symmetrically excluding (100-p)/2 from each tail.
+PERCENTILE_PRESETS = [99.5, 99.0, 98.0, 95.0, 90.0]
+
+
+def percentile_cuts(data: np.ndarray, percent: float) -> tuple[float, float]:
+    finite = data[np.isfinite(data)]
+    if finite.size == 0:
+        return 0.0, 1.0
+    tail = (100.0 - percent) / 2.0
+    lo, hi = np.percentile(finite, [tail, 100.0 - tail])
     lo, hi = float(lo), float(hi)
     return (lo, hi) if hi > lo else minmax_cuts(data)

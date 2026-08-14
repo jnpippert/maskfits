@@ -11,7 +11,16 @@ from PIL import Image, ImageTk
 
 from fitsedit.colormaps import COLORMAP_LUTS, COLORMAP_NAMES, MASK_TINT_COLORS
 from fitsedit.cuts_dialog import ManualCutsWindow
-from fitsedit.imagedata import STRETCH_NAMES, STRETCHES, FitsImage, load_fits_image, minmax_cuts, zscale_cuts
+from fitsedit.imagedata import (
+    PERCENTILE_PRESETS,
+    STRETCH_NAMES,
+    STRETCHES,
+    FitsImage,
+    load_fits_image,
+    minmax_cuts,
+    percentile_cuts,
+    zscale_cuts,
+)
 from fitsedit.masking import (
     ellipse_mask,
     ellipse_polygon_points,
@@ -72,6 +81,9 @@ class Entry:
             return
         if stretch == "zscale":
             self.lowcut, self.highcut = zscale_cuts(self.image.data)
+        elif stretch.startswith("pct"):
+            percent = float(stretch[3:])
+            self.lowcut, self.highcut = percentile_cuts(self.image.data, percent)
         else:
             self.lowcut, self.highcut = minmax_cuts(self.image.data)
 
@@ -87,7 +99,7 @@ class FitsEditApp:
         self.index = 0
 
         self.stretch = "zscale"
-        self.scale_function = tk.StringVar(value="linear")
+        self.scale_function = tk.StringVar(value="log")
         self.colormap = tk.StringVar(value="Grayscale")
         self.mask_alpha = tk.IntVar(value=100)
         self.tool = tk.StringVar(value="circle")
@@ -151,6 +163,9 @@ class FitsEditApp:
         cuts_menu = tk.Menu(menubar, tearoff=0)
         cuts_menu.add_command(label="Min/Max", command=lambda: self.set_stretch("minmax"))
         cuts_menu.add_command(label="ZScale", command=lambda: self.set_stretch("zscale"))
+        cuts_menu.add_separator()
+        for percent in PERCENTILE_PRESETS:
+            cuts_menu.add_command(label=f"{percent}%", command=lambda p=percent: self.set_stretch(f"pct{p}"))
         cuts_menu.add_separator()
         cuts_menu.add_command(label="Manual...", command=self.open_manual_cuts)
         menubar.add_cascade(label="Cuts", menu=cuts_menu)
