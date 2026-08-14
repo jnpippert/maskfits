@@ -12,4 +12,5 @@ pip install -e .
 
 ```bash
 fitsedit image1 image2 ...
+fitsedit -m s -z 2 # starts in satellite mode and 2x zoom
 ```

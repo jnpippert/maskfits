@@ -24,10 +24,22 @@ STRETCH_NAMES = ["linear", "log", "asinh"]
 
 @dataclass
 class FitsImage:
+    """data/mask are in "working" orientation: transposed once at load time if the
+    original was portrait (taller than wide), so the longer side displays
+    horizontally. header/wcs always describe the ORIGINAL (untransposed) file -
+    rotated tells callers a transpose is needed to translate between the two
+    (WCS lookups, and detransposing the mask back before writing it out).
+
+    Everything else (rendering, coordinate math, ellipse angles, undo) just
+    operates on data/mask directly with no rotation-aware math at all: the one
+    transpose already happened here, once, instead of on every render/edit.
+    """
+
     path: str
     data: np.ndarray
     header: "fits.Header"
     wcs: WCS | None = None
+    rotated: bool = False
     mask: np.ndarray = field(default=None)  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
@@ -59,7 +71,13 @@ def load_fits_image(path: str) -> FitsImage:
         except Exception:
             wcs = None
 
-    return FitsImage(path=path, data=data.astype(np.float64), header=header, wcs=wcs)
+    data = data.astype(np.float64)
+    ny, nx = data.shape
+    rotated = ny > nx
+    if rotated:
+        data = np.ascontiguousarray(data.T)
+
+    return FitsImage(path=path, data=data, header=header, wcs=wcs, rotated=rotated)
 
 
 def minmax_cuts(data: np.ndarray) -> tuple[float, float]:

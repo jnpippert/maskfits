@@ -480,6 +480,19 @@ class FitsEditApp:
 
     # ------------------------------------------------------------- navigation
 
+    def _release_mask(self) -> None:
+        """Drop the current entry's in-memory mask before navigating away from it.
+
+        Each mask is a full-resolution array; for a multi-image session with large
+        FITS files, keeping every visited image's mask around adds up fast. Export
+        first if you want to keep it - navigating back re-loads the image (fast,
+        it stays cached) with a fresh empty mask.
+        """
+        image = self.image
+        if image is not None:
+            image.mask = np.zeros(image.data.shape, dtype=bool)
+        self._undo = None
+
     def open_files(self) -> None:
         paths = filedialog.askopenfilenames(
             title="Open FITS files",
@@ -487,6 +500,7 @@ class FitsEditApp:
         )
         if not paths:
             return
+        self._release_mask()
         if len(self.entries) == 1 and self.entries[0].path is None:
             self.entries = []
         start = len(self.entries)
@@ -496,11 +510,13 @@ class FitsEditApp:
 
     def prev_image(self) -> None:
         if self.index > 0:
+            self._release_mask()
             self.index -= 1
             self.load_current(reset_view=True)
 
     def next_image(self) -> None:
         if self.index < len(self.entries) - 1:
+            self._release_mask()
             self.index += 1
             self.load_current(reset_view=True)
 
@@ -551,9 +567,12 @@ class FitsEditApp:
         out_path = os.path.join(os.path.dirname(entry.path), f"mask_{stem}.fits")
         header = entry.image.header.copy()
         header["OBJECT"] = "MASK"
-        # entry.image.mask is True where the user painted a mask; exported convention
-        # is inverted (0 = masked/excluded, 1 = kept), matching typical good-pixel maps.
-        exported = (~entry.image.mask).astype("uint8")
+        # entry.image.mask is True where the user painted a mask, in WORKING (possibly
+        # load-time-transposed) orientation; detranspose back to match the ORIGINAL
+        # file/header before writing. Exported convention is inverted (0 = masked/
+        # excluded, 1 = kept), matching typical good-pixel maps.
+        mask = entry.image.mask.T if entry.image.rotated else entry.image.mask
+        exported = (~mask).astype("uint8")
         hdu = fits.PrimaryHDU(data=exported, header=header)
         hdu.writeto(out_path, overwrite=True)
         self.status.config(text=f"exported mask to {out_path}")
@@ -625,18 +644,29 @@ class FitsEditApp:
             return
 
         entry = self.entry
-        crop = data[y0:y1, x0:x1]
+        crop_h, crop_w = y1 - y0, x1 - x0
+        disp_w = max(int(round(crop_w * self.zoom)), 1)
+        disp_h = max(int(round(crop_h * self.zoom)), 1)
+
+        # When zoomed out, downsample toward display resolution BEFORE the
+        # per-pixel stretch/colormap work, instead of computing it at full
+        # source resolution and throwing most of it away in the final resize.
+        # For a huge image at fit-to-window zoom this is the difference between
+        # processing tens of millions of pixels and a couple million - the
+        # actual source of the sluggishness, not rotation-related overhead.
+        step_x = max(crop_w // max(disp_w, 1), 1)
+        step_y = max(crop_h // max(disp_h, 1), 1)
+        crop = data[y0:y1:step_y, x0:x1:step_x]
+        mask_crop = image.mask[y0:y1:step_y, x0:x1:step_x]
+
         span = max(entry.highcut - entry.lowcut, 1e-12)
         norm = np.clip((crop - entry.lowcut) / span, 0, 1)
         norm = np.nan_to_num(norm, nan=0.0)
         rgb = self._scale_and_color(norm)
 
-        mask_crop = image.mask[y0:y1, x0:x1]
         self._tint_masked(rgb, mask_crop)
 
         pil_img = Image.fromarray(rgb, mode="RGB")
-        disp_w = max(int(round((x1 - x0) * self.zoom)), 1)
-        disp_h = max(int(round((y1 - y0) * self.zoom)), 1)
         resample = Image.NEAREST if self.zoom >= 1 else Image.BOX
         pil_img = pil_img.resize((disp_w, disp_h), resample)
 
@@ -756,7 +786,10 @@ class FitsEditApp:
 
         if image is not None and image.wcs is not None:
             try:
-                sky = image.wcs.pixel_to_world(ix, iy)
+                # image.wcs describes the ORIGINAL (untransposed) file; ix/iy are in
+                # working (possibly load-time-transposed) space, so swap them back.
+                wcs_ix, wcs_iy = (iy, ix) if image.rotated else (ix, iy)
+                sky = image.wcs.pixel_to_world(wcs_ix, wcs_iy)
                 self.readout["RA"].config(text=sky.ra.to_string(unit="hourangle", sep=":", precision=2))
                 self.readout["DEC"].config(text=sky.dec.to_string(sep=":", precision=1, alwayssign=True))
             except Exception:
