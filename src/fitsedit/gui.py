@@ -381,7 +381,7 @@ class FitsEditApp:
         elif self.tool.get() == "circle":
             self._build_slider_row(self.tool_options_frame, "radius", self.radius, 1, MAX_SHAPE_SIZE, suffix=" px")
         else:
-            self._build_slider_row(self.tool_options_frame, "thickness", self.thickness, 1, 100, suffix=" px")
+            self._build_slider_row(self.tool_options_frame, "thickness", self.thickness, 1, MAX_SHAPE_SIZE, suffix=" px")
             style_frame = tk.Frame(self.tool_options_frame, bg=PANEL_BG)
             style_frame.pack(fill="x", padx=14, pady=(8, 4))
             tk.Label(style_frame, text="style", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).pack(anchor="w")
@@ -528,7 +528,7 @@ class FitsEditApp:
         if tool in ("circle", "ellipse"):
             var, hi = self.radius, MAX_SHAPE_SIZE
         elif tool == "line":
-            var, hi = self.thickness, 100
+            var, hi = self.thickness, MAX_SHAPE_SIZE
         else:
             return
         var.set(max(1, min(var.get() + direction * step, hi)))
