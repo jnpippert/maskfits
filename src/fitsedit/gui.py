@@ -252,7 +252,7 @@ class FitsEditApp:
         status_panel.pack(fill="x")
         self.status = tk.Label(status_panel.inner, text="new file", bg=PANEL_BG, fg=TEXT_DIM, anchor="w", font=FONT_SMALL)
         self.status.pack(side="left", fill="x", expand=True, padx=14, pady=8)
-        tk.Label(status_panel.inner, text="\u00A9 Jan-Niklas Pippert · built with Claude", bg=PANEL_BG, fg=TEXT_DIM,
+        tk.Label(status_panel.inner, text="\u00A9 Jan-Niklas Pippert 2026 · built with Claude", bg=PANEL_BG, fg=TEXT_DIM,
                  anchor="e", font=FONT_SMALL).pack(side="right", padx=14, pady=8)
 
     def _build_toolbar(self, parent: tk.Frame) -> None:
