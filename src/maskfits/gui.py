@@ -63,8 +63,7 @@ SCALE_OPTIONS = [(name, name.capitalize()) for name in STRETCH_NAMES]
 
 HOTKEY_ENTRIES = [
     ("Left-click / drag", "Paint mask"),
-    ("Middle-click / drag", "Erase mask"),
-    ("Right-click", "Redo"),
+    ("Right-click / drag", "Erase mask"),
     ("Ctrl + left-click drag", "Pan the view"),
     ("Mouse wheel", "Zoom in"),
     ("← / →", "Previous / next image"),
@@ -246,8 +245,7 @@ class MaskFitsApp:
             "maskfits",
             "maskfits IMAGE1 IMAGE2 ...\n\n"
             "Left-click / drag: paint mask with the current tool\n"
-            "Middle-click / drag: erase mask\n"
-            "Right-click: redo\n"
+            "Right-click / drag: erase mask\n"
             "Ctrl + left-click drag: pan the view\n"
             "Mouse wheel: zoom in (zoom 1 shows the full image; you can only zoom in from there)\n"
             "Ctrl+Z or U: undo last mask stroke\n"
