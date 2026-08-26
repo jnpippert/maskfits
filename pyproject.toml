@@ -15,6 +15,11 @@ dependencies = [
     "pillow>=10.0",
 ]
 
+[project.optional-dependencies]
+# Lets the macOS Dock icon be set at runtime (see maskfits.gui._apply_icon).
+# Without it the app still runs fine - the Dock just shows the generic Python icon.
+macos = ["pyobjc-framework-Cocoa"]
+
 [project.scripts]
 maskfits = "maskfits.cli:main"
 

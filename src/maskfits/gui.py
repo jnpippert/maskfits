@@ -1,6 +1,7 @@
 """Tkinter GUI: view FITS images and paint circular/elliptical or line (satellite trail) masks."""
 
 import os
+import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from typing import Optional
@@ -60,6 +61,50 @@ LINE_STYLES = [
 
 SCALE_OPTIONS = [(name, name.capitalize()) for name in STRETCH_NAMES]
 
+HOTKEY_ENTRIES = [
+    ("Left-click / drag", "Paint mask"),
+    ("Middle-click / drag", "Erase mask"),
+    ("Right-click", "Redo"),
+    ("Ctrl + left-click drag", "Pan the view"),
+    ("Mouse wheel", "Zoom in"),
+    ("← / →", "Previous / next image"),
+    ("Ctrl+Z / U", "Undo last mask stroke"),
+    ("Ctrl+Shift+Z / Y", "Redo"),
+    ("R", "Clear the whole mask"),
+    ("E / W", "Grow / shrink radius or thickness"),
+    ("Esc", "Cancel a pending line click"),
+]
+
+ICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "icon.png")
+
+
+def _apply_icon(root: tk.Tk) -> None:
+    """Set the window/taskbar icon cross-platform.
+
+    On Windows/Linux, iconphoto() is enough to change the taskbar icon too.
+    On macOS it only affects the window itself - a plain Python process's Dock
+    icon stays the generic Python icon otherwise - so also set it live via
+    PyObjC (AppKit) if available. That's an optional dependency: if it isn't
+    installed, the Dock icon is simply left as-is rather than erroring.
+    """
+    if not os.path.exists(ICON_PATH):
+        return
+    try:
+        icon_image = tk.PhotoImage(file=ICON_PATH)
+        root.iconphoto(True, icon_image)
+        root._icon_image_ref = icon_image  # keep a reference so Tk doesn't GC it
+    except tk.TclError:
+        pass
+
+    if sys.platform == "darwin":
+        try:
+            from AppKit import NSApplication, NSImage
+
+            ns_image = NSImage.alloc().initByReferencingFile_(ICON_PATH)
+            NSApplication.sharedApplication().setApplicationIconImage_(ns_image)
+        except Exception:
+            pass
+
 
 class Entry:
     """A single loaded (or not-yet-loaded) FITS file slot."""
@@ -94,6 +139,7 @@ class MaskFitsApp:
         self.root.title("maskfits")
         self.root.geometry("1400x900")
         self.root.configure(bg=APP_BG)
+        _apply_icon(self.root)
 
         self.entries: list[Entry] = [Entry(p) for p in paths] or [Entry(None)]
         self.index = 0
@@ -122,6 +168,7 @@ class MaskFitsApp:
         self._line_anchor_erase = False
         self._preview_item: Optional[int] = None
         self._undo: Optional[tuple[int, np.ndarray]] = None
+        self._redo: Optional[tuple[int, np.ndarray]] = None
 
         self._build_menu()
         self._build_layout()
@@ -135,6 +182,8 @@ class MaskFitsApp:
         self.root.bind("<Left>", lambda e: self.prev_image())
         self.root.bind("<Right>", lambda e: self.next_image())
         self.root.bind("<u>", self._on_undo)
+        self.root.bind("<Control-Shift-Z>", self._on_redo)
+        self.root.bind("<y>", self._on_redo)
         self.root.bind("<r>", lambda e: self.reset_mask())
         self.root.bind("<e>", lambda e: self._adjust_shape_size(1))
         self.root.bind("<w>", lambda e: self._adjust_shape_size(-1))
@@ -184,7 +233,10 @@ class MaskFitsApp:
 
         help_menu = tk.Menu(menubar, tearoff=0)
         help_menu.add_command(label="About", command=self._show_help)
-        help_menu.add_command(label="Keyboard Shortcuts", command=self._show_shortcuts)
+        help_menu.add_separator()
+        for keys, description in HOTKEY_ENTRIES:
+            help_menu.add_command(label=f"{keys}    {description}", state="disabled")
+
         menubar.add_cascade(label="Help", menu=help_menu)
 
         self.root.config(menu=menubar)
@@ -194,10 +246,12 @@ class MaskFitsApp:
             "maskfits",
             "maskfits IMAGE1 IMAGE2 ...\n\n"
             "Left-click / drag: paint mask with the current tool\n"
-            "Right-click / drag: erase mask\n"
-            "Middle-click drag: pan the view\n"
+            "Middle-click / drag: erase mask\n"
+            "Right-click: redo\n"
+            "Ctrl + left-click drag: pan the view\n"
             "Mouse wheel: zoom in (zoom 1 shows the full image; you can only zoom in from there)\n"
             "Ctrl+Z or U: undo last mask stroke\n"
+            "Ctrl+Shift+Z or Y: redo\n"
             "R: clear the whole mask\n"
             "← / →: previous / next image\n"
             "E / W: grow / shrink the active tool's radius or thickness\n"
@@ -211,20 +265,6 @@ class MaskFitsApp:
             "  Line    - click two points; the trail extends to both borders",
         )
 
-    def _show_shortcuts(self) -> None:
-        messagebox.showinfo(
-            "Keyboard Shortcuts",
-            "← / →       previous / next image\n"
-            "Ctrl+Z or U  undo last mask stroke\n"
-            "R           clear the whole mask\n"
-            "E / W       grow / shrink the active tool's radius or thickness\n"
-            "Esc         cancel a pending line click\n\n"
-            "Mouse:\n"
-            "Left-click / drag    paint mask with the current tool\n"
-            "Right-click / drag   erase mask\n"
-            "Middle-click drag    pan the view\n"
-            "Mouse wheel          zoom in (zoom 1 shows the full image)",
-        )
 
     # -------------------------------------------------------------- layout
 
@@ -253,11 +293,12 @@ class MaskFitsApp:
         self.canvas.bind("<Motion>", self._on_motion)
         self.canvas.bind("<ButtonPress-1>", lambda e: self._on_button(e, erase=False))
         self.canvas.bind("<B1-Motion>", lambda e: self._on_drag(e, erase=False))
-        self.canvas.bind("<ButtonPress-3>", lambda e: self._on_button(e, erase=True))
-        self.canvas.bind("<B3-Motion>", lambda e: self._on_drag(e, erase=True))
-        self.canvas.bind("<ButtonPress-2>", self._on_pan_start)
-        self.canvas.bind("<B2-Motion>", self._on_pan_drag)
-        self.canvas.bind("<ButtonRelease-2>", lambda e: setattr(self, "_pan_drag", None))
+        self.canvas.bind("<ButtonRelease-1>", lambda e: setattr(self, "_pan_drag", None))
+        self.canvas.bind("<ButtonPress-3>", lambda e: self._on_redo())
+        self.canvas.bind("<ButtonPress-2>", lambda e: self._on_button(e, erase=True))
+        self.canvas.bind("<B2-Motion>", lambda e: self._on_drag(e, erase=True))
+        self.canvas.bind("<Control-Button-1>", self._on_pan_start)
+        self.canvas.bind("<Control-B1-Motion>", self._on_pan_drag)
         self.canvas.bind("<MouseWheel>", self._on_wheel)
         self.canvas.bind("<Button-4>", lambda e: self._zoom_at(e.x, e.y, ZOOM_STEP))
         self.canvas.bind("<Button-5>", lambda e: self._zoom_at(e.x, e.y, 1 / ZOOM_STEP))
@@ -508,6 +549,7 @@ class MaskFitsApp:
         if image is not None:
             image.mask = np.zeros(image.data.shape, dtype=bool)
         self._undo = None
+        self._redo = None
 
     def open_files(self) -> None:
         paths = filedialog.askopenfilenames(
@@ -599,14 +641,29 @@ class MaskFitsApp:
         if self.image is None:
             return
         self._undo = (self.index, self.image.mask.copy())
+        self._redo = None  # a fresh edit invalidates any pending redo
 
     def _on_undo(self, _event: Optional[tk.Event] = None) -> None:
         if self._undo is None:
             return
         idx, mask = self._undo
         if idx < len(self.entries) and self.entries[idx].image is not None:
+            current = self.entries[idx].image.mask.copy()
             self.entries[idx].image.mask = mask
+            self._redo = (idx, current)
             self._undo = None
+            if idx == self.index:
+                self.render()
+
+    def _on_redo(self, _event: Optional[tk.Event] = None) -> None:
+        if self._redo is None:
+            return
+        idx, mask = self._redo
+        if idx < len(self.entries) and self.entries[idx].image is not None:
+            current = self.entries[idx].image.mask.copy()
+            self.entries[idx].image.mask = mask
+            self._undo = (idx, current)
+            self._redo = None
             if idx == self.index:
                 self.render()
 
