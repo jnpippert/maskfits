@@ -1,4 +1,4 @@
-"""Dark color palette and fonts shared across the fitsedit GUI."""
+"""Dark color palette and fonts shared across the maskfits GUI."""
 
 APP_BG = "#141415"
 PANEL_BG = "#1d1d1f"

@@ -1,7 +1,7 @@
 import numpy as np
 from astropy.io import fits
 
-from fitsedit.cli import main
+from maskfits.cli import main
 
 
 def make_fits(path):

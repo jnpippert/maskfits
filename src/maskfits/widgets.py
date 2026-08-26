@@ -1,10 +1,10 @@
-"""Small dark-themed, rounded-corner Tkinter widgets used by the fitsedit GUI."""
+"""Small dark-themed, rounded-corner Tkinter widgets used by the maskfits GUI."""
 
 import tkinter as tk
 import tkinter.font as tkfont
 from typing import Callable, Optional
 
-from fitsedit.theme import (
+from maskfits.theme import (
     ACCENT,
     ACCENT_HOVER,
     BUTTON_BG,

@@ -1,4 +1,4 @@
-# fitsedit
+# maskfits
 
 A command-line tool for masking FITS images.
 
@@ -7,18 +7,18 @@ A command-line tool for masking FITS images.
 Clone the repo, then (recommended: inside a virtual environment) install it:
 
 ```bash
-git clone https://github.com/jnpippert/fitsedit.git
-cd fitsedit
+git clone https://github.com/jnpippert/maskfits.git
+cd maskfits
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 ```
 
-This puts the `fitsedit` command on your PATH.
+This puts the `maskfits` command on your PATH.
 
 ## Usage
 
 ```bash
-fitsedit image1 image2 ...
-fitsedit -m s -z 2 # starts in satellite mode and 2x zoom
+maskfits image1 image2 ...
+maskfits -m s -z 2 # starts in satellite mode and 2x zoom
 ```

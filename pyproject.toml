@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "fitsedit"
+name = "maskfits"
 version = "1.0.0"
 description = "A command-line tool for editing FITS file headers and data"
 readme = "README.md"
@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-fitsedit = "fitsedit.cli:main"
+maskfits = "maskfits.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/fitsedit"]
+packages = ["src/maskfits"]

@@ -4,7 +4,7 @@ import colorsys
 
 import numpy as np
 
-from fitsedit.theme import ACCENT, hex_to_rgb
+from maskfits.theme import ACCENT, hex_to_rgb
 
 # (t, r, g, b) control points, t and colors in [0, 1]. Viridis/Inferno are close
 # perceptual approximations (a handful of anchor points interpolated), not exact

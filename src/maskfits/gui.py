@@ -9,9 +9,9 @@ import numpy as np
 from astropy.io import fits
 from PIL import Image, ImageTk
 
-from fitsedit.colormaps import COLORMAP_LUTS, COLORMAP_NAMES, MASK_TINT_COLORS
-from fitsedit.cuts_dialog import ManualCutsWindow
-from fitsedit.imagedata import (
+from maskfits.colormaps import COLORMAP_LUTS, COLORMAP_NAMES, MASK_TINT_COLORS
+from maskfits.cuts_dialog import ManualCutsWindow
+from maskfits.imagedata import (
     PERCENTILE_PRESETS,
     STRETCH_NAMES,
     STRETCHES,
@@ -21,14 +21,14 @@ from fitsedit.imagedata import (
     percentile_cuts,
     zscale_cuts,
 )
-from fitsedit.masking import (
+from maskfits.masking import (
     ellipse_mask,
     ellipse_polygon_points,
     extend_line_to_borders,
     extend_ray_to_border,
     line_mask,
 )
-from fitsedit.theme import (
+from maskfits.theme import (
     ACCENT,
     APP_BG,
     CANVAS_BG,
@@ -40,7 +40,7 @@ from fitsedit.theme import (
     TEXT,
     TEXT_DIM,
 )
-from fitsedit.widgets import RoundButton, RoundedPanel, RoundSlider, SegmentedControl
+from maskfits.widgets import RoundButton, RoundedPanel, RoundSlider, SegmentedControl
 
 MAG_SIZE = 31
 MAG_BLOCK = 6
@@ -88,10 +88,10 @@ class Entry:
             self.lowcut, self.highcut = minmax_cuts(self.image.data)
 
 
-class FitsEditApp:
+class MaskFitsApp:
     def __init__(self, root: tk.Tk, paths: list[str]):
         self.root = root
-        self.root.title("fitsedit")
+        self.root.title("maskfits")
         self.root.geometry("1400x900")
         self.root.configure(bg=APP_BG)
 
@@ -190,8 +190,8 @@ class FitsEditApp:
 
     def _show_help(self) -> None:
         messagebox.showinfo(
-            "fitsedit",
-            "fitsedit IMAGE1 IMAGE2 ...\n\n"
+            "maskfits",
+            "maskfits IMAGE1 IMAGE2 ...\n\n"
             "Left-click / drag: paint mask with the current tool\n"
             "Right-click / drag: erase mask\n"
             "Middle-click drag: pan the view\n"
@@ -437,7 +437,7 @@ class FitsEditApp:
         try:
             entry.ensure_loaded(self.stretch)
         except Exception as exc:  # noqa: BLE001 - surface any load failure to the user
-            messagebox.showerror("fitsedit", f"Could not load {entry.path}:\n{exc}")
+            messagebox.showerror("maskfits", f"Could not load {entry.path}:\n{exc}")
             entry.path = None
 
         if entry.image is not None and reset_view:
@@ -467,7 +467,7 @@ class FitsEditApp:
 
     def open_manual_cuts(self) -> None:
         if self.image is None:
-            messagebox.showwarning("fitsedit", "No image loaded.")
+            messagebox.showwarning("maskfits", "No image loaded.")
             return
         ManualCutsWindow(self.root, self.image.data, self.entry.lowcut, self.entry.highcut, self._apply_manual_cuts)
 
@@ -557,7 +557,7 @@ class FitsEditApp:
     def export_mask(self) -> None:
         entry = self.entry
         if entry.image is None or entry.path is None:
-            messagebox.showwarning("fitsedit", "No image loaded to export a mask for.")
+            messagebox.showwarning("maskfits", "No image loaded to export a mask for.")
             return
         stem = os.path.basename(entry.path)
         if stem.endswith(".fits.gz"):
@@ -932,7 +932,7 @@ MODE_FLAGS = {"s": "line", "e": "ellipse", "c": "circle"}
 
 def run_gui(paths: list[str], zoom: Optional[float] = None, mode: Optional[str] = None) -> int:
     root = tk.Tk()
-    app = FitsEditApp(root, paths)
+    app = MaskFitsApp(root, paths)
     if mode is not None:
         app.tool.set(MODE_FLAGS[mode])
     if zoom is not None:

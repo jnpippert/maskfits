@@ -5,7 +5,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from fitsedit.theme import (
+from maskfits.theme import (
     ACCENT,
     APP_BG,
     BUTTON_BG,
@@ -18,7 +18,7 @@ from fitsedit.theme import (
     TEXT,
     TEXT_DIM,
 )
-from fitsedit.widgets import RoundButton
+from maskfits.widgets import RoundButton
 
 HIST_BINS = 80
 CANVAS_W, CANVAS_H = 520, 240

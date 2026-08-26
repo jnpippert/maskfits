@@ -1,6 +1,6 @@
 import numpy as np
 
-from fitsedit.masking import (
+from maskfits.masking import (
     ellipse_mask,
     extend_line_to_borders,
     extend_ray_to_border,

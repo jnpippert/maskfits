@@ -1,4 +1,4 @@
-"""Command-line interface for fitsedit."""
+"""Command-line interface for maskfits."""
 
 import argparse
 import sys
@@ -31,7 +31,7 @@ def cmd_set(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="fitsedit", description="Edit FITS file headers and data")
+    parser = argparse.ArgumentParser(prog="maskfits", description="Edit FITS file headers and data")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     show = subparsers.add_parser("show", help="Show FITS file structure and header")
@@ -59,7 +59,7 @@ SUBCOMMANDS = {"show", "get", "set"}
 
 
 def build_gui_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="fitsedit", description="Open the fitsedit mask-editor GUI")
+    parser = argparse.ArgumentParser(prog="maskfits", description="Open the maskfits mask-editor GUI")
     parser.add_argument("files", nargs="*", help="FITS files to open")
     parser.add_argument("-z", "--zoom", type=float, default=None,
                          help="initial zoom multiplier relative to fit-to-window (e.g. 2 for 2x)")
@@ -77,8 +77,8 @@ def main(argv: list[str] | None = None) -> int:
         return args.func(args)
 
     if argv and argv[0] in {"-h", "--help"}:
-        print("usage: fitsedit [-z ZOOM] [-m {s,e,c}] [IMAGE ...]  open the mask-editor GUI")
-        print("       fitsedit {show,get,set} ...                 header inspection/editing on the command line")
+        print("usage: maskfits [-z ZOOM] [-m {s,e,c}] [IMAGE ...]  open the mask-editor GUI")
+        print("       maskfits {show,get,set} ...                 header inspection/editing on the command line")
         print()
         print("  -z, --zoom ZOOM     initial zoom multiplier relative to fit-to-window (e.g. 2 for 2x)")
         print("  -m, --mode {s,e,c}  initial mask mode: s=satellite, e=ellipse, c=circle")
@@ -86,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
 
     gui_args = build_gui_parser().parse_args(argv)
 
-    from fitsedit.gui import run_gui
+    from maskfits.gui import run_gui
 
     return run_gui(gui_args.files, zoom=gui_args.zoom, mode=gui_args.mode)
 
