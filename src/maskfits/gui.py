@@ -184,6 +184,7 @@ class MaskFitsApp:
 
         help_menu = tk.Menu(menubar, tearoff=0)
         help_menu.add_command(label="About", command=self._show_help)
+        help_menu.add_command(label="Keyboard Shortcuts", command=self._show_shortcuts)
         menubar.add_cascade(label="Help", menu=help_menu)
 
         self.root.config(menu=menubar)
@@ -208,6 +209,21 @@ class MaskFitsApp:
             "  Arrow   - click start, click a second point; the trail extends\n"
             "            past it to the image border\n"
             "  Line    - click two points; the trail extends to both borders",
+        )
+
+    def _show_shortcuts(self) -> None:
+        messagebox.showinfo(
+            "Keyboard Shortcuts",
+            "← / →       previous / next image\n"
+            "Ctrl+Z or U  undo last mask stroke\n"
+            "R           clear the whole mask\n"
+            "E / W       grow / shrink the active tool's radius or thickness\n"
+            "Esc         cancel a pending line click\n\n"
+            "Mouse:\n"
+            "Left-click / drag    paint mask with the current tool\n"
+            "Right-click / drag   erase mask\n"
+            "Middle-click drag    pan the view\n"
+            "Mouse wheel          zoom in (zoom 1 shows the full image)",
         )
 
     # -------------------------------------------------------------- layout
