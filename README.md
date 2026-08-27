@@ -9,8 +9,8 @@ Clone the repo, then (recommended: inside a virtual environment) install it:
 ```bash
 git clone https://github.com/jnpippert/maskfits.git
 cd maskfits
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv .venv # optional
+source .venv/bin/activate # optional 
 pip install -e .
 ```
 
