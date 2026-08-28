@@ -894,7 +894,9 @@ class MaskFitsApp:
         ex0, ey0, ex1, ey1 = self._extend_for_style(x0, y0, x1, y1)
         sx0, sy0 = self.img_to_canvas(ex0, ey0)
         sx1, sy1 = self.img_to_canvas(ex1, ey1)
-        self.canvas.create_line(sx0, sy0, sx1, sy1, fill=TEXT_DIM, width=2, dash=(4, 3), tags="line_preview")
+        tint = MASK_TINT_COLORS[self.colormap.get()]
+        tint_hex = "#%02x%02x%02x" % tint
+        self.canvas.create_line(sx0, sy0, sx1, sy1, fill=tint_hex, width=2, dash=(4, 3), tags="line_preview")
         ax, ay = self.img_to_canvas(x0, y0)
         self.canvas.create_oval(ax - 4, ay - 4, ax + 4, ay + 4, fill=ACCENT, outline="", tags="line_preview")
 
