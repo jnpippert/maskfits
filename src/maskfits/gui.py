@@ -10,7 +10,7 @@ import numpy as np
 from astropy.io import fits
 from PIL import Image, ImageTk
 
-from maskfits.colormaps import COLORMAP_LUTS, COLORMAP_NAMES, MASK_TINT_COLORS
+from maskfits.colormaps import COLORMAP_LUTS, COLORMAP_NAMES, mask_tint_for
 from maskfits.cuts_dialog import ManualCutsWindow
 from maskfits.imagedata import (
     PERCENTILE_PRESETS,
@@ -32,6 +32,7 @@ from maskfits.masking import (
 from maskfits.theme import (
     ACCENT,
     APP_BG,
+    BUTTON_BG,
     CANVAS_BG,
     FONT,
     FONT_SMALL,
@@ -48,6 +49,7 @@ MAG_BLOCK = 6
 PAN_W = PAN_H = MAG_SIZE * MAG_BLOCK
 PREVIEW_W, PREVIEW_H = 210, 170
 MAX_SHAPE_SIZE = 500
+RADIUS_MIN = 0.5  # small enough to mask a single pixel
 SIDEBAR_W = 240
 ZOOM_STEP = 1.25
 ZOOM_MULT_MIN = 1.0
@@ -146,11 +148,12 @@ class MaskFitsApp:
         self.stretch = "zscale"
         self.scale_function = tk.StringVar(value="log")
         self.colormap = tk.StringVar(value="Grayscale")
+        self.invert_colormap = tk.BooleanVar(value=False)
         self.mask_alpha = tk.IntVar(value=100)
         self.tool = tk.StringVar(value="circle")
         self.ellipticity = tk.IntVar(value=0)
         self.angle = tk.IntVar(value=0)
-        self.radius = tk.IntVar(value=40)
+        self.radius = tk.DoubleVar(value=40.0)
         self.thickness = tk.IntVar(value=15)
         self.line_style = tk.StringVar(value="segment")
 
@@ -176,6 +179,7 @@ class MaskFitsApp:
         self.line_style.trace_add("write", lambda *_: self._cancel_pending_line())
         self.scale_function.trace_add("write", lambda *_: self.render())
         self.colormap.trace_add("write", lambda *_: self.render())
+        self.invert_colormap.trace_add("write", lambda *_: self.render())
         self.root.bind("<Control-z>", self._on_undo)
         self.root.bind("<Escape>", lambda e: self._cancel_pending_line())
         self.root.bind("<Left>", lambda e: self.prev_image())
@@ -228,6 +232,8 @@ class MaskFitsApp:
         color_menu = tk.Menu(menubar, tearoff=0)
         for name in COLORMAP_NAMES:
             color_menu.add_radiobutton(label=name, variable=self.colormap, value=name)
+        color_menu.add_separator()
+        color_menu.add_checkbutton(label="Invert Colormap", variable=self.invert_colormap)
         menubar.add_cascade(label="Color", menu=color_menu)
 
         help_menu = tk.Menu(menubar, tearoff=0)
@@ -363,12 +369,24 @@ class MaskFitsApp:
 
         cuts = tk.Frame(parent, bg=PANEL_BG)
         cuts.pack(fill="x", padx=14, pady=10)
+        self.lowcut_var = tk.StringVar(value="0")
+        self.highcut_var = tk.StringVar(value="1")
+
         tk.Label(cuts, text="lowcut:", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).grid(row=0, column=0, sticky="w")
-        self.lowcut_label = tk.Label(cuts, text="0", bg=PANEL_BG, fg=TEXT, font=FONT_SMALL)
-        self.lowcut_label.grid(row=0, column=1, sticky="w", padx=(8, 14))
+        lowcut_entry = tk.Entry(cuts, textvariable=self.lowcut_var, width=8, justify="center", bg=BUTTON_BG,
+                                 fg=TEXT, insertbackground=TEXT, relief="flat", highlightthickness=1,
+                                 highlightbackground=PANEL_BORDER, highlightcolor=ACCENT, font=FONT_SMALL)
+        lowcut_entry.grid(row=0, column=1, sticky="w", padx=(8, 14))
+        lowcut_entry.bind("<Return>", self._apply_lowcut_entry)
+        lowcut_entry.bind("<FocusOut>", self._apply_lowcut_entry)
+
         tk.Label(cuts, text="highcut:", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).grid(row=0, column=2, sticky="w")
-        self.highcut_label = tk.Label(cuts, text="1", bg=PANEL_BG, fg=TEXT, font=FONT_SMALL)
-        self.highcut_label.grid(row=0, column=3, sticky="w", padx=(8, 0))
+        highcut_entry = tk.Entry(cuts, textvariable=self.highcut_var, width=8, justify="center", bg=BUTTON_BG,
+                                  fg=TEXT, insertbackground=TEXT, relief="flat", highlightthickness=1,
+                                  highlightbackground=PANEL_BORDER, highlightcolor=ACCENT, font=FONT_SMALL)
+        highcut_entry.grid(row=0, column=3, sticky="w", padx=(8, 0))
+        highcut_entry.bind("<Return>", self._apply_highcut_entry)
+        highcut_entry.bind("<FocusOut>", self._apply_highcut_entry)
 
         alpha_frame = tk.Frame(parent, bg=PANEL_BG)
         alpha_frame.pack(fill="x", padx=14, pady=(0, 10))
@@ -409,20 +427,54 @@ class MaskFitsApp:
     def _divider(self, parent: tk.Frame) -> None:
         tk.Frame(parent, bg=PANEL_BORDER, height=1).pack(fill="x", padx=14)
 
-    def _build_slider_row(self, parent: tk.Frame, name: str, var: tk.IntVar, lo: int, hi: int,
+    @staticmethod
+    def _fmt_slider_value(value: float) -> str:
+        return str(int(value)) if float(value).is_integer() else f"{value:g}"
+
+    def _build_slider_row(self, parent: tk.Frame, name: str, var: tk.Variable, lo: float, hi: float,
                            suffix: str = "") -> None:
-        label = tk.Label(parent, bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL, anchor="w")
-        label.pack(fill="x", padx=14, pady=(6, 2))
+        # Name (static, plus a unit hint) on the left; the value itself lives only
+        # in the text box on the right - showing it in both the label and the box
+        # would just be redundant. Slider goes on the row below.
+        row = tk.Frame(parent, bg=PANEL_BG)
+        row.pack(fill="x", padx=14, pady=(6, 2))
 
-        def update_label(*_args: object) -> None:
-            if label.winfo_exists():
-                label.config(text=f"{name}: {var.get()}{suffix}")
+        unit_hint = f" ({suffix.strip()})" if suffix.strip() else ""
+        tk.Label(row, text=f"{name}{unit_hint}:", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL, anchor="w").pack(
+            side="left")
 
-        trace_id = var.trace_add("write", update_label)
-        label.bind("<Destroy>", lambda e: var.trace_remove("write", trace_id), add="+")
-        update_label()
+        # A text box for typing an exact value - handy for precise sizes the
+        # slider itself is too coarse to hit reliably (e.g. a 0.5px radius to
+        # mask a single pixel).
+        entry_str = tk.StringVar(value=self._fmt_slider_value(var.get()))
 
-        RoundSlider(parent, var, lo, hi, width=SIDEBAR_W - 40, height=22, outer_bg=PANEL_BG).pack(padx=14, pady=(0, 4))
+        def sync_entry(*_args: object) -> None:
+            if entry.winfo_exists():
+                entry_str.set(self._fmt_slider_value(var.get()))
+
+        entry_trace_id = var.trace_add("write", sync_entry)
+
+        def apply_entry(_event: Optional[tk.Event] = None) -> None:
+            try:
+                value = float(entry_str.get())
+            except ValueError:
+                entry_str.set(self._fmt_slider_value(var.get()))
+                return
+            value = max(lo, min(value, hi))
+            if isinstance(var, tk.IntVar):
+                value = int(round(value))
+            var.set(value)
+            entry_str.set(self._fmt_slider_value(var.get()))
+
+        entry = tk.Entry(row, textvariable=entry_str, width=6, justify="center", bg=BUTTON_BG, fg=TEXT,
+                          insertbackground=TEXT, relief="flat", highlightthickness=1,
+                          highlightbackground=PANEL_BORDER, highlightcolor=ACCENT, font=FONT_SMALL)
+        entry.pack(side="right")
+        entry.bind("<Return>", apply_entry)
+        entry.bind("<FocusOut>", apply_entry)
+        entry.bind("<Destroy>", lambda e: var.trace_remove("write", entry_trace_id), add="+")
+
+        RoundSlider(parent, var, lo, hi, width=SIDEBAR_W - 40, height=22, outer_bg=PANEL_BG).pack(padx=14, pady=(0, 8))
 
     def _rebuild_tool_options(self) -> None:
         for child in list(self.tool_options_frame.winfo_children()):
@@ -430,11 +482,11 @@ class MaskFitsApp:
         self._cancel_pending_line()
 
         if self.tool.get() == "ellipse":
-            self._build_slider_row(self.tool_options_frame, "radius", self.radius, 1, MAX_SHAPE_SIZE, suffix=" px")
+            self._build_slider_row(self.tool_options_frame, "radius", self.radius, RADIUS_MIN, MAX_SHAPE_SIZE, suffix=" px")
             self._build_slider_row(self.tool_options_frame, "ellipticity", self.ellipticity, 0, 90, suffix="%")
             self._build_slider_row(self.tool_options_frame, "angle", self.angle, 0, 180, suffix="°")
         elif self.tool.get() == "circle":
-            self._build_slider_row(self.tool_options_frame, "radius", self.radius, 1, MAX_SHAPE_SIZE, suffix=" px")
+            self._build_slider_row(self.tool_options_frame, "radius", self.radius, RADIUS_MIN, MAX_SHAPE_SIZE, suffix=" px")
         else:
             self._build_slider_row(self.tool_options_frame, "thickness", self.thickness, 1, MAX_SHAPE_SIZE, suffix=" px")
             style_frame = tk.Frame(self.tool_options_frame, bg=PANEL_BG)
@@ -500,8 +552,7 @@ class MaskFitsApp:
 
         self.filename_label.config(text=os.path.basename(entry.path) if entry.path else "noname")
         self.counter_label.config(text=f"{self.index + 1}/{len(self.entries)}")
-        self.lowcut_label.config(text=self._fmt(entry.lowcut))
-        self.highcut_label.config(text=self._fmt(entry.highcut))
+        self._update_cuts_display()
         self.status.config(text=f"loaded {entry.path}" if entry.path else "new file")
 
         self.render()
@@ -510,11 +561,36 @@ class MaskFitsApp:
     def _fmt(value: float) -> str:
         return f"{value:.4g}"
 
+    def _update_cuts_display(self) -> None:
+        self.lowcut_var.set(self._fmt(self.entry.lowcut))
+        self.highcut_var.set(self._fmt(self.entry.highcut))
+
+    def _apply_lowcut_entry(self, _event: Optional[tk.Event] = None) -> None:
+        entry = self.entry
+        try:
+            value = min(float(self.lowcut_var.get()), entry.highcut)
+        except ValueError:
+            self._update_cuts_display()
+            return
+        entry.lowcut = value
+        self._update_cuts_display()
+        self.render()
+
+    def _apply_highcut_entry(self, _event: Optional[tk.Event] = None) -> None:
+        entry = self.entry
+        try:
+            value = max(float(self.highcut_var.get()), entry.lowcut)
+        except ValueError:
+            self._update_cuts_display()
+            return
+        entry.highcut = value
+        self._update_cuts_display()
+        self.render()
+
     def set_stretch(self, stretch: str) -> None:
         self.stretch = stretch
         self.entry.apply_stretch(stretch)
-        self.lowcut_label.config(text=self._fmt(self.entry.lowcut))
-        self.highcut_label.config(text=self._fmt(self.entry.highcut))
+        self._update_cuts_display()
         self.render()
 
     def reset_scale(self) -> None:
@@ -529,8 +605,7 @@ class MaskFitsApp:
     def _apply_manual_cuts(self, lowcut: float, highcut: float) -> None:
         self.entry.lowcut = lowcut
         self.entry.highcut = highcut
-        self.lowcut_label.config(text=self._fmt(lowcut))
-        self.highcut_label.config(text=self._fmt(highcut))
+        self._update_cuts_display()
         self.render()
 
     # ------------------------------------------------------------- navigation
@@ -598,12 +673,12 @@ class MaskFitsApp:
         step = 5
         tool = self.tool.get()
         if tool in ("circle", "ellipse"):
-            var, hi = self.radius, MAX_SHAPE_SIZE
+            var, lo, hi = self.radius, RADIUS_MIN, MAX_SHAPE_SIZE
         elif tool == "line":
-            var, hi = self.thickness, MAX_SHAPE_SIZE
+            var, lo, hi = self.thickness, 1, MAX_SHAPE_SIZE
         else:
             return
-        var.set(max(1, min(var.get() + direction * step, hi)))
+        var.set(max(lo, min(var.get() + direction * step, hi)))
         if tool in ("ellipse", "circle") and self._cursor_img_pos is not None:
             cx, cy = self.img_to_canvas(*self._cursor_img_pos)
             self._update_shape_preview(cx, cy)
@@ -746,20 +821,31 @@ class MaskFitsApp:
         self.canvas.create_image(cx0, cy0, image=self._photo, anchor="nw", tags="img")
         self.canvas.tag_lower("img")
 
+    def _active_lut(self) -> np.ndarray:
+        """The current colormap's LUT, reversed if Invert Colormap is on."""
+        lut = COLORMAP_LUTS[self.colormap.get()]
+        return lut[::-1] if self.invert_colormap.get() else lut
+
     def _scale_and_color(self, norm: np.ndarray) -> np.ndarray:
         """Map cut-normalized [0, 1] values (no NaN) to a uint8 RGB array via the
         current scale function (stretch curve) and colormap."""
         stretch = STRETCHES[self.scale_function.get()]
         stretched = np.clip(np.asarray(stretch(norm)), 0.0, 1.0)
         gray = (stretched * 255).astype(np.uint8)
-        return COLORMAP_LUTS[self.colormap.get()][gray]
+        return self._active_lut()[gray]
+
+    def _mask_tint_hex(self) -> str:
+        """The current (possibly inverted) colormap's mask-tint color as a
+        Tk-friendly hex string, for canvas outlines/lines that should visually
+        match the actual mask."""
+        return "#%02x%02x%02x" % mask_tint_for(self.colormap.get(), self._active_lut())
 
     def _tint_masked(self, rgb: np.ndarray, mask_crop: np.ndarray) -> None:
         """Blend the current colormap's complementary tint into masked pixels, in place."""
         if not mask_crop.any():
             return
         alpha = self.mask_alpha.get() / 100.0
-        tint = MASK_TINT_COLORS[self.colormap.get()]
+        tint = mask_tint_for(self.colormap.get(), self._active_lut())
         for ch, tint_v in enumerate(tint):
             channel = rgb[..., ch].astype(np.float32)
             blended = channel * (1 - alpha) + tint_v * alpha
@@ -883,7 +969,7 @@ class MaskFitsApp:
             return
         a, b, angle = self._current_round_params()
         pts = ellipse_polygon_points(cx, cy, a * self.zoom, b * self.zoom, angle)
-        self._preview_item = self.canvas.create_polygon(pts, outline=TEXT_DIM, fill="", width=2)
+        self._preview_item = self.canvas.create_polygon(pts, outline=self._mask_tint_hex(), fill="", width=2)
 
     def _update_click_line_preview(self, cx: float, cy: float) -> None:
         self.canvas.delete("line_preview")
@@ -894,9 +980,7 @@ class MaskFitsApp:
         ex0, ey0, ex1, ey1 = self._extend_for_style(x0, y0, x1, y1)
         sx0, sy0 = self.img_to_canvas(ex0, ey0)
         sx1, sy1 = self.img_to_canvas(ex1, ey1)
-        tint = MASK_TINT_COLORS[self.colormap.get()]
-        tint_hex = "#%02x%02x%02x" % tint
-        self.canvas.create_line(sx0, sy0, sx1, sy1, fill=tint_hex, width=2, dash=(4, 3), tags="line_preview")
+        self.canvas.create_line(sx0, sy0, sx1, sy1, fill=self._mask_tint_hex(), width=2, dash=(4, 3), tags="line_preview")
         ax, ay = self.img_to_canvas(x0, y0)
         self.canvas.create_oval(ax - 4, ay - 4, ax + 4, ay + 4, fill=ACCENT, outline="", tags="line_preview")
 
