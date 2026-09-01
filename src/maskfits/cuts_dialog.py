@@ -27,8 +27,6 @@ PAD_LEFT = 48
 HANDLE_H = 8
 SAMPLE_TARGET = 500_000
 SELECTION_TINT = "#2c2620"
-LO_COLOR = DANGER
-HI_COLOR = GREEN
 
 
 class ManualCutsWindow(tk.Toplevel):
@@ -107,7 +105,7 @@ class ManualCutsWindow(tk.Toplevel):
         tk.Label(entries, text="lower cut:", bg=APP_BG, fg=TEXT_DIM, font=FONT_SMALL).grid(row=0, column=0, sticky="w")
         lo_entry = tk.Entry(entries, textvariable=self.lo_str, width=14, bg=BUTTON_BG, fg=TEXT,
                              insertbackground=TEXT, relief="flat", highlightthickness=1,
-                             highlightbackground=PANEL_BORDER, highlightcolor=LO_COLOR)
+                             highlightbackground=PANEL_BORDER, highlightcolor=DANGER)
         lo_entry.grid(row=0, column=1, padx=(8, 24))
         lo_entry.bind("<Return>", self._on_lo_entry)
         lo_entry.bind("<FocusOut>", self._on_lo_entry)
@@ -115,7 +113,7 @@ class ManualCutsWindow(tk.Toplevel):
         tk.Label(entries, text="upper cut:", bg=APP_BG, fg=TEXT_DIM, font=FONT_SMALL).grid(row=0, column=2, sticky="w")
         hi_entry = tk.Entry(entries, textvariable=self.hi_str, width=14, bg=BUTTON_BG, fg=TEXT,
                              insertbackground=TEXT, relief="flat", highlightthickness=1,
-                             highlightbackground=PANEL_BORDER, highlightcolor=HI_COLOR)
+                             highlightbackground=PANEL_BORDER, highlightcolor=GREEN)
         hi_entry.grid(row=0, column=3, padx=(8, 0))
         hi_entry.bind("<Return>", self._on_hi_entry)
         hi_entry.bind("<FocusOut>", self._on_hi_entry)
@@ -219,12 +217,12 @@ class ManualCutsWindow(tk.Toplevel):
 
         if self._sel_id is None:
             self._sel_id = self.canvas.create_rectangle(x_lo, PAD, x_hi, CANVAS_H - PAD, fill=SELECTION_TINT, outline="")
-            self._line_lo_id = self.canvas.create_line(x_lo, PAD, x_lo, CANVAS_H - PAD, fill=LO_COLOR, width=2)
-            self._line_hi_id = self.canvas.create_line(x_hi, PAD, x_hi, CANVAS_H - PAD, fill=HI_COLOR, width=2)
+            self._line_lo_id = self.canvas.create_line(x_lo, PAD, x_lo, CANVAS_H - PAD, fill=DANGER, width=2)
+            self._line_hi_id = self.canvas.create_line(x_hi, PAD, x_hi, CANVAS_H - PAD, fill=GREEN, width=2)
             self._handle_lo_id = self.canvas.create_rectangle(
-                x_lo - 5, PAD - HANDLE_H, x_lo + 5, PAD, fill=LO_COLOR, outline="")
+                x_lo - 5, PAD - HANDLE_H, x_lo + 5, PAD, fill=DANGER, outline="")
             self._handle_hi_id = self.canvas.create_rectangle(
-                x_hi - 5, PAD - HANDLE_H, x_hi + 5, PAD, fill=HI_COLOR, outline="")
+                x_hi - 5, PAD - HANDLE_H, x_hi + 5, PAD, fill=GREEN, outline="")
         else:
             self.canvas.coords(self._sel_id, x_lo, PAD, x_hi, CANVAS_H - PAD)
             self.canvas.coords(self._line_lo_id, x_lo, PAD, x_lo, CANVAS_H - PAD)

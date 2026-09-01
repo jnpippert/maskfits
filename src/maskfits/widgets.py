@@ -1,4 +1,4 @@
-"""Small dark-themed, rounded-corner Tkinter widgets used by the maskfits GUI."""
+"""Small rounded-corner Tkinter widgets used by the maskfits GUI, themed via maskfits.theme."""
 
 import tkinter as tk
 import tkinter.font as tkfont
@@ -49,9 +49,14 @@ class RoundedPanel(tk.Frame):
       height exceeds the space available, scroll instead of clipping it.
     """
 
-    def __init__(self, parent: tk.Widget, *, radius: int = 14, bg: str = PANEL_BG,
-                 outer_bg: Optional[str] = None, border: str = PANEL_BORDER,
+    def __init__(self, parent: tk.Widget, *, radius: int = 14, bg: Optional[str] = None,
+                 outer_bg: Optional[str] = None, border: Optional[str] = None,
                  mode: str = "fill", scrollable: bool = False):
+        # Resolved from the current theme at call time (not baked in as a
+        # default argument) so a freshly-built panel always picks up whichever
+        # palette is active, including right after a theme switch.
+        bg = bg if bg is not None else PANEL_BG
+        border = border if border is not None else PANEL_BORDER
         outer_bg = outer_bg if outer_bg is not None else parent["bg"]
         super().__init__(parent, bg=outer_bg)
         self.radius = radius
@@ -118,9 +123,14 @@ class RoundButton(tk.Canvas):
 
     def __init__(self, parent: tk.Widget, text: str, command: Optional[Callable[[], None]] = None, *,
                  width: Optional[int] = None, height: int = 30, radius: int = 10,
-                 outer_bg: Optional[str] = None, bg: str = BUTTON_BG, hover_bg: str = BUTTON_HOVER,
-                 fg: str = TEXT, font=FONT_SMALL, accent: bool = False, danger: bool = False,
+                 outer_bg: Optional[str] = None, bg: Optional[str] = None, hover_bg: Optional[str] = None,
+                 fg: Optional[str] = None, font=FONT_SMALL, accent: bool = False, danger: bool = False,
                  toggle: bool = False, active: bool = False, padx: int = 14):
+        # Resolved at call time (not a baked-in default) so a button built
+        # after a theme switch picks up the newly active palette.
+        bg = bg if bg is not None else BUTTON_BG
+        hover_bg = hover_bg if hover_bg is not None else BUTTON_HOVER
+        fg = fg if fg is not None else TEXT
         outer_bg = outer_bg if outer_bg is not None else parent["bg"]
         self._text = text
         self._command = command
@@ -233,8 +243,14 @@ class RoundSlider(tk.Canvas):
 
     def __init__(self, parent: tk.Widget, variable, from_: float, to: float, *,
                  width: int = 200, height: int = 20, outer_bg: Optional[str] = None,
-                 track_color: str = TRACK, fill_color: str = ACCENT, thumb_color: str = TEXT,
+                 track_color: Optional[str] = None, fill_color: Optional[str] = None,
+                 thumb_color: Optional[str] = None,
                  on_change: Optional[Callable[[float], None]] = None):
+        # Resolved at call time (not a baked-in default) so a slider built
+        # after a theme switch picks up the newly active palette.
+        track_color = track_color if track_color is not None else TRACK
+        fill_color = fill_color if fill_color is not None else ACCENT
+        thumb_color = thumb_color if thumb_color is not None else TEXT
         outer_bg = outer_bg if outer_bg is not None else parent["bg"]
         super().__init__(parent, width=width, height=height, bg=outer_bg, highlightthickness=0, cursor="hand2")
         self.variable = variable
@@ -295,3 +311,20 @@ class RoundSlider(tk.Canvas):
 
         r = 7
         self.create_oval(thumb_x - r, cy - r, thumb_x + r, cy + r, fill=self.thumb_color, outline=self.fill_color, width=2)
+
+
+class ThemeToggle(tk.Label):
+    """A sun/moon emoji button for switching between light and dark mode -
+    plain Unicode glyphs rather than hand-drawn icons, so it renders as the
+    platform's native full-color emoji."""
+
+    SUN = "☀️"
+    MOON = "\U0001F319"
+
+    def __init__(self, parent: tk.Widget, command: Optional[Callable[[], None]] = None, *,
+                 light: bool = False, outer_bg: Optional[str] = None):
+        outer_bg = outer_bg if outer_bg is not None else parent["bg"]
+        super().__init__(parent, text=self.SUN if light else self.MOON, bg=outer_bg,
+                          font=("Apple Color Emoji", 16), cursor="hand2")
+        self._command = command
+        self.bind("<Button-1>", lambda e: self._command() if self._command else None)

@@ -10,6 +10,7 @@ import numpy as np
 from astropy.io import fits
 from PIL import Image, ImageTk
 
+from maskfits.binning import bin_func, bin_mask, unbin_mask
 from maskfits.colormaps import COLORMAP_LUTS, COLORMAP_NAMES, mask_tint_for
 from maskfits.cuts_dialog import ManualCutsWindow
 from maskfits.imagedata import (
@@ -17,6 +18,7 @@ from maskfits.imagedata import (
     STRETCH_NAMES,
     STRETCHES,
     FitsImage,
+    gaussian_smooth,
     load_fits_image,
     minmax_cuts,
     percentile_cuts,
@@ -41,8 +43,9 @@ from maskfits.theme import (
     PANEL_BORDER,
     TEXT,
     TEXT_DIM,
+    set_theme,
 )
-from maskfits.widgets import RoundButton, RoundedPanel, RoundSlider, SegmentedControl
+from maskfits.widgets import RoundButton, RoundedPanel, RoundSlider, SegmentedControl, ThemeToggle
 
 MAG_SIZE = 31
 MAG_BLOCK = 6
@@ -73,6 +76,10 @@ HOTKEY_ENTRIES = [
     ("Ctrl+Shift+Z / Y", "Redo"),
     ("R", "Clear the whole mask"),
     ("E / W", "Grow / shrink radius or thickness"),
+    ("C", "Cycle colormap"),
+    ("I", "Invert colormap"),
+    ("S", "Smooth image (Gaussian, current sigma)"),
+    ("B", "Bin image (NxN, current factor)"),
     ("Esc", "Cancel a pending line click"),
 ]
 
@@ -115,6 +122,37 @@ class Entry:
         self.image: Optional[FitsImage] = None
         self.lowcut = 0.0
         self.highcut = 1.0
+        # Smoothing and binning are independent and composable: original_data
+        # is the one pristine array (captured the first time either is turned
+        # on), and up to three more arrays cache each combination actually
+        # used - smoothed-only, binned-only, and smoothed-then-binned -
+        # keyed on the sigma/factor they were built at, so toggling either
+        # effect back on (or switching between combinations already seen)
+        # reuses a cache instead of recomputing. A cache is only rebuilt when
+        # the sigma and/or factor it depends on has actually changed.
+        self.original_data: Optional[np.ndarray] = None
+
+        self.is_smoothed = False
+        self.smooth_sigma: Optional[float] = None
+        self.smoothed_cache: Optional[np.ndarray] = None
+        self._smoothed_cache_sigma: Optional[float] = None
+
+        self.is_binned = False
+        self.bin_factor: Optional[int] = None
+        self.binned_cache: Optional[np.ndarray] = None
+        self._binned_cache_factor: Optional[int] = None
+
+        self.smoothed_binned_cache: Optional[np.ndarray] = None
+        self._smoothed_binned_cache_sigma: Optional[float] = None
+        self._smoothed_binned_cache_factor: Optional[int] = None
+
+        # The mask, unlike the data, only ever changes shape via binning (never
+        # smoothing). It's user-edited at whatever resolution is currently
+        # active, so instead of a pure cache it's re-derived fresh on every
+        # bin-related change - mask_backup holds the full-res mask while
+        # currently binned (the source both to unbin back into and to fall
+        # back on for whatever bottom/right remainder binning trimmed off).
+        self.mask_backup: Optional[np.ndarray] = None
 
     def ensure_loaded(self, stretch: str) -> None:
         if self.image is not None or self.path is None:
@@ -156,6 +194,8 @@ class MaskFitsApp:
         self.radius = tk.DoubleVar(value=40.0)
         self.thickness = tk.IntVar(value=15)
         self.line_style = tk.StringVar(value="segment")
+        self.smooth_sigma_var = tk.StringVar(value="3")
+        self.bin_factor_var = tk.StringVar(value="3")
 
         self.fit_zoom = 1.0
         self.zoom_mult = 1.0
@@ -171,9 +211,9 @@ class MaskFitsApp:
         self._preview_item: Optional[int] = None
         self._undo: Optional[tuple[int, np.ndarray]] = None
         self._redo: Optional[tuple[int, np.ndarray]] = None
+        self.light_mode = False
 
-        self._build_menu()
-        self._build_layout()
+        self._build_ui()
 
         self.tool.trace_add("write", lambda *_: self._on_tool_changed())
         self.line_style.trace_add("write", lambda *_: self._cancel_pending_line())
@@ -190,9 +230,53 @@ class MaskFitsApp:
         self.root.bind("<r>", lambda e: self.reset_mask())
         self.root.bind("<e>", lambda e: self._adjust_shape_size(1))
         self.root.bind("<w>", lambda e: self._adjust_shape_size(-1))
+        self.root.bind("<c>", self._cycle_colormap)
+        self.root.bind("<i>", lambda e: self.invert_colormap.set(not self.invert_colormap.get()))
+        self.root.bind("<s>", self._toggle_smoothing)
+        self.root.bind("<b>", self._toggle_binning)
+
+        # A text box should give up keyboard focus once you're done with it -
+        # otherwise every hotkey above keeps typing into it instead of firing.
+        # These fire on the "all" bindtag, after any widget-specific handler
+        # (e.g. an entry's own <Return> handler applies its value first, then
+        # this runs and releases focus).
+        self.root.bind_all("<Return>", self._defocus_active_entry, add="+")
+        self.root.bind_all("<Button-1>", self._on_global_click, add="+")
 
         self._rebuild_tool_options()
         self.load_current(reset_view=True)
+
+    # ---------------------------------------------------------------- theme
+
+    def _build_ui(self) -> None:
+        self._build_menu()
+        self._build_layout()
+
+    def _toggle_theme(self) -> None:
+        self.light_mode = not self.light_mode
+        set_theme("light" if self.light_mode else "dark")
+        self._rebuild_ui()
+
+    def _rebuild_ui(self) -> None:
+        """Tear down and reconstruct the whole widget tree after a theme switch.
+
+        The custom canvas-drawn widgets (RoundButton, RoundedPanel, RoundSlider)
+        bake their colors into their canvas draw calls at construction time, so
+        restyling them means rebuilding, not recoloring in place. All actual
+        state - loaded images, masks, zoom, current tool, colormap, smoothing
+        cache, etc. - lives in plain attributes and tk Variables on self, none
+        of which this touches; only the widgets themselves are thrown away and
+        rebuilt against the now-active palette.
+        """
+        for child in self.root.winfo_children():
+            child.destroy()
+        self.root.configure(bg=APP_BG)
+        self._build_ui()
+        self._rebuild_tool_options()
+        self._update_cuts_display()
+        self._update_smooth_button()
+        self._update_bin_button()
+        self.load_current(reset_view=False)
 
     # ---------------------------------------------------------------- menu
 
@@ -320,12 +404,35 @@ class MaskFitsApp:
         parent.configure(bg=PANEL_BG)
         pad = dict(padx=4, pady=10)
 
-        tk.Label(parent, text="Zoom:", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).pack(side="left", padx=(14, 4))
+        ThemeToggle(parent, command=self._toggle_theme, light=self.light_mode, outer_bg=PANEL_BG).pack(
+            side="left", padx=(14, 12), pady=10)
+
+        tk.Label(parent, text="Zoom:", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).pack(side="left", padx=(0, 4))
         self.zoom_label = tk.Label(parent, text="1", bg=PANEL_BG, fg=TEXT, font=FONT, width=5)
         self.zoom_label.pack(side="left")
         RoundButton(parent, "-", command=self.zoom_out, outer_bg=PANEL_BG, width=32).pack(side="left", **pad)
         RoundButton(parent, "+", command=self.zoom_in, outer_bg=PANEL_BG, width=32).pack(side="left", **pad)
         RoundButton(parent, "reset", command=self.reset_zoom, outer_bg=PANEL_BG).pack(side="left", padx=(0, 16), pady=10)
+
+        self.smooth_button = RoundButton(parent, "smooth", command=self._toggle_smoothing, outer_bg=PANEL_BG,
+                                          toggle=True, width=72)
+        self.smooth_button.pack(side="left", padx=(0, 4), pady=10)
+        sigma_entry = tk.Entry(parent, textvariable=self.smooth_sigma_var, width=4, justify="center",
+                                bg=BUTTON_BG, fg=TEXT, insertbackground=TEXT, relief="flat", highlightthickness=1,
+                                highlightbackground=PANEL_BORDER, highlightcolor=ACCENT, font=FONT_SMALL)
+        sigma_entry.pack(side="left", padx=(0, 16), pady=10)
+        sigma_entry.bind("<Return>", self._apply_sigma_entry)
+        sigma_entry.bind("<FocusOut>", self._apply_sigma_entry)
+
+        self.bin_button = RoundButton(parent, "bin", command=self._toggle_binning, outer_bg=PANEL_BG,
+                                       toggle=True, width=60)
+        self.bin_button.pack(side="left", padx=(0, 4), pady=10)
+        bin_entry = tk.Entry(parent, textvariable=self.bin_factor_var, width=4, justify="center",
+                              bg=BUTTON_BG, fg=TEXT, insertbackground=TEXT, relief="flat", highlightthickness=1,
+                              highlightbackground=PANEL_BORDER, highlightcolor=ACCENT, font=FONT_SMALL)
+        bin_entry.pack(side="left", padx=(0, 16), pady=10)
+        bin_entry.bind("<Return>", self._apply_bin_entry)
+        bin_entry.bind("<FocusOut>", self._apply_bin_entry)
 
         RoundButton(parent, "<-", command=self.prev_image, outer_bg=PANEL_BG, width=36).pack(side="left", **pad)
         self.counter_label = tk.Label(parent, text="1/1", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL, width=6)
@@ -367,24 +474,31 @@ class MaskFitsApp:
 
         self._divider(parent)
 
-        cuts = tk.Frame(parent, bg=PANEL_BG)
-        cuts.pack(fill="x", padx=14, pady=10)
         self.lowcut_var = tk.StringVar(value="0")
         self.highcut_var = tk.StringVar(value="1")
 
-        tk.Label(cuts, text="lowcut:", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).grid(row=0, column=0, sticky="w")
-        lowcut_entry = tk.Entry(cuts, textvariable=self.lowcut_var, width=8, justify="center", bg=BUTTON_BG,
+        # Stacked label-left/entry-right rows (same pattern as the shape-size
+        # boxes below) rather than a single row of two label+entry pairs -
+        # the sidebar isn't wide enough to fit both entries side by side
+        # without the highcut box getting clipped.
+        lowcut_row = tk.Frame(parent, bg=PANEL_BG)
+        lowcut_row.pack(fill="x", padx=14, pady=(10, 4))
+        tk.Label(lowcut_row, text="lowcut:", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL, anchor="w").pack(side="left")
+        lowcut_entry = tk.Entry(lowcut_row, textvariable=self.lowcut_var, width=8, justify="center", bg=BUTTON_BG,
                                  fg=TEXT, insertbackground=TEXT, relief="flat", highlightthickness=1,
                                  highlightbackground=PANEL_BORDER, highlightcolor=ACCENT, font=FONT_SMALL)
-        lowcut_entry.grid(row=0, column=1, sticky="w", padx=(8, 14))
+        lowcut_entry.pack(side="right")
         lowcut_entry.bind("<Return>", self._apply_lowcut_entry)
         lowcut_entry.bind("<FocusOut>", self._apply_lowcut_entry)
 
-        tk.Label(cuts, text="highcut:", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).grid(row=0, column=2, sticky="w")
-        highcut_entry = tk.Entry(cuts, textvariable=self.highcut_var, width=8, justify="center", bg=BUTTON_BG,
-                                  fg=TEXT, insertbackground=TEXT, relief="flat", highlightthickness=1,
+        highcut_row = tk.Frame(parent, bg=PANEL_BG)
+        highcut_row.pack(fill="x", padx=14, pady=(0, 10))
+        tk.Label(highcut_row, text="highcut:", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL, anchor="w").pack(
+            side="left")
+        highcut_entry = tk.Entry(highcut_row, textvariable=self.highcut_var, width=8, justify="center",
+                                  bg=BUTTON_BG, fg=TEXT, insertbackground=TEXT, relief="flat", highlightthickness=1,
                                   highlightbackground=PANEL_BORDER, highlightcolor=ACCENT, font=FONT_SMALL)
-        highcut_entry.grid(row=0, column=3, sticky="w", padx=(8, 0))
+        highcut_entry.pack(side="right")
         highcut_entry.bind("<Return>", self._apply_highcut_entry)
         highcut_entry.bind("<FocusOut>", self._apply_highcut_entry)
 
@@ -553,6 +667,8 @@ class MaskFitsApp:
         self.filename_label.config(text=os.path.basename(entry.path) if entry.path else "noname")
         self.counter_label.config(text=f"{self.index + 1}/{len(self.entries)}")
         self._update_cuts_display()
+        self._update_smooth_button()
+        self._update_bin_button()
         self.status.config(text=f"loaded {entry.path}" if entry.path else "new file")
 
         self.render()
@@ -611,16 +727,35 @@ class MaskFitsApp:
     # ------------------------------------------------------------- navigation
 
     def _release_mask(self) -> None:
-        """Drop the current entry's in-memory mask before navigating away from it.
+        """Drop the current entry's in-memory mask (and any smoothing/binning
+        caches) before navigating away from it.
 
-        Each mask is a full-resolution array; for a multi-image session with large
-        FITS files, keeping every visited image's mask around adds up fast. Export
-        first if you want to keep it - navigating back re-loads the image (fast,
-        it stays cached) with a fresh empty mask.
+        Each mask - and each smoothing/binning cache array - is a full- (or
+        near full-) resolution array; for a multi-image session with large
+        FITS files, keeping every visited image's copies around adds up fast.
+        Export first if you want to keep the mask - navigating back re-loads
+        the image (fast, it stays cached) with a fresh empty mask and no
+        smoothing/binning applied.
         """
-        image = self.image
+        entry = self.entry
+        image = entry.image
         if image is not None:
+            if entry.original_data is not None:
+                image.data = entry.original_data
             image.mask = np.zeros(image.data.shape, dtype=bool)
+        entry.original_data = None
+        entry.is_smoothed = False
+        entry.smooth_sigma = None
+        entry.smoothed_cache = None
+        entry._smoothed_cache_sigma = None
+        entry.is_binned = False
+        entry.bin_factor = None
+        entry.binned_cache = None
+        entry._binned_cache_factor = None
+        entry.smoothed_binned_cache = None
+        entry._smoothed_binned_cache_sigma = None
+        entry._smoothed_binned_cache_factor = None
+        entry.mask_backup = None
         self._undo = None
         self._redo = None
 
@@ -668,6 +803,237 @@ class MaskFitsApp:
         self.render()
         self.status.config(text="mask cleared")
 
+    def _ensure_original(self, entry: "Entry") -> None:
+        """Capture entry's true, pristine data the first time smoothing or
+        binning is ever used - every other cache is derived from this one
+        array, which is never itself overwritten."""
+        if entry.original_data is None:
+            entry.original_data = entry.image.data
+
+    def _smoothed_cache_for(self, entry: "Entry", sigma: float) -> np.ndarray:
+        if entry.smoothed_cache is None or entry._smoothed_cache_sigma != sigma:
+            entry.smoothed_cache = gaussian_smooth(entry.original_data, sigma)
+            entry._smoothed_cache_sigma = sigma
+        return entry.smoothed_cache
+
+    def _binned_cache_for(self, entry: "Entry", factor: int) -> np.ndarray:
+        if entry.binned_cache is None or entry._binned_cache_factor != factor:
+            entry.binned_cache = bin_func(entry.original_data, factor)
+            entry._binned_cache_factor = factor
+        return entry.binned_cache
+
+    def _smoothed_binned_cache_for(self, entry: "Entry", sigma: float, factor: int) -> np.ndarray:
+        if (entry.smoothed_binned_cache is None
+                or entry._smoothed_binned_cache_sigma != sigma
+                or entry._smoothed_binned_cache_factor != factor):
+            # Smooth first, then bin - low-pass filtering before downsampling
+            # avoids the blockiness/aliasing that binning-then-smoothing a
+            # much coarser grid would introduce. Reuses smoothed_cache when
+            # it's already fresh at this sigma instead of reblurring.
+            base = self._smoothed_cache_for(entry, sigma)
+            entry.smoothed_binned_cache = bin_func(base, factor)
+            entry._smoothed_binned_cache_sigma = sigma
+            entry._smoothed_binned_cache_factor = factor
+        return entry.smoothed_binned_cache
+
+    def _current_display_data(self, entry: "Entry") -> np.ndarray:
+        """The array for entry's current is_smoothed/is_binned combination -
+        one of up to four cached arrays (original / smoothed / binned /
+        smoothed-then-binned), computed and cached lazily."""
+        if entry.is_smoothed and entry.is_binned:
+            return self._smoothed_binned_cache_for(entry, entry.smooth_sigma, entry.bin_factor)
+        if entry.is_smoothed:
+            return self._smoothed_cache_for(entry, entry.smooth_sigma)
+        if entry.is_binned:
+            return self._binned_cache_for(entry, entry.bin_factor)
+        return entry.original_data
+
+    def _read_sigma(self) -> float:
+        """Parse/clamp the sigma box, writing the cleaned-up value back to it."""
+        try:
+            sigma = float(self.smooth_sigma_var.get())
+        except ValueError:
+            entry = self.entry
+            sigma = entry.smooth_sigma if entry.smooth_sigma is not None else 3.0
+        sigma = max(sigma, 0.0)
+        self.smooth_sigma_var.set(self._fmt(sigma))
+        return sigma
+
+    def _update_smooth_button(self) -> None:
+        smoothed = self.image is not None and self.entry.is_smoothed
+        self.smooth_button.set_text("unsmooth" if smoothed else "smooth")
+        self.smooth_button.set_active(smoothed)
+
+    def _toggle_smoothing(self, _event: Optional[tk.Event] = None) -> None:
+        """Hotkey s / the smooth-unsmooth toolbar button.
+
+        Composable with binning - toggling this only ever changes pixel
+        values, never the array shape or the mask, so it can be freely
+        combined with binning in either order. Whichever of the (up to four)
+        cached arrays the current combination needs is computed once and
+        reused until its sigma/factor actually changes.
+        """
+        entry = self.entry
+        if entry.image is None:
+            return
+        if entry.is_smoothed:
+            entry.is_smoothed = False
+            entry.image.data = self._current_display_data(entry)
+            self._update_smooth_button()
+            self.render()
+            self.status.config(text="smoothing removed")
+            return
+        sigma = self._read_sigma()
+        if sigma <= 0:
+            return
+        self._ensure_original(entry)
+        entry.smooth_sigma = sigma
+        entry.is_smoothed = True
+        entry.image.data = self._current_display_data(entry)
+        self._update_smooth_button()
+        self.render()
+        self.status.config(text=f"smoothed (sigma={self._fmt(sigma)})")
+
+    def _apply_sigma_entry(self, _event: Optional[tk.Event] = None) -> None:
+        """Commit the sigma box. If the image is already smoothed, re-smooths
+        from the untouched original at the new sigma (cached, so re-entering a
+        previously-used sigma doesn't recompute) rather than compounding onto
+        the already-blurred data; otherwise just formats/clamps the value for
+        when "smooth" is next pressed."""
+        entry = self.entry
+        sigma = self._read_sigma()
+        if entry.image is None or not entry.is_smoothed:
+            return
+        if sigma <= 0:
+            entry.is_smoothed = False
+            entry.image.data = self._current_display_data(entry)
+            self._update_smooth_button()
+            self.render()
+            self.status.config(text="smoothing removed")
+            return
+        entry.smooth_sigma = sigma
+        entry.image.data = self._current_display_data(entry)
+        self.render()
+        self.status.config(text=f"smoothed (sigma={self._fmt(sigma)})")
+
+    # -------------------------------------------------------------- binning
+
+    def _read_bin_factor(self) -> int:
+        """Parse/clamp the bin-factor box, writing the cleaned-up value back to it."""
+        try:
+            factor = int(round(float(self.bin_factor_var.get())))
+        except ValueError:
+            entry = self.entry
+            factor = entry.bin_factor if entry.bin_factor is not None else 3
+        factor = max(factor, 1)
+        if self.image is not None:
+            factor = min(factor, max(min(self.image.data.shape), 1))
+        self.bin_factor_var.set(str(factor))
+        return factor
+
+    def _update_bin_button(self) -> None:
+        binned = self.image is not None and self.entry.is_binned
+        self.bin_button.set_text("unbin" if binned else "bin")
+        self.bin_button.set_active(binned)
+
+    def _toggle_binning(self, _event: Optional[tk.Event] = None) -> None:
+        """Hotkey b / the bin-unbin toolbar button.
+
+        Composable with smoothing - see _toggle_smoothing/_current_display_data
+        for the data side. The mask is additionally reshaped to match: going
+        in, the current full-res mask is block-OR'd down to the binned grid so
+        painting continues to work; coming back out, whatever's currently on
+        the binned mask (including edits made while binned) is expanded back
+        over the full-res mask. Export always uses the full-res mask
+        regardless of which state this is currently in - see _full_res_mask /
+        export_mask. Binning changes the array shape, so the view is
+        recentered and reset to zoom 1 (matching the new size) every time it
+        toggles or the factor changes.
+        """
+        entry = self.entry
+        if entry.image is None:
+            return
+        if entry.is_binned:
+            entry.image.mask = unbin_mask(entry.image.mask, entry.bin_factor, entry.mask_backup)
+            entry.mask_backup = None
+            entry.is_binned = False
+            entry.image.data = self._current_display_data(entry)
+            self._undo = None
+            self._redo = None
+            self._update_bin_button()
+            self.reset_zoom()
+            self.status.config(text="binning removed")
+            return
+        factor = self._read_bin_factor()
+        if factor <= 1:
+            return
+        self._ensure_original(entry)
+        entry.mask_backup = entry.image.mask
+        entry.bin_factor = factor
+        entry.is_binned = True
+        entry.image.data = self._current_display_data(entry)
+        entry.image.mask = bin_mask(entry.mask_backup, factor)
+        self._undo = None
+        self._redo = None
+        self._update_bin_button()
+        self.reset_zoom()
+        self.status.config(text=f"binned {factor}x{factor}")
+
+    def _apply_bin_entry(self, _event: Optional[tk.Event] = None) -> None:
+        """Commit the bin-factor box. If the image is already binned, re-bins
+        from the untouched original at the new factor (cached, so re-entering
+        a previously-used factor doesn't recompute); otherwise just
+        formats/clamps the value for when "bin" is next pressed.
+
+        Changing the factor while binned first expands the current binned mask
+        (which may hold edits made at the old factor) back over the full-res
+        mask, then re-derives both data and mask fresh at the new factor - so
+        edits are never lost and never compounded. The view is recentered and
+        reset to zoom 1 since the array size just changed again.
+        """
+        entry = self.entry
+        factor = self._read_bin_factor()
+        if entry.image is None or not entry.is_binned:
+            return
+        if factor <= 1:
+            entry.image.mask = unbin_mask(entry.image.mask, entry.bin_factor, entry.mask_backup)
+            entry.mask_backup = None
+            entry.is_binned = False
+            entry.image.data = self._current_display_data(entry)
+            self._undo = None
+            self._redo = None
+            self._update_bin_button()
+            self.reset_zoom()
+            self.status.config(text="binning removed")
+            return
+        full_res_mask = unbin_mask(entry.image.mask, entry.bin_factor, entry.mask_backup)
+        entry.mask_backup = full_res_mask
+        entry.bin_factor = factor
+        entry.image.data = self._current_display_data(entry)
+        entry.image.mask = bin_mask(full_res_mask, factor)
+        self._undo = None
+        self._redo = None
+        self.reset_zoom()
+        self.status.config(text=f"binned {factor}x{factor}")
+
+    def _full_res_mask(self, entry: "Entry") -> np.ndarray:
+        """entry.image.mask translated back to full (unbinned) resolution -
+        what export_mask always writes, regardless of whether the display is
+        currently binned for painting convenience."""
+        if entry.is_binned:
+            return unbin_mask(entry.image.mask, entry.bin_factor, entry.mask_backup)
+        return entry.image.mask
+
+    def _defocus_active_entry(self, _event: Optional[tk.Event] = None) -> None:
+        if isinstance(self.root.focus_get(), tk.Entry):
+            self.root.focus_set()
+
+    def _on_global_click(self, event: tk.Event) -> None:
+        """Release focus from whatever entry box was being edited as soon as
+        the user clicks anywhere that isn't itself a text box."""
+        if not isinstance(event.widget, tk.Entry):
+            self._defocus_active_entry()
+
     def _adjust_shape_size(self, direction: int) -> None:
         """Hotkey e/w: grow/shrink the active tool's size (radius/thickness)."""
         step = 5
@@ -699,10 +1065,14 @@ class MaskFitsApp:
         header = entry.image.header.copy()
         header["OBJECT"] = "MASK"
         # entry.image.mask is True where the user painted a mask, in WORKING (possibly
-        # load-time-transposed) orientation; detranspose back to match the ORIGINAL
-        # file/header before writing. Exported convention is inverted (0 = masked/
-        # excluded, 1 = kept), matching typical good-pixel maps.
-        mask = entry.image.mask.T if entry.image.rotated else entry.image.mask
+        # load-time-transposed, and possibly currently binned for painting
+        # convenience) orientation. _full_res_mask undoes the binning (if any)
+        # so the exported mask always matches the original file's resolution;
+        # detranspose back to match the ORIGINAL file/header before writing.
+        # Exported convention is inverted (0 = masked/excluded, 1 = kept),
+        # matching typical good-pixel maps.
+        full_res_mask = self._full_res_mask(entry)
+        mask = full_res_mask.T if entry.image.rotated else full_res_mask
         exported = (~mask).astype("uint8")
         hdu = fits.PrimaryHDU(data=exported, header=header)
         hdu.writeto(out_path, overwrite=True)
@@ -826,6 +1196,10 @@ class MaskFitsApp:
         lut = COLORMAP_LUTS[self.colormap.get()]
         return lut[::-1] if self.invert_colormap.get() else lut
 
+    def _cycle_colormap(self, _event: Optional[tk.Event] = None) -> None:
+        idx = COLORMAP_NAMES.index(self.colormap.get())
+        self.colormap.set(COLORMAP_NAMES[(idx + 1) % len(COLORMAP_NAMES)])
+
     def _scale_and_color(self, norm: np.ndarray) -> np.ndarray:
         """Map cut-normalized [0, 1] values (no NaN) to a uint8 RGB array via the
         current scale function (stretch curve) and colormap."""
@@ -943,9 +1317,14 @@ class MaskFitsApp:
 
         if image is not None and image.wcs is not None:
             try:
-                # image.wcs describes the ORIGINAL (untransposed) file; ix/iy are in
-                # working (possibly load-time-transposed) space, so swap them back.
+                # image.wcs describes the ORIGINAL (untransposed, unbinned) file;
+                # ix/iy are in working (possibly load-time-transposed, and
+                # possibly currently-binned) space, so swap them back and scale
+                # back up to original-file pixels before the WCS lookup.
                 wcs_ix, wcs_iy = (iy, ix) if image.rotated else (ix, iy)
+                if self.entry.is_binned:
+                    factor = self.entry.bin_factor
+                    wcs_ix, wcs_iy = wcs_ix * factor, wcs_iy * factor
                 sky = image.wcs.pixel_to_world(wcs_ix, wcs_iy)
                 self.readout["RA"].config(text=sky.ra.to_string(unit="hourangle", sep=":", precision=2))
                 self.readout["DEC"].config(text=sky.dec.to_string(sep=":", precision=1, alwayssign=True))

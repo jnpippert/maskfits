@@ -7,6 +7,7 @@ import numpy as np
 from astropy.io import fits
 from astropy.visualization import AsinhStretch, LinearStretch, LogStretch, ZScaleInterval
 from astropy.wcs import WCS, FITSFixedWarning
+from scipy.ndimage import gaussian_filter
 
 # Display stretch functions (map cut-normalized [0, 1] values through a non-linear
 # curve before colormapping), independent of the cut levels themselves. astropy's
@@ -110,3 +111,23 @@ def percentile_cuts(data: np.ndarray, percent: float) -> tuple[float, float]:
     lo, hi = np.percentile(finite, [tail, 100.0 - tail])
     lo, hi = float(lo), float(hi)
     return (lo, hi) if hi > lo else minmax_cuts(data)
+
+
+def gaussian_smooth(data: np.ndarray, sigma: float) -> np.ndarray:
+    """Blur the image with a Gaussian kernel, without letting non-finite pixels
+    (NaN/inf) bleed into their neighbors - standard normalized-convolution trick:
+    smooth the data with holes zeroed out alongside a 0/1 "how much real data is
+    here" weight map, then divide one by the other so each output pixel is a
+    weighted average of only the finite pixels near it."""
+    if sigma <= 0:
+        return data
+    finite = np.isfinite(data)
+    if finite.all():
+        return gaussian_filter(data, sigma=sigma)
+    filled = np.where(finite, data, 0.0)
+    weights = gaussian_filter(finite.astype(np.float64), sigma=sigma)
+    smoothed = gaussian_filter(filled, sigma=sigma)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        result = smoothed / weights
+    result[weights == 0] = np.nan
+    return result
