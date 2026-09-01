@@ -17,9 +17,9 @@ DARK = dict(
     PANEL_BORDER="#2f2f32",
     TEXT="#eae7e2",
     TEXT_DIM="#96938d",
-    ACCENT="#d97757",
-    ACCENT_HOVER="#e39178",
-    ACCENT_ACTIVE="#c2603f",
+    ACCENT="#851212",
+    ACCENT_HOVER="#a3201f",
+    ACCENT_ACTIVE="#5c0d0d",
     DANGER="#c1554a",
     DANGER_HOVER="#d16e63",
     GREEN="#22c55e",
@@ -34,9 +34,12 @@ LIGHT = dict(
     PANEL_BORDER="#d8d8d5",
     TEXT="#1c1c1e",
     TEXT_DIM="#68686c",
-    ACCENT="#c2603f",
-    ACCENT_HOVER="#d97757",
-    ACCENT_ACTIVE="#a84f34",
+    # Same crimson identity as dark mode, but hover/active move darker rather
+    # than lighter - on a white panel, a solid fill gets more contrast (and
+    # visible hover feedback) by darkening, not brightening.
+    ACCENT="#851212",
+    ACCENT_HOVER="#6b0e0e",
+    ACCENT_ACTIVE="#4a0a0a",
     DANGER="#b2453b",
     DANGER_HOVER="#c1554a",
     GREEN="#178a43",
@@ -49,6 +52,12 @@ LIGHT = dict(
 # their canvas neutral regardless of chrome theme) - it's not part of either
 # palette above.
 CANVAS_BG = "#0a0a0b"
+
+# Crimson is dark enough in both themes that text on top of an accent- (or
+# danger-) filled surface always needs to stay white, regardless of which
+# theme's TEXT color is otherwise in effect - so this is a fixed constant,
+# not part of either palette.
+ACCENT_TEXT = "#ffffff"
 
 FONT_FAMILY = "Helvetica"
 FONT = (FONT_FAMILY, 11)

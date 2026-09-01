@@ -7,6 +7,7 @@ from typing import Callable, Optional
 from maskfits.theme import (
     ACCENT,
     ACCENT_HOVER,
+    ACCENT_TEXT,
     BUTTON_BG,
     BUTTON_HOVER,
     DANGER,
@@ -179,6 +180,13 @@ class RoundButton(tk.Canvas):
         self._text = text
         self._redraw()
 
+    def _on_solid_surface(self) -> bool:
+        """True while the button is filled with a strong solid color (accent
+        or danger) rather than its neutral bg - both are dark enough in every
+        theme that only white text stays legible on top of them, regardless
+        of which theme's TEXT color would otherwise apply."""
+        return self._danger or self._accent or (self._toggle and self._active)
+
     def _current_fill(self) -> str:
         if self._danger:
             return DANGER_HOVER if self._hovering else DANGER
@@ -191,7 +199,8 @@ class RoundButton(tk.Canvas):
         w, h = int(self["width"]), int(self["height"])
         pts = rounded_rect_points(1, 1, w - 1, h - 1, self._radius)
         self.create_polygon(pts, smooth=True, fill=self._current_fill(), outline="")
-        self.create_text(w / 2, h / 2, text=self._text, fill=self._fg, font=self._font)
+        text_fill = ACCENT_TEXT if self._on_solid_surface() else self._fg
+        self.create_text(w / 2, h / 2, text=self._text, fill=text_fill, font=self._font)
 
 
 class SegmentedControl(tk.Frame):
