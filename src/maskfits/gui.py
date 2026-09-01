@@ -194,8 +194,8 @@ class MaskFitsApp:
         self.radius = tk.DoubleVar(value=40.0)
         self.thickness = tk.IntVar(value=15)
         self.line_style = tk.StringVar(value="segment")
-        self.smooth_sigma_var = tk.StringVar(value="3")
-        self.bin_factor_var = tk.StringVar(value="3")
+        self.smooth_sigma_var = tk.StringVar(value="2")
+        self.bin_factor_var = tk.StringVar(value="4")
 
         self.fit_zoom = 1.0
         self.zoom_mult = 1.0
