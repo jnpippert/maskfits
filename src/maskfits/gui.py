@@ -114,6 +114,20 @@ def _apply_icon(root: tk.Tk) -> None:
             pass
 
 
+def _bring_to_front(root: tk.Tk) -> None:
+    """Force the window to open in front of every other window.
+
+    A freshly-created Tk window doesn't always land on top of whatever
+    already has focus (e.g. the terminal it was launched from, especially on
+    macOS) - briefly toggling -topmost forces it to the front once at
+    startup, without leaving it permanently pinned above other windows.
+    """
+    root.lift()
+    root.attributes("-topmost", True)
+    root.after(250, lambda: root.attributes("-topmost", False))
+    root.focus_force()
+
+
 class Entry:
     """A single loaded (or not-yet-loaded) FITS file slot."""
 
@@ -179,6 +193,7 @@ class MaskFitsApp:
         self.root.geometry("1400x900")
         self.root.configure(bg=APP_BG)
         _apply_icon(self.root)
+        _bring_to_front(self.root)
 
         self.entries: list[Entry] = [Entry(p) for p in paths] or [Entry(None)]
         self.index = 0
@@ -208,7 +223,7 @@ class MaskFitsApp:
         self._pan_drag: Optional[tuple[int, int, float, float]] = None
         self._line_anchor: Optional[tuple[float, float]] = None
         self._line_anchor_erase = False
-        self._preview_item: Optional[int] = None
+        self._preview_photo: Optional[ImageTk.PhotoImage] = None
         self._undo: Optional[tuple[int, np.ndarray]] = None
         self._redo: Optional[tuple[int, np.ndarray]] = None
         self.light_mode = False
@@ -286,6 +301,7 @@ class MaskFitsApp:
         file_menu = tk.Menu(menubar, tearoff=0)
         file_menu.add_command(label="Open...", command=self.open_files)
         file_menu.add_command(label="Export Mask", command=self.export_mask)
+        file_menu.add_command(label="Save Mask As...", command=self.export_mask_as)
         file_menu.add_separator()
         file_menu.add_command(label="Quit", command=self.root.destroy)
         menubar.add_cascade(label="File", menu=file_menu)
@@ -296,17 +312,18 @@ class MaskFitsApp:
         mode_menu.add_radiobutton(label="Line Mask (satellite trail)", variable=self.tool, value="line")
         menubar.add_cascade(label="Mode", menu=mode_menu)
 
-        cuts_menu = tk.Menu(menubar, tearoff=0)
-        cuts_menu.add_command(label="Min/Max", command=lambda: self.set_stretch("minmax"))
-        cuts_menu.add_command(label="ZScale", command=lambda: self.set_stretch("zscale"))
-        cuts_menu.add_separator()
-        for percent in PERCENTILE_PRESETS:
-            cuts_menu.add_command(label=f"{percent}%", command=lambda p=percent: self.set_stretch(f"pct{p}"))
-        cuts_menu.add_separator()
-        cuts_menu.add_command(label="Manual...", command=self.open_manual_cuts)
-        menubar.add_cascade(label="Cuts", menu=cuts_menu)
-
+        # Cuts and Scale used to be separate menus; combined here into one
+        # "Scale" menu with the two groups kept visually distinct by a
+        # separator, since both are about how pixel values map to the screen.
         scale_menu = tk.Menu(menubar, tearoff=0)
+        scale_menu.add_command(label="Min/Max", command=lambda: self.set_stretch("minmax"))
+        scale_menu.add_command(label="ZScale", command=lambda: self.set_stretch("zscale"))
+        scale_menu.add_separator()
+        for percent in PERCENTILE_PRESETS:
+            scale_menu.add_command(label=f"{percent}%", command=lambda p=percent: self.set_stretch(f"pct{p}"))
+        scale_menu.add_separator()
+        scale_menu.add_command(label="Manual...", command=self.open_manual_cuts)
+        scale_menu.add_separator()
         for value, label in SCALE_OPTIONS:
             scale_menu.add_radiobutton(label=label, variable=self.scale_function, value=value)
         scale_menu.add_separator()
@@ -1051,17 +1068,14 @@ class MaskFitsApp:
 
     # -------------------------------------------------------------- export
 
-    def export_mask(self) -> None:
-        entry = self.entry
-        if entry.image is None or entry.path is None:
-            messagebox.showwarning("maskfits", "No image loaded to export a mask for.")
-            return
-        stem = os.path.basename(entry.path)
+    @staticmethod
+    def _mask_stem(path: str) -> str:
+        stem = os.path.basename(path)
         if stem.endswith(".fits.gz"):
-            stem = stem[: -len(".fits.gz")]
-        else:
-            stem, _ = os.path.splitext(stem)
-        out_path = os.path.join(os.path.dirname(entry.path), f"mask_{stem}.fits")
+            return stem[: -len(".fits.gz")]
+        return os.path.splitext(stem)[0]
+
+    def _build_mask_hdu(self, entry: "Entry") -> "fits.PrimaryHDU":
         header = entry.image.header.copy()
         header["OBJECT"] = "MASK"
         # entry.image.mask is True where the user painted a mask, in WORKING (possibly
@@ -1074,8 +1088,38 @@ class MaskFitsApp:
         full_res_mask = self._full_res_mask(entry)
         mask = full_res_mask.T if entry.image.rotated else full_res_mask
         exported = (~mask).astype("uint8")
-        hdu = fits.PrimaryHDU(data=exported, header=header)
-        hdu.writeto(out_path, overwrite=True)
+        return fits.PrimaryHDU(data=exported, header=header)
+
+    def export_mask(self) -> None:
+        """Quick-save: the sidebar 'export mask' button. Always writes
+        mask_<original filename> next to the source file, no prompt."""
+        entry = self.entry
+        if entry.image is None or entry.path is None:
+            messagebox.showwarning("maskfits", "No image loaded to export a mask for.")
+            return
+        out_path = os.path.join(os.path.dirname(entry.path), f"mask_{self._mask_stem(entry.path)}.fits")
+        self._build_mask_hdu(entry).writeto(out_path, overwrite=True)
+        self.status.config(text=f"exported mask to {out_path}")
+
+    def export_mask_as(self) -> None:
+        """File > Save Mask As...: prompts for a location/name via a file
+        browser, starting in the directory maskfits was launched from and
+        pre-filled with the same mask_<original filename> default."""
+        entry = self.entry
+        if entry.image is None or entry.path is None:
+            messagebox.showwarning("maskfits", "No image loaded to export a mask for.")
+            return
+        default_name = f"mask_{self._mask_stem(entry.path)}.fits"
+        out_path = filedialog.asksaveasfilename(
+            title="Save Mask As",
+            initialdir=os.getcwd(),
+            initialfile=default_name,
+            defaultextension=".fits",
+            filetypes=[("FITS files", "*.fits *.fit *.fts"), ("All files", "*.*")],
+        )
+        if not out_path:
+            return
+        self._build_mask_hdu(entry).writeto(out_path, overwrite=True)
         self.status.config(text=f"exported mask to {out_path}")
 
     # --------------------------------------------------------------- undo
@@ -1341,14 +1385,34 @@ class MaskFitsApp:
             self._update_click_line_preview(event.x, event.y)
 
     def _update_shape_preview(self, cx: float, cy: float) -> None:
-        if self._preview_item is not None:
-            self.canvas.delete(self._preview_item)
-            self._preview_item = None
+        self.canvas.delete("shape_preview")
+        self._preview_photo = None
         if self.tool.get() not in ("ellipse", "circle") or self.image is None:
             return
         a, b, angle = self._current_round_params()
-        pts = ellipse_polygon_points(cx, cy, a * self.zoom, b * self.zoom, angle)
-        self._preview_item = self.canvas.create_polygon(pts, outline=self._mask_tint_hex(), fill="", width=2)
+        disp_a, disp_b = a * self.zoom, b * self.zoom
+        pts = ellipse_polygon_points(cx, cy, disp_a, disp_b, angle)
+
+        # A translucent fill shows the actual area the shape covers, not just
+        # its edge. Tkinter canvas fills have no real alpha, so this is drawn
+        # as a small RGBA raster instead; a crisp polygon outline on top keeps
+        # the boundary precise. Fixed opacity, independent of the mask-opacity
+        # slider (that slider controls how painted mask pixels blend into the
+        # image once applied, not this hover preview).
+        tint = mask_tint_for(self.colormap.get(), self._active_lut())
+        alpha = round(0.5 * 255)
+        half = max(int(np.ceil(max(disp_a, disp_b))) + 2, 1)
+        box = 2 * half
+        local_mask = ellipse_mask((box, box), half, half, disp_a, disp_b, angle)
+        rgba = np.zeros((box, box, 4), dtype=np.uint8)
+        rgba[..., 0] = tint[0]
+        rgba[..., 1] = tint[1]
+        rgba[..., 2] = tint[2]
+        rgba[..., 3] = np.where(local_mask, alpha, 0).astype(np.uint8)
+        self._preview_photo = ImageTk.PhotoImage(Image.fromarray(rgba, mode="RGBA"))
+        self.canvas.create_image(cx - half, cy - half, image=self._preview_photo, anchor="nw", tags="shape_preview")
+        tint_hex = "#%02x%02x%02x" % tint
+        self.canvas.create_polygon(pts, outline=tint_hex, fill="", width=2, tags="shape_preview")
 
     def _update_click_line_preview(self, cx: float, cy: float) -> None:
         self.canvas.delete("line_preview")

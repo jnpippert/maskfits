@@ -41,7 +41,12 @@ class ManualCutsWindow(tk.Toplevel):
         self.title("Manual Cuts")
         self.configure(bg=APP_BG)
         self.resizable(False, False)
-        self.transient(parent)
+        # Deliberately NOT self.transient(parent): a transient window is tied
+        # to staying above its master (on macOS especially), which would force
+        # this dialog to keep covering the canvas. It should behave like an
+        # ordinary secondary window instead - clicking the main window sends
+        # this one behind it, and it stays open in the background so cuts can
+        # still be tweaked without reopening the dialog.
 
         self.on_apply = on_apply
         self._drag: Optional[str] = None  # "lo" | "hi" | None
