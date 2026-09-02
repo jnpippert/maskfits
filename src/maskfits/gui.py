@@ -414,7 +414,7 @@ class MaskFitsApp:
         status_panel.pack(fill="x")
         self.status = tk.Label(status_panel.inner, text="new file", bg=PANEL_BG, fg=TEXT_DIM, anchor="w", font=FONT_SMALL)
         self.status.pack(side="left", fill="x", expand=True, padx=14, pady=8)
-        tk.Label(status_panel.inner, text="\u00A9 Jan-Niklas Pippert 2026 · built with Claude", bg=PANEL_BG, fg=TEXT_DIM,
+        tk.Label(status_panel.inner, text="\u00A9 Jan-Niklas Pippert 2026", bg=PANEL_BG, fg=TEXT_DIM,
                  anchor="e", font=FONT_SMALL).pack(side="right", padx=14, pady=8)
 
     def _build_toolbar(self, parent: tk.Frame) -> None:
@@ -450,6 +450,9 @@ class MaskFitsApp:
         bin_entry.pack(side="left", padx=(0, 16), pady=10)
         bin_entry.bind("<Return>", self._apply_bin_entry)
         bin_entry.bind("<FocusOut>", self._apply_bin_entry)
+
+        SegmentedControl(parent, SCALE_OPTIONS, self.scale_function, outer_bg=PANEL_BG).pack(
+            side="left", padx=(0, 16), pady=10)
 
         RoundButton(parent, "<-", command=self.prev_image, outer_bg=PANEL_BG, width=36).pack(side="left", **pad)
         self.counter_label = tk.Label(parent, text="1/1", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL, width=6)

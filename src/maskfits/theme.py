@@ -26,6 +26,7 @@ DARK = dict(
     TRACK="#3a3a3d",
     BUTTON_BG="#28282b",
     BUTTON_HOVER="#333336",
+    CANVAS_BG="#0a0a0b",
 )
 
 LIGHT = dict(
@@ -46,12 +47,8 @@ LIGHT = dict(
     TRACK="#d3d3d0",
     BUTTON_BG="#e7e7e4",
     BUTTON_HOVER="#dadad7",
+    CANVAS_BG="#ffffff",
 )
-
-# The image viewport stays dark in both themes (like most image editors keep
-# their canvas neutral regardless of chrome theme) - it's not part of either
-# palette above.
-CANVAS_BG = "#0a0a0b"
 
 # Crimson is dark enough in both themes that text on top of an accent- (or
 # danger-) filled surface always needs to stay white, regardless of which

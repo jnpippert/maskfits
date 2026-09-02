@@ -10,11 +10,10 @@ def binned_extent(shape: tuple, bin_factor: int) -> tuple:
 
 
 def bin_func(data: np.ndarray, bin_factor: int) -> np.ndarray:
-    """NxN block-sum downsampling (bin_factor=3 -> 3x3 pixel binning): each
-    output pixel is the total of its source block, matching how a detector
-    physically bins (summed counts, not an average). Trims any remainder
-    rows/columns that don't divide evenly by bin_factor. NaN-aware: a block
-    sums its finite pixels and is only NaN if every pixel in it is NaN.
+    """NxN block-mean downsampling (bin_factor=3 -> 3x3 pixel binning): each
+    output pixel is the average of its source block. Trims any remainder
+    rows/columns that don't divide evenly by bin_factor. A block with any NaN
+    pixel becomes NaN - a single bad source pixel taints the whole binned one.
     """
     if bin_factor <= 1:
         return data
@@ -22,11 +21,9 @@ def bin_func(data: np.ndarray, bin_factor: int) -> np.ndarray:
     mcut, ncut = binned_extent((m, n), bin_factor)
     cropped = data[0:mcut, 0:ncut]
     reshaped = cropped.reshape(mcut // bin_factor, bin_factor, ncut // bin_factor, bin_factor)
-    finite = np.isfinite(reshaped)
-    summed = np.where(finite, reshaped, 0.0).sum(axis=(1, 3))
-    counts = finite.sum(axis=(1, 3))
-    summed[counts == 0] = np.nan
-    return summed
+    # Plain mean, no NaN masking: a single NaN in the source block should make
+    # the whole binned pixel NaN, and unmasked numpy math already does that.
+    return reshaped.mean(axis=(1, 3))
 
 
 def bin_mask(mask: np.ndarray, bin_factor: int) -> np.ndarray:
