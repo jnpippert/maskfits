@@ -2,7 +2,7 @@
 
 Two palettes live here - DARK (default) and LIGHT. The module-level names
 below (APP_BG, PANEL_BG, ...) always resolve to whichever one is active.
-gui.py/widgets.py/cuts_dialog.py/colormaps.py all import these names directly
+gui.py/widgets.py/cuts_histogram.py/colormaps.py all import these names directly
 (`from maskfits.theme import PANEL_BG`), which copies the value into each of
 those modules' own namespaces at import time - so switching themes can't just
 mutate this module's globals, it has to reach into those already-imported
@@ -66,7 +66,7 @@ globals().update(DARK)
 
 # Every module that does `from maskfits.theme import <color name>` needs its
 # copy patched too when the theme changes.
-_THEMED_MODULES = ("maskfits.gui", "maskfits.widgets", "maskfits.cuts_dialog", "maskfits.colormaps")
+_THEMED_MODULES = ("maskfits.gui", "maskfits.widgets", "maskfits.cuts_histogram", "maskfits.colormaps")
 
 
 def set_theme(mode: str) -> None:

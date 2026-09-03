@@ -33,16 +33,6 @@ _STOPS: dict[str, list[tuple[float, float, float, float]]] = {
         (0.80, 0.988, 0.645, 0.039),
         (1.00, 0.988, 0.998, 0.645),
     ],
-    "Hot": [
-        (0.00, 0.0, 0.0, 0.0),
-        (0.33, 1.0, 0.0, 0.0),
-        (0.66, 1.0, 1.0, 0.0),
-        (1.00, 1.0, 1.0, 1.0),
-    ],
-    "Cool": [
-        (0.0, 0.0, 1.0, 1.0),
-        (1.0, 1.0, 0.0, 1.0),
-    ],
 }
 
 # Jan-Niklas's MIDAS-style colormap, originally a standalone matplotlib

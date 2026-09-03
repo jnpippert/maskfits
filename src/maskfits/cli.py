@@ -63,8 +63,8 @@ def build_gui_parser() -> argparse.ArgumentParser:
     parser.add_argument("files", nargs="*", help="FITS files to open")
     parser.add_argument("-z", "--zoom", type=float, default=None,
                          help="initial zoom multiplier relative to fit-to-window (e.g. 2 for 2x)")
-    parser.add_argument("-m", "--mode", choices=["s", "e", "c"], default=None,
-                         help="initial mask mode: s=satellite, e=ellipse, c=circle")
+    parser.add_argument("-m", "--mode", choices=["s", "e"], default=None,
+                         help="initial mask mode: s=satellite, e=ellipse")
     return parser
 
 
@@ -77,11 +77,11 @@ def main(argv: list[str] | None = None) -> int:
         return args.func(args)
 
     if argv and argv[0] in {"-h", "--help"}:
-        print("usage: maskfits [-z ZOOM] [-m {s,e,c}] [IMAGE ...]  open the mask-editor GUI")
-        print("       maskfits {show,get,set} ...                 header inspection/editing on the command line")
+        print("usage: maskfits [-z ZOOM] [-m {s,e}] [IMAGE ...]  open the mask-editor GUI")
+        print("       maskfits {show,get,set} ...               header inspection/editing on the command line")
         print()
-        print("  -z, --zoom ZOOM     initial zoom multiplier relative to fit-to-window (e.g. 2 for 2x)")
-        print("  -m, --mode {s,e,c}  initial mask mode: s=satellite, e=ellipse, c=circle")
+        print("  -z, --zoom ZOOM   initial zoom multiplier relative to fit-to-window (e.g. 2 for 2x)")
+        print("  -m, --mode {s,e}  initial mask mode: s=satellite, e=ellipse")
         return 0
 
     gui_args = build_gui_parser().parse_args(argv)

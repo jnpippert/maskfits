@@ -9,11 +9,16 @@ from maskfits.masking import (
 
 
 def test_ellipse_mask_circle_centered():
+    # Pixel j's center sits at continuous coordinate j + 0.5 (it spans
+    # [j, j+1)), matching how click coordinates and the canvas renderer treat
+    # pixels - so the reference formula checks distance from there, not from
+    # the bare index.
     mask = ellipse_mask((21, 21), 10, 10, 5, 5, 0)
     assert mask[10, 10]
     assert mask[10, 14]
     assert not mask[10, 16]
-    assert mask.sum() == np.sum((np.mgrid[0:21, 0:21][0] - 10) ** 2 + (np.mgrid[0:21, 0:21][1] - 10) ** 2 <= 25)
+    yy, xx = np.mgrid[0:21, 0:21]
+    assert mask.sum() == np.sum((yy + 0.5 - 10) ** 2 + (xx + 0.5 - 10) ** 2 <= 25)
 
 
 def test_ellipse_mask_independent_axes():
@@ -30,9 +35,12 @@ def test_ellipse_mask_out_of_bounds_is_empty():
 def test_line_mask_covers_endpoints_and_band():
     mask = line_mask((20, 20), 2, 2, 17, 17, width=4)
     assert mask[2, 2]
-    assert mask[17, 17]
-    assert mask[10, 10]
-    assert not mask[0, 19]
+    assert mask[10, 10]  # well inside the band along the diagonal
+    assert not mask[0, 19]  # off to the side, outside the band width
+    # Flat-ended rectangle, not a rounded capsule: a pixel whose center sits
+    # past the segment's own endpoint (here, just beyond (17, 17)) is outside
+    # the band - a rounded cap would have reached it, a square-cut one doesn't.
+    assert not mask[19, 19]
 
 
 def test_line_mask_zero_length_is_a_dot():

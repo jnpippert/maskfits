@@ -32,9 +32,15 @@ def ellipse_mask(
     if x0 >= x1 or y0 >= y1:
         return mask
 
+    # Pixel index j spans continuous image coordinates [j, j+1) (matching how
+    # the canvas renderer and click coordinates already treat pixels), so its
+    # center - what actually needs to fall within the ellipse - is at j + 0.5,
+    # not at j itself. Comparing against the bare index would shift every
+    # mask half a pixel off from the click position (most visible at radius
+    # 0.5, where clicking a pixel's center would then miss it entirely).
     yy, xx = np.mgrid[y0:y1, x0:x1]
-    xr = xx - cx
-    yr = yy - cy
+    xr = (xx + 0.5) - cx
+    yr = (yy + 0.5) - cy
     theta = np.deg2rad(angle_deg)
     ct, st = np.cos(theta), np.sin(theta)
     xrot = xr * ct + yr * st
@@ -51,7 +57,10 @@ def line_mask(
     y1: float,
     width: float,
 ) -> np.ndarray:
-    """Boolean mask of `shape` marking a band of `width` pixels along a segment.
+    """Boolean mask of `shape` marking a flat-ended rectangular band of `width`
+    pixels along a segment - a true rotated rectangle, not a rounded-cap
+    capsule: the ends are cut off square exactly at (x0, y0) and (x1, y1),
+    with no semicircular bulge past them.
 
     Intended for masking satellite trails: draw a line from (x0, y0) to (x1, y1).
     """
@@ -66,15 +75,22 @@ def line_mask(
     if xlo >= xhi or ylo >= yhi:
         return mask
 
+    # Same pixel-center-is-at-index+0.5 convention as ellipse_mask - see there.
     yy, xx = np.mgrid[ylo:yhi, xlo:xhi]
+    px, py = xx + 0.5, yy + 0.5
     dx, dy = x1 - x0, y1 - y0
     length2 = dx * dx + dy * dy
     if length2 == 0:
-        dist = np.hypot(xx - x0, yy - y0)
-    else:
-        t = np.clip(((xx - x0) * dx + (yy - y0) * dy) / length2, 0.0, 1.0)
-        dist = np.hypot(xx - (x0 + t * dx), yy - (y0 + t * dy))
-    mask[ylo:yhi, xlo:xhi] = dist <= (width / 2.0)
+        # No direction to build a rectangle from - falls back to a round dot.
+        dist = np.hypot(px - x0, py - y0)
+        mask[ylo:yhi, xlo:xhi] = dist <= (width / 2.0)
+        return mask
+    # t is NOT clipped to [0, 1] here (unlike a capsule test) - it's used
+    # directly to require the projection fall strictly within the segment's
+    # own length, which is what gives the band its flat, square-cut ends.
+    t = ((px - x0) * dx + (py - y0) * dy) / length2
+    perp_dist = np.hypot(px - (x0 + t * dx), py - (y0 + t * dy))
+    mask[ylo:yhi, xlo:xhi] = (perp_dist <= (width / 2.0)) & (t >= 0.0) & (t <= 1.0)
     return mask
 
 

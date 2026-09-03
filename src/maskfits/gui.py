@@ -12,7 +12,7 @@ from PIL import Image, ImageTk
 
 from maskfits.binning import bin_func, bin_mask, unbin_mask
 from maskfits.colormaps import COLORMAP_LUTS, COLORMAP_NAMES, mask_tint_for
-from maskfits.cuts_dialog import ManualCutsWindow
+from maskfits.cuts_histogram import CutsHistogram
 from maskfits.imagedata import (
     PERCENTILE_PRESETS,
     STRETCH_NAMES,
@@ -50,13 +50,12 @@ from maskfits.widgets import RoundButton, RoundedPanel, RoundSlider, SegmentedCo
 MAG_SIZE = 31
 MAG_BLOCK = 6
 PAN_W = PAN_H = MAG_SIZE * MAG_BLOCK
-PREVIEW_W, PREVIEW_H = 210, 170
 MAX_SHAPE_SIZE = 500
 RADIUS_MIN = 0.5  # small enough to mask a single pixel
-SIDEBAR_W = 240
+SIDEBAR_W = 300
 ZOOM_STEP = 1.25
 ZOOM_MULT_MIN = 1.0
-ZOOM_MULT_MAX = 40.0
+ZOOM_MULT_MAX = 100.0
 
 LINE_STYLES = [
     ("segment", "Segment"),
@@ -69,13 +68,18 @@ SCALE_OPTIONS = [(name, name.capitalize()) for name in STRETCH_NAMES]
 HOTKEY_ENTRIES = [
     ("Left-click / drag", "Paint mask"),
     ("Right-click / drag", "Erase mask"),
+    ("Middle-click", "Cancel pending line, or redo (satellite mode only)"),
     ("Ctrl + left-click drag", "Pan the view"),
     ("Mouse wheel", "Zoom in"),
     ("← / →", "Previous / next image"),
     ("Ctrl+Z / U", "Undo last mask stroke"),
     ("Ctrl+Shift+Z / Y", "Redo"),
     ("R", "Clear the whole mask"),
+    ("Ctrl+R", "Reset zoom"),
     ("E / W", "Grow / shrink radius or thickness"),
+    ("1 / 2", "Lower / raise ellipticity (ellipse mode)"),
+    ("3 / 4", "Lower / raise angle (ellipse mode)"),
+    ("1 / 2 / 3", "Jump to Segment / Arrow / Line style (satellite mode)"),
     ("C", "Cycle colormap"),
     ("I", "Invert colormap"),
     ("S", "Smooth image (Gaussian, current sigma)"),
@@ -203,7 +207,7 @@ class MaskFitsApp:
         self.colormap = tk.StringVar(value="Grayscale")
         self.invert_colormap = tk.BooleanVar(value=False)
         self.mask_alpha = tk.IntVar(value=100)
-        self.tool = tk.StringVar(value="circle")
+        self.tool = tk.StringVar(value="ellipse")
         self.ellipticity = tk.IntVar(value=0)
         self.angle = tk.IntVar(value=0)
         self.radius = tk.DoubleVar(value=40.0)
@@ -224,6 +228,7 @@ class MaskFitsApp:
         self._line_anchor: Optional[tuple[float, float]] = None
         self._line_anchor_erase = False
         self._preview_photo: Optional[ImageTk.PhotoImage] = None
+        self._line_preview_photo: Optional[ImageTk.PhotoImage] = None
         self._undo: Optional[tuple[int, np.ndarray]] = None
         self._redo: Optional[tuple[int, np.ndarray]] = None
         self.light_mode = False
@@ -231,7 +236,10 @@ class MaskFitsApp:
         self._build_ui()
 
         self.tool.trace_add("write", lambda *_: self._on_tool_changed())
-        self.line_style.trace_add("write", lambda *_: self._cancel_pending_line())
+        # Switching style (via the segmented control or the 1/2/3 hotkeys)
+        # shouldn't discard a start point that's already been clicked - just
+        # refresh the preview so the new style's extension shows immediately.
+        self.line_style.trace_add("write", lambda *_: self._refresh_active_preview())
         self.scale_function.trace_add("write", lambda *_: self.render())
         self.colormap.trace_add("write", lambda *_: self.render())
         self.invert_colormap.trace_add("write", lambda *_: self.render())
@@ -249,6 +257,11 @@ class MaskFitsApp:
         self.root.bind("<i>", lambda e: self.invert_colormap.set(not self.invert_colormap.get()))
         self.root.bind("<s>", self._toggle_smoothing)
         self.root.bind("<b>", self._toggle_binning)
+        self.root.bind("<Control-r>", lambda e: self.reset_zoom())
+        self.root.bind("<Key-1>", lambda e: self._hotkey_digit(1))
+        self.root.bind("<Key-2>", lambda e: self._hotkey_digit(2))
+        self.root.bind("<Key-3>", lambda e: self._hotkey_digit(3))
+        self.root.bind("<Key-4>", lambda e: self._hotkey_digit(4))
 
         # A text box should give up keyboard focus once you're done with it -
         # otherwise every hotkey above keeps typing into it instead of firing.
@@ -308,7 +321,6 @@ class MaskFitsApp:
 
         mode_menu = tk.Menu(menubar, tearoff=0)
         mode_menu.add_radiobutton(label="Ellipse Mask", variable=self.tool, value="ellipse")
-        mode_menu.add_radiobutton(label="Circle Mask", variable=self.tool, value="circle")
         mode_menu.add_radiobutton(label="Line Mask (satellite trail)", variable=self.tool, value="line")
         menubar.add_cascade(label="Mode", menu=mode_menu)
 
@@ -321,8 +333,6 @@ class MaskFitsApp:
         scale_menu.add_separator()
         for percent in PERCENTILE_PRESETS:
             scale_menu.add_command(label=f"{percent}%", command=lambda p=percent: self.set_stretch(f"pct{p}"))
-        scale_menu.add_separator()
-        scale_menu.add_command(label="Manual...", command=self.open_manual_cuts)
         scale_menu.add_separator()
         for value, label in SCALE_OPTIONS:
             scale_menu.add_radiobutton(label=label, variable=self.scale_function, value=value)
@@ -353,16 +363,21 @@ class MaskFitsApp:
             "maskfits IMAGE1 IMAGE2 ...\n\n"
             "Left-click / drag: paint mask with the current tool\n"
             "Right-click / drag: erase mask\n"
+            "Middle-click: cancel a pending line start point, or redo (satellite mode only)\n"
             "Ctrl + left-click drag: pan the view\n"
             "Mouse wheel: zoom in (zoom 1 shows the full image; you can only zoom in from there)\n"
             "Ctrl+Z or U: undo last mask stroke\n"
             "Ctrl+Shift+Z or Y: redo\n"
             "R: clear the whole mask\n"
+            "Ctrl+R: reset zoom\n"
             "← / →: previous / next image\n"
             "E / W: grow / shrink the active tool's radius or thickness\n"
+            "1 / 2: lower / raise ellipticity (ellipse mode)\n"
+            "3 / 4: lower / raise angle (ellipse mode)\n"
+            "1 / 2 / 3: jump to Segment / Arrow / Line style (satellite mode)\n"
             "Esc: cancel a pending line click\n\n"
             "Ellipse mode: stamp shapes sized by the radius, ellipticity, and angle sliders\n"
-            "Circle mode: stamp circles sized by the radius slider\n\n"
+            "(ellipticity 0 is a circle)\n\n"
             "Satellite mode styles:\n"
             "  Segment - click a start point, click an end point\n"
             "  Arrow   - click start, click a second point; the trail extends\n"
@@ -399,9 +414,16 @@ class MaskFitsApp:
         self.canvas.bind("<ButtonPress-1>", lambda e: self._on_button(e, erase=False))
         self.canvas.bind("<B1-Motion>", lambda e: self._on_drag(e, erase=False))
         self.canvas.bind("<ButtonRelease-1>", lambda e: setattr(self, "_pan_drag", None))
-        self.canvas.bind("<ButtonPress-3>", lambda e: self._on_redo())
-        self.canvas.bind("<ButtonPress-2>", lambda e: self._on_button(e, erase=True))
-        self.canvas.bind("<B2-Motion>", lambda e: self._on_drag(e, erase=True))
+        # Tk's Aqua (macOS) port numbers the secondary mouse buttons the
+        # opposite way from X11/Windows: physical right-click reports as
+        # Button-2 there and middle-click as Button-3 (backwards from every
+        # other platform, a longstanding Tk/Aqua quirk) - so which literal
+        # button number means "erase" vs "right-click" has to flip by platform
+        # for the buttons to actually match up with the physical mouse button.
+        middle_click_num, right_click_num = (3, 2) if sys.platform == "darwin" else (2, 3)
+        self.canvas.bind(f"<ButtonPress-{right_click_num}>", self._on_secondary_click)
+        self.canvas.bind(f"<B{right_click_num}-Motion>", self._on_secondary_drag)
+        self.canvas.bind(f"<ButtonPress-{middle_click_num}>", self._on_middle_click)
         self.canvas.bind("<Control-Button-1>", self._on_pan_start)
         self.canvas.bind("<Control-B1-Motion>", self._on_pan_drag)
         self.canvas.bind("<MouseWheel>", self._on_wheel)
@@ -464,6 +486,8 @@ class MaskFitsApp:
 
         RoundButton(parent, "kill", command=self.kill_current, outer_bg=PANEL_BG, danger=True).pack(side="right", padx=14, pady=10)
         RoundButton(parent, "reset mask", command=self.reset_mask, outer_bg=PANEL_BG).pack(side="right", pady=10)
+        RoundButton(parent, "export mask", command=self.export_mask, outer_bg=PANEL_BG, accent=True).pack(
+            side="right", padx=(0, 8), pady=10)
 
     def _build_sidebar(self, parent: tk.Frame) -> None:
         parent.configure(bg=PANEL_BG)
@@ -494,33 +518,13 @@ class MaskFitsApp:
 
         self._divider(parent)
 
-        self.lowcut_var = tk.StringVar(value="0")
-        self.highcut_var = tk.StringVar(value="1")
-
-        # Stacked label-left/entry-right rows (same pattern as the shape-size
-        # boxes below) rather than a single row of two label+entry pairs -
-        # the sidebar isn't wide enough to fit both entries side by side
-        # without the highcut box getting clipped.
-        lowcut_row = tk.Frame(parent, bg=PANEL_BG)
-        lowcut_row.pack(fill="x", padx=14, pady=(10, 4))
-        tk.Label(lowcut_row, text="lowcut:", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL, anchor="w").pack(side="left")
-        lowcut_entry = tk.Entry(lowcut_row, textvariable=self.lowcut_var, width=8, justify="center", bg=BUTTON_BG,
-                                 fg=TEXT, insertbackground=TEXT, relief="flat", highlightthickness=1,
-                                 highlightbackground=PANEL_BORDER, highlightcolor=ACCENT, font=FONT_SMALL)
-        lowcut_entry.pack(side="right")
-        lowcut_entry.bind("<Return>", self._apply_lowcut_entry)
-        lowcut_entry.bind("<FocusOut>", self._apply_lowcut_entry)
-
-        highcut_row = tk.Frame(parent, bg=PANEL_BG)
-        highcut_row.pack(fill="x", padx=14, pady=(0, 10))
-        tk.Label(highcut_row, text="highcut:", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL, anchor="w").pack(
-            side="left")
-        highcut_entry = tk.Entry(highcut_row, textvariable=self.highcut_var, width=8, justify="center",
-                                  bg=BUTTON_BG, fg=TEXT, insertbackground=TEXT, relief="flat", highlightthickness=1,
-                                  highlightbackground=PANEL_BORDER, highlightcolor=ACCENT, font=FONT_SMALL)
-        highcut_entry.pack(side="right")
-        highcut_entry.bind("<Return>", self._apply_highcut_entry)
-        highcut_entry.bind("<FocusOut>", self._apply_highcut_entry)
+        # Live pixel-value histogram with draggable lowcut/highcut lines,
+        # embedded directly in the sidebar instead of a separate popup.
+        self.cuts_histogram = CutsHistogram(
+            parent, np.array([0.0, 1.0]), 0.0, 1.0, self._on_histogram_apply,
+            width=SIDEBAR_W - 28, height=150, bins=40, outer_bg=PANEL_BG,
+        )
+        self.cuts_histogram.pack(padx=14, pady=(10, 10))
 
         alpha_frame = tk.Frame(parent, bg=PANEL_BG)
         alpha_frame.pack(fill="x", padx=14, pady=(0, 10))
@@ -536,27 +540,21 @@ class MaskFitsApp:
                                     outer_bg=PANEL_BG)
         alpha_slider.pack(pady=(4, 0))
         # Re-render only once the slider is released, not on every drag step -
-        # this drives a full main-canvas repaint, same reasoning as the manual
-        # cuts dialog: continuous re-rendering during a drag is what feels slow.
+        # this drives a full main-canvas repaint, same reasoning as the cuts
+        # histogram above: continuous re-rendering during a drag is what feels slow.
         alpha_slider.bind("<ButtonRelease-1>", lambda e: self.render())
-
-        RoundButton(parent, "export mask", command=self.export_mask, outer_bg=PANEL_BG, accent=True,
-                    width=SIDEBAR_W - 28).pack(padx=14, pady=(4, 12))
 
         self._divider(parent)
 
         mode_frame = tk.Frame(parent, bg=PANEL_BG)
         mode_frame.pack(fill="x", padx=14, pady=(10, 4))
-        tk.Label(mode_frame, text="mode", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).pack(anchor="w")
         SegmentedControl(
-            mode_frame, [("ellipse", "Ellipse"), ("circle", "Circle"), ("line", "Satellite")], self.tool,
+            mode_frame, [("ellipse", "Ellipse"), ("line", "Satellite")], self.tool,
             outer_bg=PANEL_BG,
-        ).pack(anchor="w", pady=(4, 0))
+        ).pack(anchor="w")
 
         self.tool_options_frame = tk.Frame(parent, bg=PANEL_BG)
         self.tool_options_frame.pack(fill="x")
-
-        self.preview_canvas: Optional[tk.Canvas] = None
 
     def _divider(self, parent: tk.Frame) -> None:
         tk.Frame(parent, bg=PANEL_BORDER, height=1).pack(fill="x", padx=14)
@@ -618,9 +616,7 @@ class MaskFitsApp:
         if self.tool.get() == "ellipse":
             self._build_slider_row(self.tool_options_frame, "radius", self.radius, RADIUS_MIN, MAX_SHAPE_SIZE, suffix=" px")
             self._build_slider_row(self.tool_options_frame, "ellipticity", self.ellipticity, 0, 90, suffix="%")
-            self._build_slider_row(self.tool_options_frame, "angle", self.angle, 0, 180, suffix="°")
-        elif self.tool.get() == "circle":
-            self._build_slider_row(self.tool_options_frame, "radius", self.radius, RADIUS_MIN, MAX_SHAPE_SIZE, suffix=" px")
+            self._build_slider_row(self.tool_options_frame, "angle", self.angle, -180, 180, suffix="°")
         else:
             self._build_slider_row(self.tool_options_frame, "thickness", self.thickness, 1, MAX_SHAPE_SIZE, suffix=" px")
             style_frame = tk.Frame(self.tool_options_frame, bg=PANEL_BG)
@@ -628,13 +624,8 @@ class MaskFitsApp:
             tk.Label(style_frame, text="style", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).pack(anchor="w")
             SegmentedControl(style_frame, LINE_STYLES, self.line_style, outer_bg=PANEL_BG).pack(anchor="w", pady=(4, 0))
 
-        self.preview_canvas = tk.Canvas(self.tool_options_frame, width=PREVIEW_W, height=PREVIEW_H,
-                                         bg=PANEL_BG, highlightthickness=0)
-        self.preview_canvas.pack(padx=14, pady=14)
-
         for var in (self.ellipticity, self.angle, self.radius, self.thickness):
-            var.trace_add("write", lambda *_: self.render_tool_preview())
-        self.render_tool_preview()
+            var.trace_add("write", lambda *_: self._refresh_active_preview())
 
     def _on_tool_changed(self) -> None:
         self._rebuild_tool_options()
@@ -642,19 +633,18 @@ class MaskFitsApp:
 
     def _cancel_pending_line(self) -> None:
         self._line_anchor = None
+        self._line_preview_photo = None
         if hasattr(self, "canvas"):
             self.canvas.delete("line_preview")
 
     def _current_round_params(self) -> tuple[float, float, float]:
-        """(semi-major axis, semi-minor axis, angle) for the current ellipse/circle tool.
+        """(semi-major axis, semi-minor axis, angle) for the ellipse tool.
 
-        Ellipse mode shares the same radius slider as circle mode for overall size
-        (a); the ellipticity slider (0-90%) shrinks b = a * (1 - ellipticity/100),
-        so ellipticity=0 is exactly a circle of that radius.
+        The radius slider sets the overall size (a); the ellipticity slider
+        (0-90%) shrinks b = a * (1 - ellipticity/100), so ellipticity=0 is
+        exactly a circle of that radius - there's no separate circle mode.
         """
         r = self.radius.get()
-        if self.tool.get() == "circle":
-            return r, r, 0
         b = r * (1 - self.ellipticity.get() / 100.0)
         return r, b, self.angle.get()
 
@@ -698,29 +688,16 @@ class MaskFitsApp:
         return f"{value:.4g}"
 
     def _update_cuts_display(self) -> None:
-        self.lowcut_var.set(self._fmt(self.entry.lowcut))
-        self.highcut_var.set(self._fmt(self.entry.highcut))
+        """Refresh the embedded histogram from the current entry's data and
+        cut levels - call whenever either could have changed: loading an
+        image, switching the stretch/cut preset, or toggling smoothing/binning
+        (which changes the array the histogram should actually reflect)."""
+        if self.image is not None:
+            self.cuts_histogram.set_data(self.image.data, self.entry.lowcut, self.entry.highcut)
 
-    def _apply_lowcut_entry(self, _event: Optional[tk.Event] = None) -> None:
-        entry = self.entry
-        try:
-            value = min(float(self.lowcut_var.get()), entry.highcut)
-        except ValueError:
-            self._update_cuts_display()
-            return
-        entry.lowcut = value
-        self._update_cuts_display()
-        self.render()
-
-    def _apply_highcut_entry(self, _event: Optional[tk.Event] = None) -> None:
-        entry = self.entry
-        try:
-            value = max(float(self.highcut_var.get()), entry.lowcut)
-        except ValueError:
-            self._update_cuts_display()
-            return
-        entry.highcut = value
-        self._update_cuts_display()
+    def _on_histogram_apply(self, lowcut: float, highcut: float) -> None:
+        self.entry.lowcut = lowcut
+        self.entry.highcut = highcut
         self.render()
 
     def set_stretch(self, stretch: str) -> None:
@@ -731,18 +708,6 @@ class MaskFitsApp:
 
     def reset_scale(self) -> None:
         self.scale_function.set("linear")
-
-    def open_manual_cuts(self) -> None:
-        if self.image is None:
-            messagebox.showwarning("maskfits", "No image loaded.")
-            return
-        ManualCutsWindow(self.root, self.image.data, self.entry.lowcut, self.entry.highcut, self._apply_manual_cuts)
-
-    def _apply_manual_cuts(self, lowcut: float, highcut: float) -> None:
-        self.entry.lowcut = lowcut
-        self.entry.highcut = highcut
-        self._update_cuts_display()
-        self.render()
 
     # ------------------------------------------------------------- navigation
 
@@ -900,6 +865,7 @@ class MaskFitsApp:
             entry.is_smoothed = False
             entry.image.data = self._current_display_data(entry)
             self._update_smooth_button()
+            self._update_cuts_display()
             self.render()
             self.status.config(text="smoothing removed")
             return
@@ -911,6 +877,7 @@ class MaskFitsApp:
         entry.is_smoothed = True
         entry.image.data = self._current_display_data(entry)
         self._update_smooth_button()
+        self._update_cuts_display()
         self.render()
         self.status.config(text=f"smoothed (sigma={self._fmt(sigma)})")
 
@@ -928,11 +895,13 @@ class MaskFitsApp:
             entry.is_smoothed = False
             entry.image.data = self._current_display_data(entry)
             self._update_smooth_button()
+            self._update_cuts_display()
             self.render()
             self.status.config(text="smoothing removed")
             return
         entry.smooth_sigma = sigma
         entry.image.data = self._current_display_data(entry)
+        self._update_cuts_display()
         self.render()
         self.status.config(text=f"smoothed (sigma={self._fmt(sigma)})")
 
@@ -966,14 +935,16 @@ class MaskFitsApp:
         the binned mask (including edits made while binned) is expanded back
         over the full-res mask. Export always uses the full-res mask
         regardless of which state this is currently in - see _full_res_mask /
-        export_mask. Binning changes the array shape, so the view is
-        recentered and reset to zoom 1 (matching the new size) every time it
-        toggles or the factor changes.
+        export_mask. Binning changes the array shape, so the view center and
+        the tool's radius/thickness are rescaled to match (see
+        _rescale_view_for_bin_change) rather than snapping back to zoom 1 -
+        you keep looking at the same region, at the same apparent zoom.
         """
         entry = self.entry
         if entry.image is None:
             return
         if entry.is_binned:
+            old_factor = entry.bin_factor
             entry.image.mask = unbin_mask(entry.image.mask, entry.bin_factor, entry.mask_backup)
             entry.mask_backup = None
             entry.is_binned = False
@@ -981,7 +952,8 @@ class MaskFitsApp:
             self._undo = None
             self._redo = None
             self._update_bin_button()
-            self.reset_zoom()
+            self._update_cuts_display()
+            self._rescale_view_for_bin_change(old_factor)
             self.status.config(text="binning removed")
             return
         factor = self._read_bin_factor()
@@ -996,7 +968,8 @@ class MaskFitsApp:
         self._undo = None
         self._redo = None
         self._update_bin_button()
-        self.reset_zoom()
+        self._update_cuts_display()
+        self._rescale_view_for_bin_change(1.0 / factor)
         self.status.config(text=f"binned {factor}x{factor}")
 
     def _apply_bin_entry(self, _event: Optional[tk.Event] = None) -> None:
@@ -1008,13 +981,15 @@ class MaskFitsApp:
         Changing the factor while binned first expands the current binned mask
         (which may hold edits made at the old factor) back over the full-res
         mask, then re-derives both data and mask fresh at the new factor - so
-        edits are never lost and never compounded. The view is recentered and
-        reset to zoom 1 since the array size just changed again.
+        edits are never lost and never compounded. The view center and the
+        tool's radius/thickness are rescaled to match the new factor (see
+        _rescale_view_for_bin_change) rather than snapping back to zoom 1.
         """
         entry = self.entry
         factor = self._read_bin_factor()
         if entry.image is None or not entry.is_binned:
             return
+        old_factor = entry.bin_factor
         if factor <= 1:
             entry.image.mask = unbin_mask(entry.image.mask, entry.bin_factor, entry.mask_backup)
             entry.mask_backup = None
@@ -1023,7 +998,8 @@ class MaskFitsApp:
             self._undo = None
             self._redo = None
             self._update_bin_button()
-            self.reset_zoom()
+            self._update_cuts_display()
+            self._rescale_view_for_bin_change(old_factor)
             self.status.config(text="binning removed")
             return
         full_res_mask = unbin_mask(entry.image.mask, entry.bin_factor, entry.mask_backup)
@@ -1033,8 +1009,32 @@ class MaskFitsApp:
         entry.image.mask = bin_mask(full_res_mask, factor)
         self._undo = None
         self._redo = None
-        self.reset_zoom()
+        self._update_cuts_display()
+        self._rescale_view_for_bin_change(old_factor / factor)
         self.status.config(text=f"binned {factor}x{factor}")
+
+    def _rescale_view_for_bin_change(self, k: float) -> None:
+        """Keep the same physical region and the same effective mask size in
+        view across a binning change that rescales the pixel grid: new_pos =
+        old_pos * k. k=1/factor when binning turns on (each new pixel covers
+        `factor` old ones, so the same point sits at 1/factor its old
+        coordinate - e.g. an 8px radius becomes 4px at factor 2), k=factor
+        when it turns off, and k=old_factor/new_factor when the factor
+        changes while already binned.
+
+        zoom_mult itself is left untouched: it's already a ratio relative to
+        fit-to-window, and fit_zoom (recomputed here from the new array
+        shape) scales by the same 1/k automatically, so the ratio - and thus
+        the apparent on-screen zoom - stays correct without adjustment.
+        """
+        self.view_cx *= k
+        self.view_cy *= k
+        self.radius.set(max(min(self.radius.get() * k, MAX_SHAPE_SIZE), RADIUS_MIN))
+        self.thickness.set(max(min(int(round(self.thickness.get() * k)), MAX_SHAPE_SIZE), 1))
+        if self.image is not None:
+            self.fit_zoom = self._compute_fit_zoom()
+        self._update_zoom_label()
+        self.render()
 
     def _full_res_mask(self, entry: "Entry") -> np.ndarray:
         """entry.image.mask translated back to full (unbinned) resolution -
@@ -1055,19 +1055,55 @@ class MaskFitsApp:
             self._defocus_active_entry()
 
     def _adjust_shape_size(self, direction: int) -> None:
-        """Hotkey e/w: grow/shrink the active tool's size (radius/thickness)."""
-        step = 5
+        """Hotkey e/w: grow/shrink the active tool's size (radius/thickness).
+
+        The step shrinks as you zoom in - at the default zoom (zoom_mult=1)
+        it's the usual 5px, but at 4x zoom each pixel is 4x bigger on screen
+        so a 5px jump is coarse; scaling the step down by zoom_mult (floored
+        at 1px) gives pixel-by-pixel control once you're zoomed in enough to
+        actually see individual pixels.
+        """
+        step = max(1, round(5 / self.zoom_mult))
         tool = self.tool.get()
-        if tool in ("circle", "ellipse"):
+        if tool == "ellipse":
             var, lo, hi = self.radius, RADIUS_MIN, MAX_SHAPE_SIZE
         elif tool == "line":
             var, lo, hi = self.thickness, 1, MAX_SHAPE_SIZE
         else:
             return
         var.set(max(lo, min(var.get() + direction * step, hi)))
-        if tool in ("ellipse", "circle") and self._cursor_img_pos is not None:
-            cx, cy = self.img_to_canvas(*self._cursor_img_pos)
-            self._update_shape_preview(cx, cy)
+        self._refresh_active_preview()
+
+    def _hotkey_digit(self, n: int) -> None:
+        """Hotkeys 1-4 are mode-dependent: in ellipse mode they nudge
+        ellipticity (1/2) or angle (3/4); in satellite mode 1/2/3 jump
+        straight to the corresponding line style (Segment/Arrow/Line)."""
+        tool = self.tool.get()
+        if tool == "ellipse":
+            if n == 1:
+                self._adjust_ellipticity(-1)
+            elif n == 2:
+                self._adjust_ellipticity(1)
+            elif n == 3:
+                self._adjust_angle(-1)
+            elif n == 4:
+                self._adjust_angle(1)
+        elif tool == "line" and 1 <= n <= len(LINE_STYLES):
+            self.line_style.set(LINE_STYLES[n - 1][0])
+
+    def _adjust_ellipticity(self, direction: int) -> None:
+        """Hotkeys 1/2: lower/raise ellipticity. Ellipse mode only."""
+        if self.tool.get() != "ellipse":
+            return
+        step = 2
+        self.ellipticity.set(max(0, min(self.ellipticity.get() + direction * step, 90)))
+
+    def _adjust_angle(self, direction: int) -> None:
+        """Hotkeys 3/4: lower/raise angle. Ellipse mode only."""
+        if self.tool.get() != "ellipse":
+            return
+        step = 2
+        self.angle.set(max(-180, min(self.angle.get() + direction * step, 180)))
 
     # -------------------------------------------------------------- export
 
@@ -1157,6 +1193,35 @@ class MaskFitsApp:
             if idx == self.index:
                 self.render()
 
+    def _on_secondary_click(self, event: tk.Event) -> None:
+        """The mouse button that's the platform's actual right-click: erases,
+        the same in both ellipse mode (an eraser, mirroring left-click's
+        paint) and satellite mode (erases along a trail, or sets/finalizes an
+        erase-mode line start point, same as _on_button already does for any
+        click once an anchor is pending)."""
+        self._on_button(event, erase=True)
+
+    def _on_secondary_drag(self, event: tk.Event) -> None:
+        """Dragging with the right-click button erases continuously - a
+        no-op in satellite mode, which doesn't use drag at all."""
+        self._on_drag(event, erase=True)
+
+    def _on_middle_click(self, event: tk.Event) -> None:
+        """The mouse button that's the platform's actual middle-click: does
+        nothing in ellipse mode (right-click alone is the eraser there); in
+        satellite mode it exits a pending line start point (like Esc), or
+        redoes if nothing's pending."""
+        if self.tool.get() != "ellipse":
+            self._on_cancel_or_redo()
+
+    def _on_cancel_or_redo(self, _event: Optional[tk.Event] = None) -> None:
+        """Cancels a pending line start point (like Esc) if one is currently
+        clicked in satellite mode; otherwise redoes, its usual meaning."""
+        if self.tool.get() == "line" and self._line_anchor is not None:
+            self._cancel_pending_line()
+            return
+        self._on_redo()
+
     # ------------------------------------------------------- coordinate math
 
     def img_to_canvas(self, ix: float, iy: float) -> tuple[float, float]:
@@ -1189,7 +1254,6 @@ class MaskFitsApp:
 
     def render(self) -> None:
         self.render_magnifier()
-        self.render_tool_preview()
         self.canvas.delete("img")
         image = self.image
         if image is None or self.canvas_w <= 1:
@@ -1321,31 +1385,6 @@ class MaskFitsApp:
         for y in range(0, h, step):
             canvas.create_line(0, y, w, y, fill=PANEL_BORDER)
 
-    def render_tool_preview(self) -> None:
-        """Draw the shape at the same on-screen scale it currently has on the main canvas.
-
-        Uses self.zoom (fit_zoom * zoom_mult), not a fixed 1:1 pixel scale - a radius
-        of 100 should look exactly as big here as it does when you hover the image,
-        so this panel is a true stand-in for "move the mouse onto the image and look".
-        Deliberately not auto-fit-to-box either: it should really grow with the
-        slider and clip against the panel edges once it outgrows it.
-        """
-        if self.preview_canvas is None or not self.preview_canvas.winfo_exists():
-            return
-        self.preview_canvas.delete("all")
-        w, h = PREVIEW_W, PREVIEW_H
-        zoom = self.zoom
-        if self.tool.get() in ("ellipse", "circle"):
-            a, b, angle = self._current_round_params()
-            pts = ellipse_polygon_points(w / 2, h / 2, a * zoom, b * zoom, angle)
-            self.preview_canvas.create_polygon(pts, fill=ACCENT, outline=ACCENT, smooth=True)
-        else:
-            thickness = max(self.thickness.get() * zoom, 1)
-            self.preview_canvas.create_line(
-                0, h / 2, w, h / 2,
-                fill=ACCENT, width=thickness, capstyle=tk.ROUND, joinstyle=tk.ROUND,
-            )
-
     # ---------------------------------------------------------------- input
 
     def _on_motion(self, event: tk.Event) -> None:
@@ -1382,15 +1421,29 @@ class MaskFitsApp:
             self.readout["RA"].config(text="")
             self.readout["DEC"].config(text="")
 
-        if self.tool.get() in ("ellipse", "circle"):
+        if self.tool.get() == "ellipse":
             self._update_shape_preview(event.x, event.y)
         elif self._line_anchor is not None:
             self._update_click_line_preview(event.x, event.y)
 
+    def _refresh_active_preview(self) -> None:
+        """Redraw whichever hover preview is currently showing, at the last
+        known cursor position - for anything that changes its size/position
+        (radius, ellipticity, angle, thickness, zoom) without the mouse
+        itself moving, so the preview doesn't go stale until the next
+        physical mouse movement happens to trigger a redraw."""
+        if self._cursor_img_pos is None:
+            return
+        cx, cy = self.img_to_canvas(*self._cursor_img_pos)
+        if self.tool.get() == "ellipse":
+            self._update_shape_preview(cx, cy)
+        elif self._line_anchor is not None:
+            self._update_click_line_preview(cx, cy)
+
     def _update_shape_preview(self, cx: float, cy: float) -> None:
         self.canvas.delete("shape_preview")
         self._preview_photo = None
-        if self.tool.get() not in ("ellipse", "circle") or self.image is None:
+        if self.tool.get() != "ellipse" or self.image is None:
             return
         a, b, angle = self._current_round_params()
         disp_a, disp_b = a * self.zoom, b * self.zoom
@@ -1419,6 +1472,7 @@ class MaskFitsApp:
 
     def _update_click_line_preview(self, cx: float, cy: float) -> None:
         self.canvas.delete("line_preview")
+        self._line_preview_photo = None
         if self.image is None or self._line_anchor is None:
             return
         x0, y0 = self._line_anchor
@@ -1426,9 +1480,33 @@ class MaskFitsApp:
         ex0, ey0, ex1, ey1 = self._extend_for_style(x0, y0, x1, y1)
         sx0, sy0 = self.img_to_canvas(ex0, ey0)
         sx1, sy1 = self.img_to_canvas(ex1, ey1)
-        self.canvas.create_line(sx0, sy0, sx1, sy1, fill=self._mask_tint_hex(), width=2, dash=(4, 3), tags="line_preview")
+
+        # A translucent filled band shows the actual width the trail will be
+        # masked at, not just a dashed centerline - same treatment as the
+        # ellipse hover preview (fixed opacity, a small local raster built
+        # with the same line_mask geometry the real stamp uses).
+        disp_width = max(self.thickness.get() * self.zoom, 1.0)
+        half_w = disp_width / 2.0 + 1
+        xlo = max(int(min(sx0, sx1) - half_w), 0)
+        xhi = min(int(max(sx0, sx1) + half_w) + 1, self.canvas_w)
+        ylo = max(int(min(sy0, sy1) - half_w), 0)
+        yhi = min(int(max(sy0, sy1) + half_w) + 1, self.canvas_h)
+        if xhi > xlo and yhi > ylo:
+            tint = mask_tint_for(self.colormap.get(), self._active_lut())
+            alpha = round(0.5 * 255)
+            local_mask = line_mask((yhi - ylo, xhi - xlo), sx0 - xlo, sy0 - ylo, sx1 - xlo, sy1 - ylo, disp_width)
+            rgba = np.zeros((yhi - ylo, xhi - xlo, 4), dtype=np.uint8)
+            rgba[..., 0] = tint[0]
+            rgba[..., 1] = tint[1]
+            rgba[..., 2] = tint[2]
+            rgba[..., 3] = np.where(local_mask, alpha, 0).astype(np.uint8)
+            self._line_preview_photo = ImageTk.PhotoImage(Image.fromarray(rgba, mode="RGBA"))
+            self.canvas.create_image(xlo, ylo, image=self._line_preview_photo, anchor="nw", tags="line_preview")
+
         ax, ay = self.img_to_canvas(x0, y0)
-        self.canvas.create_oval(ax - 4, ay - 4, ax + 4, ay + 4, fill=ACCENT, outline="", tags="line_preview")
+        anchor_r = disp_width / 2.0
+        self.canvas.create_oval(ax - anchor_r, ay - anchor_r, ax + anchor_r, ay + anchor_r,
+                                 fill=ACCENT, outline="", tags="line_preview")
 
     def _extend_for_style(self, x0: float, y0: float, x1: float, y1: float) -> tuple[float, float, float, float]:
         if self.image is None:
@@ -1445,7 +1523,7 @@ class MaskFitsApp:
         if self.image is None:
             return
         tool = self.tool.get()
-        if tool in ("ellipse", "circle"):
+        if tool == "ellipse":
             self._push_undo()
             self._stamp_round(event.x, event.y, erase)
         elif tool == "line":
@@ -1458,7 +1536,7 @@ class MaskFitsApp:
 
     def _on_drag(self, event: tk.Event, erase: bool) -> None:
         tool = self.tool.get()
-        if tool in ("ellipse", "circle") and self.image is not None:
+        if tool == "ellipse" and self.image is not None:
             self._stamp_round(event.x, event.y, erase)
             self._update_shape_preview(event.x, event.y)
 
@@ -1472,6 +1550,7 @@ class MaskFitsApp:
         stamp = line_mask(self.image.data.shape, ex0, ey0, ex1, ey1, self.thickness.get())
         self.image.mask = (self.image.mask & ~stamp) if self._line_anchor_erase else (self.image.mask | stamp)
         self._line_anchor = None
+        self._line_preview_photo = None
         self.canvas.delete("line_preview")
         self.render()
 
@@ -1528,9 +1607,14 @@ class MaskFitsApp:
         self.view_cy += iy - new_cy
         self._update_zoom_label()
         self.render()
+        # The hover-preview shape is sized in canvas pixels (radius/thickness
+        # * zoom), so it goes stale the instant zoom changes - redraw it
+        # immediately at the same canvas position rather than waiting for the
+        # next mouse move to happen to refresh it.
+        self._refresh_active_preview()
 
 
-MODE_FLAGS = {"s": "line", "e": "ellipse", "c": "circle"}
+MODE_FLAGS = {"s": "line", "e": "ellipse"}
 
 
 def run_gui(paths: list[str], zoom: Optional[float] = None, mode: Optional[str] = None) -> int:
