@@ -1456,7 +1456,7 @@ class MaskFitsApp:
         # slider (that slider controls how painted mask pixels blend into the
         # image once applied, not this hover preview).
         tint = mask_tint_for(self.colormap.get(), self._active_lut())
-        alpha = round(0.5 * 255)
+        alpha = round(0.15 * 255)
         half = max(int(np.ceil(max(disp_a, disp_b))) + 2, 1)
         box = 2 * half
         local_mask = ellipse_mask((box, box), half, half, disp_a, disp_b, angle)
@@ -1468,7 +1468,7 @@ class MaskFitsApp:
         self._preview_photo = ImageTk.PhotoImage(Image.fromarray(rgba, mode="RGBA"))
         self.canvas.create_image(cx - half, cy - half, image=self._preview_photo, anchor="nw", tags="shape_preview")
         tint_hex = "#%02x%02x%02x" % tint
-        self.canvas.create_polygon(pts, outline=tint_hex, fill="", width=2, tags="shape_preview")
+        self.canvas.create_polygon(pts, outline=tint_hex, fill="", width=1, tags="shape_preview")
 
     def _update_click_line_preview(self, cx: float, cy: float) -> None:
         self.canvas.delete("line_preview")
