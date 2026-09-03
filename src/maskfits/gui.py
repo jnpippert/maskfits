@@ -1301,6 +1301,7 @@ class MaskFitsApp:
         self._photo = ImageTk.PhotoImage(pil_img)
         self.canvas.create_image(cx0, cy0, image=self._photo, anchor="nw", tags="img")
         self.canvas.tag_lower("img")
+        self._refresh_active_preview()
 
     def _active_lut(self) -> np.ndarray:
         """The current colormap's LUT, reversed if Invert Colormap is on."""
