@@ -166,11 +166,18 @@ class Entry:
 
         # The mask, unlike the data, only ever changes shape via binning (never
         # smoothing). It's user-edited at whatever resolution is currently
-        # active, so instead of a pure cache it's re-derived fresh on every
-        # bin-related change - mask_backup holds the full-res mask while
-        # currently binned (the source both to unbin back into and to fall
-        # back on for whatever bottom/right remainder binning trimmed off).
+        # active - mask_backup holds the full-res mask while currently binned
+        # (the source both to unbin back into and to fall back on for whatever
+        # bottom/right remainder binning trimmed off). Reshaping it (bin_mask/
+        # unbin_mask) touches the full-res array regardless of bin factor, so
+        # it's not cheap - mask_dirty tracks whether the mask has actually been
+        # painted on (or cleared/undone/redone) since the last reshape, so
+        # toggling bin/unbin back and forth with no edits in between can reuse
+        # the cached arrays below instead of recomputing the reshape each time.
         self.mask_backup: Optional[np.ndarray] = None
+        self.mask_dirty: bool = False
+        self._binned_mask_cache: Optional[np.ndarray] = None
+        self._binned_mask_cache_factor: Optional[int] = None
 
     def ensure_loaded(self, stretch: str) -> None:
         if self.image is not None or self.path is None:
@@ -741,6 +748,9 @@ class MaskFitsApp:
         entry._smoothed_binned_cache_sigma = None
         entry._smoothed_binned_cache_factor = None
         entry.mask_backup = None
+        entry.mask_dirty = False
+        entry._binned_mask_cache = None
+        entry._binned_mask_cache_factor = None
         self._undo = None
         self._redo = None
 
@@ -785,6 +795,7 @@ class MaskFitsApp:
             return
         self._push_undo()
         self.image.mask[:] = False
+        self._mark_mask_dirty()
         self.render()
         self.status.config(text="mask cleared")
 
@@ -832,6 +843,38 @@ class MaskFitsApp:
         if entry.is_binned:
             return self._binned_cache_for(entry, entry.bin_factor)
         return entry.original_data
+
+    def _mark_mask_dirty(self, entry: Optional["Entry"] = None) -> None:
+        """Flag that a working mask was just directly edited (painted, erased,
+        cleared, undone, or redone) - invalidates the bin/unbin reshape
+        shortcuts in _unbin_mask_cached/_bin_mask_cached below, since the
+        full-res mask no longer matches what they last saw. Defaults to the
+        current entry; undo/redo pass the entry they actually touched, which
+        may not be the one currently on screen."""
+        (entry if entry is not None else self.entry).mask_dirty = True
+
+    def _unbin_mask_cached(self, entry: "Entry") -> np.ndarray:
+        """Full-res mask matching entry.image.mask's current (binned)
+        content. Reshaping a binned mask back to full resolution touches the
+        whole full-res array regardless of bin factor, so if nothing has been
+        painted since it was last binned down, this just reuses mask_backup
+        (exactly what unbin_mask would reconstruct anyway) instead of paying
+        for that reshape again."""
+        if not entry.mask_dirty:
+            return entry.mask_backup
+        return unbin_mask(entry.image.mask, entry.bin_factor, entry.mask_backup)
+
+    def _bin_mask_cached(self, entry: "Entry", full_res_mask: np.ndarray, factor: int) -> np.ndarray:
+        """Binned-resolution mask for full_res_mask at `factor`, reusing the
+        last binned-down result at this same factor when nothing has changed
+        since (same reasoning as _unbin_mask_cached, other direction)."""
+        if (not entry.mask_dirty and entry._binned_mask_cache is not None
+                and entry._binned_mask_cache_factor == factor):
+            return entry._binned_mask_cache
+        computed = bin_mask(full_res_mask, factor)
+        entry._binned_mask_cache = computed
+        entry._binned_mask_cache_factor = factor
+        return computed
 
     def _read_sigma(self) -> float:
         """Parse/clamp the sigma box, writing the cleaned-up value back to it."""
@@ -945,8 +988,9 @@ class MaskFitsApp:
             return
         if entry.is_binned:
             old_factor = entry.bin_factor
-            entry.image.mask = unbin_mask(entry.image.mask, entry.bin_factor, entry.mask_backup)
+            entry.image.mask = self._unbin_mask_cached(entry)
             entry.mask_backup = None
+            entry.mask_dirty = False
             entry.is_binned = False
             entry.image.data = self._current_display_data(entry)
             self._undo = None
@@ -964,7 +1008,8 @@ class MaskFitsApp:
         entry.bin_factor = factor
         entry.is_binned = True
         entry.image.data = self._current_display_data(entry)
-        entry.image.mask = bin_mask(entry.mask_backup, factor)
+        entry.image.mask = self._bin_mask_cached(entry, entry.mask_backup, factor)
+        entry.mask_dirty = False
         self._undo = None
         self._redo = None
         self._update_bin_button()
@@ -991,8 +1036,9 @@ class MaskFitsApp:
             return
         old_factor = entry.bin_factor
         if factor <= 1:
-            entry.image.mask = unbin_mask(entry.image.mask, entry.bin_factor, entry.mask_backup)
+            entry.image.mask = self._unbin_mask_cached(entry)
             entry.mask_backup = None
+            entry.mask_dirty = False
             entry.is_binned = False
             entry.image.data = self._current_display_data(entry)
             self._undo = None
@@ -1002,11 +1048,12 @@ class MaskFitsApp:
             self._rescale_view_for_bin_change(old_factor)
             self.status.config(text="binning removed")
             return
-        full_res_mask = unbin_mask(entry.image.mask, entry.bin_factor, entry.mask_backup)
+        full_res_mask = self._unbin_mask_cached(entry)
         entry.mask_backup = full_res_mask
         entry.bin_factor = factor
         entry.image.data = self._current_display_data(entry)
-        entry.image.mask = bin_mask(full_res_mask, factor)
+        entry.image.mask = self._bin_mask_cached(entry, full_res_mask, factor)
+        entry.mask_dirty = False
         self._undo = None
         self._redo = None
         self._update_cuts_display()
@@ -1026,13 +1073,23 @@ class MaskFitsApp:
         fit-to-window, and fit_zoom (recomputed here from the new array
         shape) scales by the same 1/k automatically, so the ratio - and thus
         the apparent on-screen zoom - stays correct without adjustment.
+
+        fit_zoom is recomputed FIRST, before radius/thickness are touched:
+        setting those fires the shape-preview trace synchronously (see
+        _refresh_active_preview), and that preview sizes itself in canvas
+        pixels as radius * self.zoom. Rescaling radius while self.zoom still
+        reflects the old (pre-change) array size means the two are briefly
+        out of sync - one already rescaled, the other not yet - and their
+        product can overshoot by the full bin factor (e.g. a radius newly
+        expanded by 20x, multiplied by a zoom that's still 20x too high from
+        the old, much smaller binned array) instead of cancelling out.
         """
         self.view_cx *= k
         self.view_cy *= k
-        self.radius.set(max(min(self.radius.get() * k, MAX_SHAPE_SIZE), RADIUS_MIN))
-        self.thickness.set(max(min(int(round(self.thickness.get() * k)), MAX_SHAPE_SIZE), 1))
         if self.image is not None:
             self.fit_zoom = self._compute_fit_zoom()
+        self.radius.set(max(min(self.radius.get() * k, MAX_SHAPE_SIZE), RADIUS_MIN))
+        self.thickness.set(max(min(int(round(self.thickness.get() * k)), MAX_SHAPE_SIZE), 1))
         self._update_zoom_label()
         self.render()
 
@@ -1041,7 +1098,7 @@ class MaskFitsApp:
         what export_mask always writes, regardless of whether the display is
         currently binned for painting convenience."""
         if entry.is_binned:
-            return unbin_mask(entry.image.mask, entry.bin_factor, entry.mask_backup)
+            return self._unbin_mask_cached(entry)
         return entry.image.mask
 
     def _defocus_active_entry(self, _event: Optional[tk.Event] = None) -> None:
@@ -1176,6 +1233,7 @@ class MaskFitsApp:
         if idx < len(self.entries) and self.entries[idx].image is not None:
             current = self.entries[idx].image.mask.copy()
             self.entries[idx].image.mask = mask
+            self._mark_mask_dirty(self.entries[idx])
             self._redo = (idx, current)
             self._undo = None
             if idx == self.index:
@@ -1188,6 +1246,7 @@ class MaskFitsApp:
         if idx < len(self.entries) and self.entries[idx].image is not None:
             current = self.entries[idx].image.mask.copy()
             self.entries[idx].image.mask = mask
+            self._mark_mask_dirty(self.entries[idx])
             self._undo = (idx, current)
             self._redo = None
             if idx == self.index:
@@ -1550,6 +1609,7 @@ class MaskFitsApp:
         ex0, ey0, ex1, ey1 = self._extend_for_style(x0, y0, x1, y1)
         stamp = line_mask(self.image.data.shape, ex0, ey0, ex1, ey1, self.thickness.get())
         self.image.mask = (self.image.mask & ~stamp) if self._line_anchor_erase else (self.image.mask | stamp)
+        self._mark_mask_dirty()
         self._line_anchor = None
         self._line_preview_photo = None
         self.canvas.delete("line_preview")
@@ -1563,6 +1623,7 @@ class MaskFitsApp:
         a, b, angle = self._current_round_params()
         stamp = ellipse_mask(image.data.shape, ix, iy, a, b, angle)
         image.mask = (image.mask & ~stamp) if erase else (image.mask | stamp)
+        self._mark_mask_dirty()
         self.render()
 
     def _on_pan_start(self, event: tk.Event) -> None:
