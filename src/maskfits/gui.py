@@ -1457,7 +1457,7 @@ class MaskFitsApp:
         # slider (that slider controls how painted mask pixels blend into the
         # image once applied, not this hover preview).
         tint = mask_tint_for(self.colormap.get(), self._active_lut())
-        alpha = round(0.15 * 255)
+        alpha = round(0.25 * 255)
         half = max(int(np.ceil(max(disp_a, disp_b))) + 2, 1)
         box = 2 * half
         local_mask = ellipse_mask((box, box), half, half, disp_a, disp_b, angle)
