@@ -17,8 +17,8 @@ from scipy.ndimage import gaussian_filter
 # background.
 STRETCHES = {
     "linear": LinearStretch(),
-    "log": LogStretch(a=2),
-    "asinh": AsinhStretch(a=0.1),
+    "log": LogStretch(),
+    "asinh": AsinhStretch(),
 }
 STRETCH_NAMES = ["linear", "log", "asinh"]
 
