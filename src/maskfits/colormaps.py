@@ -111,7 +111,8 @@ def mask_tint_for(name: str, lut: np.ndarray) -> tuple[int, int, int]:
     if name == "Grayscale":
         return hex_to_rgb(ACCENT)
     if name == MIDAS_NAME:
-        return 255, 255, 255
+        return 255, 0, 0  # red
+        return 255, 255, 255 # white
     mid = tuple(int(c) for c in lut[len(lut) // 2])
     return _complementary_rgb(mid)
 

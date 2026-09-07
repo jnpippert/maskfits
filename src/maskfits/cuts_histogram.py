@@ -25,6 +25,14 @@ from maskfits.widgets import RoundButton
 
 SAMPLE_TARGET = 500_000
 
+# How far past the true pixel min/max the draggable/typeable cut range
+# extends, in multiples of the sample's standard deviation. Hard-stopping
+# exactly at data_min/data_max is too restrictive - pushing a cut past a
+# saturated star core or a cosmic-ray hit, or below the noise floor, is a
+# normal thing to want - so the allowed range gets generous headroom instead
+# of an unmovable wall right at the observed extremes.
+SIGMA_MARGIN = 10.0
+
 
 class CutsHistogram(tk.Frame):
     """A live pixel-value histogram with draggable vmin/vmax lines and numeric
@@ -136,6 +144,10 @@ class CutsHistogram(tk.Frame):
         self.data_max = float(sample.max())
         if self.data_max <= self.data_min:
             self.data_max = self.data_min + 1.0
+        sigma = float(np.std(sample))
+        margin = SIGMA_MARGIN * sigma if sigma > 0 else (self.data_max - self.data_min)
+        self.range_min = self.data_min - margin
+        self.range_max = self.data_max + margin
 
     def _toggle_range_view(self) -> None:
         self.show_full_range = not self.show_full_range
@@ -150,10 +162,10 @@ class CutsHistogram(tk.Frame):
         vmin, vmax = self.vmin_var.get(), self.vmax_var.get()
         span = max(vmax - vmin, 1e-9)
         margin = span * 0.5
-        lo = max(vmin - margin, self.data_min)
-        hi = min(vmax + margin, self.data_max)
+        lo = max(vmin - margin, self.range_min)
+        hi = min(vmax + margin, self.range_max)
         if hi <= lo:
-            lo, hi = self.data_min, self.data_max
+            lo, hi = self.range_min, self.range_max
         return lo, hi
 
     def _value_to_x(self, value: float, lo: float, hi: float) -> float:
@@ -304,6 +316,7 @@ class CutsHistogram(tk.Frame):
         except ValueError:
             self.lo_str.set(self._fmt(self.vmin_var.get()))
             return
+        value = max(value, self.range_min)
         value = min(value, self.vmax_var.get())
         self.vmin_var.set(value)
         self.lo_str.set(self._fmt(value))
@@ -316,6 +329,7 @@ class CutsHistogram(tk.Frame):
         except ValueError:
             self.hi_str.set(self._fmt(self.vmax_var.get()))
             return
+        value = min(value, self.range_max)
         value = max(value, self.vmin_var.get())
         self.vmax_var.set(value)
         self.hi_str.set(self._fmt(value))

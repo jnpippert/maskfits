@@ -210,7 +210,7 @@ class MaskFitsApp:
         self.index = 0
 
         self.stretch = "zscale"
-        self.scale_function = tk.StringVar(value="log")
+        self.scale_function = tk.StringVar(value="linear")
         self.colormap = tk.StringVar(value="Grayscale")
         self.invert_colormap = tk.BooleanVar(value=False)
         self.mask_alpha = tk.IntVar(value=100)
@@ -390,6 +390,7 @@ class MaskFitsApp:
             "  Arrow   - click start, click a second point; the trail extends\n"
             "            past it to the image border\n"
             "  Line    - click two points; the trail extends to both borders",
+            parent=self.root,
         )
 
 
@@ -675,7 +676,14 @@ class MaskFitsApp:
         try:
             entry.ensure_loaded(self.stretch)
         except Exception as exc:  # noqa: BLE001 - surface any load failure to the user
-            messagebox.showerror("maskfits", f"Could not load {entry.path}:\n{exc}")
+            # Without an explicit parent, this dialog isn't a transient child
+            # of the main window, so window managers (macOS especially) can
+            # leave it stacked behind the window that spawned it instead of
+            # in front - lifting the main window first, then passing it as
+            # parent, keeps the error actually visible and modal to it.
+            self.root.lift()
+            self.root.focus_force()
+            messagebox.showerror("maskfits", f"Could not load {entry.path}:\n{exc}", parent=self.root)
             entry.path = None
 
         if entry.image is not None and reset_view:
@@ -1191,7 +1199,7 @@ class MaskFitsApp:
         mask_<original filename> next to the source file, no prompt."""
         entry = self.entry
         if entry.image is None or entry.path is None:
-            messagebox.showwarning("maskfits", "No image loaded to export a mask for.")
+            messagebox.showwarning("maskfits", "No image loaded to export a mask for.", parent=self.root)
             return
         out_path = os.path.join(os.path.dirname(entry.path), f"mask_{self._mask_stem(entry.path)}.fits")
         self._build_mask_hdu(entry).writeto(out_path, overwrite=True)
@@ -1203,7 +1211,7 @@ class MaskFitsApp:
         pre-filled with the same mask_<original filename> default."""
         entry = self.entry
         if entry.image is None or entry.path is None:
-            messagebox.showwarning("maskfits", "No image loaded to export a mask for.")
+            messagebox.showwarning("maskfits", "No image loaded to export a mask for.", parent=self.root)
             return
         default_name = f"mask_{self._mask_stem(entry.path)}.fits"
         out_path = filedialog.asksaveasfilename(
@@ -1562,11 +1570,6 @@ class MaskFitsApp:
             rgba[..., 3] = np.where(local_mask, alpha, 0).astype(np.uint8)
             self._line_preview_photo = ImageTk.PhotoImage(Image.fromarray(rgba, mode="RGBA"))
             self.canvas.create_image(xlo, ylo, image=self._line_preview_photo, anchor="nw", tags="line_preview")
-
-        ax, ay = self.img_to_canvas(x0, y0)
-        anchor_r = disp_width / 2.0
-        self.canvas.create_oval(ax - anchor_r, ay - anchor_r, ax + anchor_r, ay + anchor_r,
-                                 fill=ACCENT, outline="", tags="line_preview")
 
     def _extend_for_style(self, x0: float, y0: float, x1: float, y1: float) -> tuple[float, float, float, float]:
         if self.image is None:
