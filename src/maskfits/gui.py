@@ -54,7 +54,7 @@ MAX_SHAPE_SIZE = 500
 RADIUS_MIN = 0.5  # small enough to mask a single pixel
 SIDEBAR_W = 300
 ZOOM_STEP = 1.25
-ZOOM_MULT_MIN = 1.0
+ZOOM_MULT_MIN = 0.5
 ZOOM_MULT_MAX = 100.0
 
 LINE_STYLES = [
@@ -1292,13 +1292,17 @@ class MaskFitsApp:
     # ------------------------------------------------------- coordinate math
 
     def img_to_canvas(self, ix: float, iy: float) -> tuple[float, float]:
+        # y is inverted relative to array/canvas indexing: FITS convention
+        # (and plt.imshow(origin="lower")) puts row 0 at the BOTTOM of the
+        # image, while canvas y (like array row index) increases downward -
+        # so increasing iy must map to a DEcreasing canvas y, not increasing.
         cx = self.canvas_w / 2 + (ix - self.view_cx) * self.zoom
-        cy = self.canvas_h / 2 + (iy - self.view_cy) * self.zoom
+        cy = self.canvas_h / 2 - (iy - self.view_cy) * self.zoom
         return cx, cy
 
     def canvas_to_img(self, cx: float, cy: float) -> tuple[float, float]:
         ix = self.view_cx + (cx - self.canvas_w / 2) / self.zoom
-        iy = self.view_cy + (cy - self.canvas_h / 2) / self.zoom
+        iy = self.view_cy - (cy - self.canvas_h / 2) / self.zoom
         return ix, iy
 
     # ------------------------------------------------------------ rendering
@@ -1360,11 +1364,20 @@ class MaskFitsApp:
 
         self._tint_masked(rgb, mask_crop)
 
+        # crop's row 0 is array row y0 (the smallest iy in view), but with
+        # y0 = bottom_row and y1 = top_row - so flip vertically before
+        # handing it to PIL, which always draws its own row 0 at the top.
+        rgb = rgb[::-1]
+
         pil_img = Image.fromarray(rgb, mode="RGB")
         resample = Image.NEAREST if self.zoom >= 1 else Image.BOX
         pil_img = pil_img.resize((disp_w, disp_h), resample)
 
-        cx0, cy0 = self.img_to_canvas(x0, y0)
+        # anchor="nw" below places the image's (now-flipped) top-left corner
+        # at this canvas point - that corner corresponds to image coordinate
+        # (x0, y1), the crop's top edge under the inverted y-axis, not
+        # (x0, y0) which is now its bottom edge.
+        cx0, cy0 = self.img_to_canvas(x0, y1)
         self._photo = ImageTk.PhotoImage(pil_img)
         self.canvas.create_image(cx0, cy0, image=self._photo, anchor="nw", tags="img")
         self.canvas.tag_lower("img")
@@ -1434,6 +1447,7 @@ class MaskFitsApp:
         rgb = self._scale_and_color(norm)
 
         self._tint_masked(rgb, mask_crop)
+        rgb = rgb[::-1]  # same bottom-up flip as render() - keep orientation consistent
 
         square = min(w, h)
         block = max(square // MAG_SIZE, 1)
@@ -1636,8 +1650,11 @@ class MaskFitsApp:
         if self._pan_drag is None:
             return
         sx, sy, ocx, ocy = self._pan_drag
+        # y is inverted (see img_to_canvas) so a downward drag - increasing
+        # event.y - must INcrease view_cy to keep the same image point under
+        # the cursor, the opposite sign from the x component.
         self.view_cx = ocx - (event.x - sx) / self.zoom
-        self.view_cy = ocy - (event.y - sy) / self.zoom
+        self.view_cy = ocy + (event.y - sy) / self.zoom
         self.render()
 
     def reset_zoom(self) -> None:
