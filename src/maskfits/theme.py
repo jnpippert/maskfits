@@ -23,6 +23,8 @@ DARK = dict(
     DANGER="#c1554a",
     DANGER_HOVER="#d16e63",
     GREEN="#22c55e",
+    WARNING="#e8a33d",
+    BLUE="#3b82f6",
     TRACK="#3a3a3d",
     BUTTON_BG="#28282b",
     BUTTON_HOVER="#333336",
@@ -44,6 +46,8 @@ LIGHT = dict(
     DANGER="#b2453b",
     DANGER_HOVER="#c1554a",
     GREEN="#178a43",
+    WARNING="#c9781f",
+    BLUE="#2563eb",
     TRACK="#d3d3d0",
     BUTTON_BG="#e7e7e4",
     BUTTON_HOVER="#dadad7",
@@ -66,7 +70,10 @@ globals().update(DARK)
 
 # Every module that does `from maskfits.theme import <color name>` needs its
 # copy patched too when the theme changes.
-_THEMED_MODULES = ("maskfits.gui", "maskfits.widgets", "maskfits.cuts_histogram", "maskfits.colormaps")
+_THEMED_MODULES = (
+    "maskfits.gui", "maskfits.widgets", "maskfits.cuts_histogram", "maskfits.colormaps",
+    "maskfits.automask_window",
+)
 
 
 def set_theme(mode: str) -> None:

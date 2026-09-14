@@ -2,6 +2,7 @@
 
 import warnings
 from dataclasses import dataclass, field
+from typing import Optional
 
 import numpy as np
 from astropy.io import fits
@@ -48,13 +49,38 @@ class FitsImage:
             self.mask = np.zeros(self.data.shape, dtype=bool)
 
 
-def load_fits_image(path: str) -> FitsImage:
+def list_image_extensions(path: str) -> list[tuple[int, str]]:
+    """Every HDU index in `path` that holds usable 2D+ image data, paired
+    with a display label ("<index> - <OBJECT>", or "<index> - NO HDU NAME"
+    if that HDU has no OBJECT keyword) - for the extension picker next to
+    the filename when a multi-extension FITS has more than one to choose
+    from."""
+    extensions: list[tuple[int, str]] = []
+    with fits.open(path) as hdul:
+        for i, hdu in enumerate(hdul):
+            if hdu.data is None or hdu.data.ndim < 2:
+                continue
+            name = hdu.header.get("OBJECT")
+            label = f"{i} - {name}" if name else f"{i} - NO HDU NAME"
+            extensions.append((i, label))
+    return extensions
+
+
+def load_fits_image(path: str, ext: Optional[int] = None) -> FitsImage:
+    """Load `path`'s image data. `ext` picks a specific HDU index; left as
+    None, the first HDU with usable 2D+ image data is used (matching the
+    historical single-extension behavior)."""
     with fits.open(path) as hdul:
         hdu = None
-        for candidate in hdul:
-            if candidate.data is not None and candidate.data.ndim >= 2:
-                hdu = candidate
-                break
+        if ext is not None:
+            if ext < 0 or ext >= len(hdul) or hdul[ext].data is None or hdul[ext].data.ndim < 2:
+                raise ValueError(f"Extension {ext} has no 2D image data in {path}")
+            hdu = hdul[ext]
+        else:
+            for candidate in hdul:
+                if candidate.data is not None and candidate.data.ndim >= 2:
+                    hdu = candidate
+                    break
         if hdu is None:
             raise ValueError(f"No 2D image data found in {path}")
 

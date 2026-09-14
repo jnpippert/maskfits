@@ -4,7 +4,7 @@ import colorsys
 
 import numpy as np
 
-from maskfits.theme import ACCENT, hex_to_rgb
+from maskfits.theme import ACCENT, BLUE, hex_to_rgb
 
 # (t, r, g, b) control points, t and colors in [0, 1]. Viridis/Inferno are close
 # perceptual approximations (a handful of anchor points interpolated), not exact
@@ -89,13 +89,19 @@ COLORMAP_LUTS: dict[str, np.ndarray] = {name: _build_lut(stops) for name, stops 
 COLORMAP_LUTS[MIDAS_NAME] = _build_stepped_lut(_MIDAS_COLORS, _MIDAS_BOUNDARIES_PCT)
 
 
-def _complementary_rgb(rgb: tuple[int, int, int]) -> tuple[int, int, int]:
-    """Hue-rotate 180 degrees (same saturation/value) - the classic color-wheel opposite."""
+def _hue_rotated_rgb(rgb: tuple[int, int, int], turns: float) -> tuple[int, int, int]:
+    """Rotate rgb's hue by `turns` full rotations (0.5 = 180 degrees), keeping
+    saturation/value fixed."""
     r, g, b = (c / 255.0 for c in rgb)
     h, s, v = colorsys.rgb_to_hsv(r, g, b)
-    h = (h + 0.5) % 1.0
+    h = (h + turns) % 1.0
     r2, g2, b2 = colorsys.hsv_to_rgb(h, s, v)
     return tuple(int(round(c * 255)) for c in (r2, g2, b2))
+
+
+def _complementary_rgb(rgb: tuple[int, int, int]) -> tuple[int, int, int]:
+    """Hue-rotate 180 degrees (same saturation/value) - the classic color-wheel opposite."""
+    return _hue_rotated_rgb(rgb, 0.5)
 
 
 def mask_tint_for(name: str, lut: np.ndarray) -> tuple[int, int, int]:
@@ -114,6 +120,28 @@ def mask_tint_for(name: str, lut: np.ndarray) -> tuple[int, int, int]:
         return 255, 0, 0
     mid = tuple(int(c) for c in lut[len(lut) // 2])
     return _complementary_rgb(mid)
+
+
+def auto_mask_tint_for(name: str, lut: np.ndarray) -> tuple[int, int, int]:
+    """Auto Mask preview overlay color for a colormap - deliberately a
+    DIFFERENT hue from mask_tint_for's manual-mask tint for the same
+    colormap/LUT, so a pending (not-yet-confirmed) auto-mask preview never
+    reads as the same color as an already-applied manual mask.
+
+    Grayscale and Midas Rainbow are special-cased for the same reason
+    mask_tint_for special-cases them (no hue to complement / a busy palette
+    that swallows most single hues), picked specifically to sit far from
+    their manual-mask tint (crimson, and red respectively). Everything else
+    uses a quarter-turn (90 degree) hue rotation off the LUT's midpoint,
+    versus mask_tint_for's half-turn (180 degree) complement - a different
+    hue, adapting the same way to colormap inversion.
+    """
+    if name == "Grayscale":
+        return hex_to_rgb(BLUE)
+    if name == MIDAS_NAME:
+        return 255, 255, 255
+    mid = tuple(int(c) for c in lut[len(lut) // 2])
+    return _hue_rotated_rgb(mid, 0.25)
 
 
 # Default (non-inverted) mask tint per colormap - kept for convenience/reference;

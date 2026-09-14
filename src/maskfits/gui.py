@@ -10,8 +10,9 @@ import numpy as np
 from astropy.io import fits
 from PIL import Image, ImageTk
 
+from maskfits.automask_window import AutoMaskWindow
 from maskfits.binning import bin_func, bin_mask, unbin_mask
-from maskfits.colormaps import COLORMAP_LUTS, COLORMAP_NAMES, mask_tint_for
+from maskfits.colormaps import COLORMAP_LUTS, COLORMAP_NAMES, auto_mask_tint_for, mask_tint_for
 from maskfits.cuts_histogram import CutsHistogram
 from maskfits.imagedata import (
     PERCENTILE_PRESETS,
@@ -19,6 +20,7 @@ from maskfits.imagedata import (
     STRETCHES,
     FitsImage,
     gaussian_smooth,
+    list_image_extensions,
     load_fits_image,
     minmax_cuts,
     percentile_cuts,
@@ -35,6 +37,7 @@ from maskfits.theme import (
     ACCENT,
     APP_BG,
     BUTTON_BG,
+    BUTTON_HOVER,
     CANVAS_BG,
     FONT,
     FONT_SMALL,
@@ -138,6 +141,14 @@ class Entry:
     def __init__(self, path: Optional[str] = None):
         self.path = path
         self.image: Optional[FitsImage] = None
+        # Which HDU to load - defaults to 0, but ensure_loaded falls back to
+        # the first HDU that actually has 2D image data if 0 doesn't (e.g.
+        # an empty primary HDU with the real data in extension 1+).
+        # available_extensions is populated on first load; the picker next
+        # to the filename only becomes interactive once it has more than
+        # one entry - see MaskFitsApp._build_extension_picker.
+        self.ext: int = 0
+        self.available_extensions: list[tuple[int, str]] = []
         self.lowcut = 0.0
         self.highcut = 1.0
         # Smoothing and binning are independent and composable: original_data
@@ -182,7 +193,12 @@ class Entry:
     def ensure_loaded(self, stretch: str) -> None:
         if self.image is not None or self.path is None:
             return
-        self.image = load_fits_image(self.path)
+        if not self.available_extensions:
+            self.available_extensions = list_image_extensions(self.path)
+        valid_exts = [i for i, _ in self.available_extensions]
+        if valid_exts and self.ext not in valid_exts:
+            self.ext = valid_exts[0]
+        self.image = load_fits_image(self.path, ext=self.ext)
         self.apply_stretch(stretch)
 
     def apply_stretch(self, stretch: str) -> None:
@@ -239,6 +255,15 @@ class MaskFitsApp:
         self._undo: Optional[tuple[int, np.ndarray]] = None
         self._redo: Optional[tuple[int, np.ndarray]] = None
         self.light_mode = False
+
+        # Auto Mask: a pending preview overlay (boolean array matching
+        # _auto_mask_entry.image.data's current shape) shown on top of the
+        # image + manual mask, but not written into the real mask until the
+        # user confirms in AutoMaskWindow. See open_auto_mask/
+        # set_auto_mask_preview/confirm_auto_mask/discard_auto_mask.
+        self._auto_mask_window: Optional[AutoMaskWindow] = None
+        self._auto_mask_entry: Optional["Entry"] = None
+        self._auto_mask_preview: Optional[np.ndarray] = None
 
         self._build_ui()
 
@@ -303,8 +328,14 @@ class MaskFitsApp:
         of which this touches; only the widgets themselves are thrown away and
         rebuilt against the now-active palette.
         """
+        # winfo_children() includes Toplevels (AutoMaskWindow among them) -
+        # those are independent windows with their own lifecycle, not part
+        # of the widget tree being rebuilt here, so destroying them too would
+        # silently kill something like an open, non-modal Auto Mask window
+        # out from under the user just because they toggled the theme.
         for child in self.root.winfo_children():
-            child.destroy()
+            if not isinstance(child, tk.Toplevel):
+                child.destroy()
         self.root.configure(bg=APP_BG)
         self._build_ui()
         self._rebuild_tool_options()
@@ -448,54 +479,185 @@ class MaskFitsApp:
                  anchor="e", font=FONT_SMALL).pack(side="right", padx=14, pady=8)
 
     def _build_toolbar(self, parent: tk.Frame) -> None:
+        """Builds the toolbar out of small per-control "chunk" frames whose
+        master is `parent` itself (never row1/row2 directly), so each chunk
+        can be freely reassigned between row1 and row2 via pack(in_=...) as
+        the window is resized - Tk widgets can't be reparented after
+        creation, but pack's `in_` lets the same widget be geometry-managed
+        by a different container. See _reflow_toolbar for the actual
+        left-to-right greedy wrap.
+        """
         parent.configure(bg=PANEL_BG)
         pad = dict(padx=4, pady=10)
 
-        ThemeToggle(parent, command=self._toggle_theme, light=self.light_mode, outer_bg=PANEL_BG).pack(
+        self._toolbar_row1 = tk.Frame(parent, bg=PANEL_BG)
+        self._toolbar_row1.pack(side="top", fill="x")
+        # row2 is only pack()'d (mounted at all) while something's actually
+        # in it - an empty Tk Frame that ONCE held a packed child keeps
+        # reporting that child's old size from winfo_reqheight() even after
+        # the child is moved out (a long-standing Tk quirk), so leaving row2
+        # permanently mounted would show a phantom empty second row forever
+        # after the toolbar wraps even once. Fully unmounting/remounting it
+        # sidesteps that stale-geometry bug entirely.
+        self._toolbar_row2 = tk.Frame(parent, bg=PANEL_BG)
+
+        def chunk() -> tk.Frame:
+            return tk.Frame(parent, bg=PANEL_BG)
+
+        theme_chunk = chunk()
+        ThemeToggle(theme_chunk, command=self._toggle_theme, light=self.light_mode, outer_bg=PANEL_BG).pack(
             side="left", padx=(14, 12), pady=10)
 
-        tk.Label(parent, text="Zoom:", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).pack(side="left", padx=(0, 4))
-        self.zoom_label = tk.Label(parent, text="1", bg=PANEL_BG, fg=TEXT, font=FONT, width=5)
+        zoom_chunk = chunk()
+        self.zoom_label = tk.Label(zoom_chunk, text="1", bg=PANEL_BG, fg=TEXT, font=FONT, width=5)
         self.zoom_label.pack(side="left")
-        RoundButton(parent, "-", command=self.zoom_out, outer_bg=PANEL_BG, width=32).pack(side="left", **pad)
-        RoundButton(parent, "+", command=self.zoom_in, outer_bg=PANEL_BG, width=32).pack(side="left", **pad)
-        RoundButton(parent, "reset", command=self.reset_zoom, outer_bg=PANEL_BG).pack(side="left", padx=(0, 16), pady=10)
+        RoundButton(zoom_chunk, "reset zoom", command=self.reset_zoom, outer_bg=PANEL_BG).pack(
+            side="left", padx=(0, 16), pady=10)
 
-        self.smooth_button = RoundButton(parent, "smooth", command=self._toggle_smoothing, outer_bg=PANEL_BG,
-                                          toggle=True, width=72)
+        smooth_chunk = chunk()
+        self.smooth_button = RoundButton(smooth_chunk, "smooth", command=self._toggle_smoothing,
+                                          outer_bg=PANEL_BG, toggle=True, width=72)
         self.smooth_button.pack(side="left", padx=(0, 4), pady=10)
-        sigma_entry = tk.Entry(parent, textvariable=self.smooth_sigma_var, width=4, justify="center",
+        sigma_entry = tk.Entry(smooth_chunk, textvariable=self.smooth_sigma_var, width=4, justify="center",
                                 bg=BUTTON_BG, fg=TEXT, insertbackground=TEXT, relief="flat", highlightthickness=1,
                                 highlightbackground=PANEL_BORDER, highlightcolor=ACCENT, font=FONT_SMALL)
         sigma_entry.pack(side="left", padx=(0, 16), pady=10)
         sigma_entry.bind("<Return>", self._apply_sigma_entry)
         sigma_entry.bind("<FocusOut>", self._apply_sigma_entry)
 
-        self.bin_button = RoundButton(parent, "bin", command=self._toggle_binning, outer_bg=PANEL_BG,
+        bin_chunk = chunk()
+        self.bin_button = RoundButton(bin_chunk, "bin", command=self._toggle_binning, outer_bg=PANEL_BG,
                                        toggle=True, width=60)
         self.bin_button.pack(side="left", padx=(0, 4), pady=10)
-        bin_entry = tk.Entry(parent, textvariable=self.bin_factor_var, width=4, justify="center",
+        bin_entry = tk.Entry(bin_chunk, textvariable=self.bin_factor_var, width=4, justify="center",
                               bg=BUTTON_BG, fg=TEXT, insertbackground=TEXT, relief="flat", highlightthickness=1,
                               highlightbackground=PANEL_BORDER, highlightcolor=ACCENT, font=FONT_SMALL)
         bin_entry.pack(side="left", padx=(0, 16), pady=10)
         bin_entry.bind("<Return>", self._apply_bin_entry)
         bin_entry.bind("<FocusOut>", self._apply_bin_entry)
 
-        SegmentedControl(parent, SCALE_OPTIONS, self.scale_function, outer_bg=PANEL_BG).pack(
+        scale_chunk = chunk()
+        SegmentedControl(scale_chunk, SCALE_OPTIONS, self.scale_function, outer_bg=PANEL_BG).pack(
             side="left", padx=(0, 16), pady=10)
 
-        RoundButton(parent, "<-", command=self.prev_image, outer_bg=PANEL_BG, width=36).pack(side="left", **pad)
-        self.counter_label = tk.Label(parent, text="1/1", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL, width=6)
+        nav_chunk = chunk()
+        RoundButton(nav_chunk, "<-", command=self.prev_image, outer_bg=PANEL_BG, width=36).pack(side="left", **pad)
+        self.counter_label = tk.Label(nav_chunk, text="1/1", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL, width=6)
         self.counter_label.pack(side="left")
-        RoundButton(parent, "->", command=self.next_image, outer_bg=PANEL_BG, width=36).pack(side="left", padx=(4, 16), pady=10)
+        RoundButton(nav_chunk, "->", command=self.next_image, outer_bg=PANEL_BG, width=36).pack(
+            side="left", padx=(4, 16), pady=10)
 
-        self.filename_label = tk.Label(parent, text="noname", bg=PANEL_BG, fg=TEXT, font=FONT)
-        self.filename_label.pack(side="left")
+        filename_chunk = chunk()
+        self.filename_label = tk.Label(filename_chunk, text="noname", bg=PANEL_BG, fg=TEXT, font=FONT)
+        self.filename_label.pack(side="left", padx=(0, 10))
 
-        RoundButton(parent, "kill", command=self.kill_current, outer_bg=PANEL_BG, danger=True).pack(side="right", padx=14, pady=10)
-        RoundButton(parent, "reset mask", command=self.reset_mask, outer_bg=PANEL_BG).pack(side="right", pady=10)
-        RoundButton(parent, "export mask", command=self.export_mask, outer_bg=PANEL_BG, accent=True).pack(
+        # Extension picker: only meaningfully interactive once the current
+        # file actually has more than one image HDU to choose from - see
+        # _update_extension_picker, called from load_current.
+        self.ext_var = tk.StringVar(value="")
+        self.ext_menu = tk.OptionMenu(filename_chunk, self.ext_var, "")
+        self.ext_menu.configure(bg=BUTTON_BG, fg=TEXT, activebackground=BUTTON_HOVER, activeforeground=TEXT,
+                                 highlightthickness=1, highlightbackground=PANEL_BORDER, relief="flat",
+                                 font=FONT_SMALL)
+        self.ext_menu["menu"].configure(bg=BUTTON_BG, fg=TEXT, activebackground=BUTTON_HOVER,
+                                         activeforeground=TEXT, font=FONT_SMALL)
+        self.ext_menu.pack(side="left")
+
+        actions_chunk = chunk()
+        RoundButton(actions_chunk, "kill", command=self.kill_current, outer_bg=PANEL_BG,
+                    danger=True).pack(side="right", padx=14, pady=10)
+        RoundButton(actions_chunk, "reset mask", command=self.reset_mask, outer_bg=PANEL_BG).pack(
+            side="right", pady=10)
+        RoundButton(actions_chunk, "export mask", command=self.export_mask, outer_bg=PANEL_BG,
+                    accent=True).pack(side="right", padx=(0, 8), pady=10)
+        RoundButton(actions_chunk, "auto mask", command=self.open_auto_mask, outer_bg=PANEL_BG).pack(
             side="right", padx=(0, 8), pady=10)
+
+        # Left-to-right flow order; actions_chunk is handled separately by
+        # _reflow_toolbar since it's always right-anchored on whichever row
+        # it ends up on, instead of flowing in sequence with the others.
+        self._toolbar_left_chunks = [
+            theme_chunk, zoom_chunk, smooth_chunk, bin_chunk, scale_chunk, nav_chunk, filename_chunk,
+        ]
+        self._toolbar_actions = actions_chunk
+        self._toolbar_layout: Optional[tuple[int, ...]] = None
+        for c in self._toolbar_left_chunks:
+            c.pack(in_=self._toolbar_row1, side="left")
+        self._toolbar_actions.pack(in_=self._toolbar_row1, side="right")
+
+        # `add="+"` since RoundedPanel already binds its own <Configure> on
+        # this same widget (parent, its .inner) to keep the panel's rounded
+        # background sized to content - a plain bind() here would silently
+        # replace that instead of adding to it.
+        parent.bind("<Configure>", self._reflow_toolbar, add="+")
+        # A <Configure> only fires on a SIZE CHANGE - if the app is launched
+        # already narrow, the panel's first layout pass may settle at that
+        # size without ever firing one, so check explicitly once the event
+        # loop catches up and geometry is actually realized.
+        parent.after_idle(self._reflow_toolbar)
+
+    def _reflow_toolbar(self, _event: Optional[tk.Event] = None) -> None:
+        """Distributes the toolbar's chunks (see _build_toolbar) across row1
+        and, once row1 runs out of room, row2 - instead of the window just
+        clipping overflowing controls as it narrows.
+
+        Three tiers, checked in order:
+          1. Everything (all left-flow chunks + the action cluster) fits on
+             one row - the common case, nothing wraps.
+          2. The left-flow chunks fit by themselves, but not alongside the
+             action cluster too - only the action cluster (kill/reset mask/
+             export mask/auto mask) wraps down to row2.
+          3. Even the left-flow chunks alone overflow row1 - greedily fill
+             row1 with as many of them (in their normal order) as fit, and
+             push the rest down to row2 alongside the action cluster, rather
+             than leaving them clipped with nowhere to go.
+        """
+        available = self._toolbar_row1.master.winfo_width()
+        if available <= 1:
+            return
+        chunks = self._toolbar_left_chunks
+        widths = [c.winfo_reqwidth() for c in chunks]
+        total_left = sum(widths)
+        actions_width = self._toolbar_actions.winfo_reqwidth()
+
+        if total_left + actions_width <= available:
+            row1_chunks, row2_chunks, actions_wraps = chunks, [], False
+        elif total_left <= available:
+            row1_chunks, row2_chunks, actions_wraps = chunks, [], True
+        else:
+            cum = 0
+            split = 0
+            for w in widths:
+                if cum + w > available:
+                    break
+                cum += w
+                split += 1
+            row1_chunks, row2_chunks, actions_wraps = chunks[:split], chunks[split:], True
+
+        # A layout is fully described by how many chunks (from the front)
+        # are on row1, plus whether actions wrapped - skip the actual
+        # repacking if neither changed, so a resize that doesn't cross a
+        # wrap boundary doesn't needlessly tear down and rebuild the pack
+        # order on every pixel of the drag.
+        layout_key = (len(row1_chunks), actions_wraps)
+        if layout_key == self._toolbar_layout:
+            return
+        self._toolbar_layout = layout_key
+
+        for c in chunks:
+            c.pack_forget()
+        self._toolbar_actions.pack_forget()
+        self._toolbar_row2.pack_forget()
+
+        for c in row1_chunks:
+            c.pack(in_=self._toolbar_row1, side="left")
+
+        if row2_chunks or actions_wraps:
+            self._toolbar_row2.pack(side="top", fill="x")
+            for c in row2_chunks:
+                c.pack(in_=self._toolbar_row2, side="left")
+
+        self._toolbar_actions.pack(in_=(self._toolbar_row2 if actions_wraps else self._toolbar_row1), side="right")
 
     def _build_sidebar(self, parent: tk.Frame) -> None:
         parent.configure(bg=PANEL_BG)
@@ -690,6 +852,13 @@ class MaskFitsApp:
             self.reset_zoom()
 
         self.filename_label.config(text=os.path.basename(entry.path) if entry.path else "noname")
+        self._update_extension_picker()
+        # The filename's own width feeds into the toolbar's wrap decision
+        # (see _reflow_toolbar), but changing a label's text doesn't itself
+        # change .inner's size, so the reflow's <Configure> binding won't
+        # fire from this alone - check explicitly once the label's new width
+        # is actually laid out.
+        self.root.after_idle(self._reflow_toolbar)
         self.counter_label.config(text=f"{self.index + 1}/{len(self.entries)}")
         self._update_cuts_display()
         self._update_smooth_button()
@@ -697,6 +866,24 @@ class MaskFitsApp:
         self.status.config(text=f"loaded {entry.path}" if entry.path else "new file")
 
         self.render()
+
+    def _update_extension_picker(self) -> None:
+        """Rebuilds the HDU-picker dropdown next to the filename for the
+        current entry - only interactive once its file actually has more
+        than one image extension to choose from (see Entry.ensure_loaded,
+        which populates available_extensions on first load)."""
+        entry = self.entry
+        menu = self.ext_menu["menu"]
+        menu.delete(0, "end")
+        extensions = entry.available_extensions
+        current_label = next((label for i, label in extensions if i == entry.ext), "")
+        self.ext_var.set(current_label)
+        if len(extensions) <= 1:
+            self.ext_menu.configure(state="disabled")
+            return
+        for idx, label in extensions:
+            menu.add_command(label=label, command=lambda i=idx: self.switch_extension(i))
+        self.ext_menu.configure(state="normal")
 
     @staticmethod
     def _fmt(value: float) -> str:
@@ -723,6 +910,20 @@ class MaskFitsApp:
 
     def reset_scale(self) -> None:
         self.scale_function.set("linear")
+
+    def switch_extension(self, ext: int) -> None:
+        """Reloads the current entry's image data from a different HDU of
+        the same file - unlike ordinary navigation (_release_mask), the
+        underlying pixel data itself is changing, so the cached FitsImage
+        has to be dropped and re-read from disk, not just have its mask/
+        smoothing/binning state reset."""
+        entry = self.entry
+        if entry.path is None or ext == entry.ext:
+            return
+        self._release_mask()
+        entry.ext = ext
+        entry.image = None
+        self.load_current(reset_view=True)
 
     # ------------------------------------------------------------- navigation
 
@@ -1226,6 +1427,49 @@ class MaskFitsApp:
         self._build_mask_hdu(entry).writeto(out_path, overwrite=True)
         self.status.config(text=f"exported mask to {out_path}")
 
+    # ---------------------------------------------------------- auto mask
+
+    def open_auto_mask(self) -> None:
+        if self.image is None:
+            return
+        if self._auto_mask_window is not None and self._auto_mask_window.winfo_exists():
+            self._auto_mask_window.lift()
+            self._auto_mask_window.focus_force()
+            return
+        self._auto_mask_window = AutoMaskWindow(self, self.entry)
+
+    def set_auto_mask_preview(self, entry: "Entry", preview: np.ndarray) -> None:
+        """Called by AutoMaskWindow (on Apply) to show/refresh its pending
+        preview overlay - not written into the real mask yet."""
+        self._auto_mask_entry = entry
+        self._auto_mask_preview = preview
+        self.render()
+
+    def confirm_auto_mask(self, entry: "Entry", preview: np.ndarray) -> None:
+        """Called by AutoMaskWindow's Confirm button: merges the preview into
+        the entry's real (working-resolution) mask, the same way manual
+        painting already does - undoable, and independent of whether the
+        image is currently binned/smoothed."""
+        if entry.image is not None and preview.shape == entry.image.mask.shape:
+            if entry is self.entry:
+                self._push_undo()
+            entry.image.mask = entry.image.mask | preview
+            self._mark_mask_dirty(entry)
+            self.status.config(text=f"auto mask applied: {int(preview.sum()):,} px")
+        else:
+            self.status.config(text="auto mask discarded: image changed while the window was open")
+        self._clear_auto_mask_preview()
+
+    def discard_auto_mask(self, _entry: "Entry") -> None:
+        self.status.config(text="auto mask discarded")
+        self._clear_auto_mask_preview()
+
+    def _clear_auto_mask_preview(self) -> None:
+        self._auto_mask_window = None
+        self._auto_mask_entry = None
+        self._auto_mask_preview = None
+        self.render()
+
     # --------------------------------------------------------------- undo
 
     def _push_undo(self) -> None:
@@ -1364,6 +1608,19 @@ class MaskFitsApp:
 
         self._tint_masked(rgb, mask_crop)
 
+        # Auto Mask's pending preview overlay (see set_auto_mask_preview) -
+        # drawn ON TOP of the image + real mask, in a different color, so it
+        # reads as "about to be masked" rather than blending into the
+        # already-applied manual mask. Guarded by shape/entry identity since
+        # it's a stale snapshot from whatever resolution was active when the
+        # auto mask window last applied - it goes stale (and is just skipped,
+        # not shown wrong) if binning/smoothing changes while the window is
+        # still open, or if a different image entry is now on screen.
+        if (self._auto_mask_preview is not None and self._auto_mask_entry is entry
+                and self._auto_mask_preview.shape == image.mask.shape):
+            preview_crop = self._auto_mask_preview[y0:y1:step_y, x0:x1:step_x]
+            self._tint_preview(rgb, preview_crop)
+
         # crop's row 0 is array row y0 (the smallest iy in view), but with
         # y0 = bottom_row and y1 = top_row - so flip vertically before
         # handing it to PIL, which always draws its own row 0 at the top.
@@ -1410,12 +1667,27 @@ class MaskFitsApp:
         """Blend the current colormap's complementary tint into masked pixels, in place."""
         if not mask_crop.any():
             return
-        alpha = self.mask_alpha.get() / 100.0
         tint = mask_tint_for(self.colormap.get(), self._active_lut())
+        self._blend_tint(rgb, mask_crop, tint, self.mask_alpha.get() / 100.0)
+
+    def _tint_preview(self, rgb: np.ndarray, preview_crop: np.ndarray) -> None:
+        """Blend the Auto Mask preview color into flagged pixels, in place.
+
+        Colormap-aware like the real mask tint (see mask_tint_for), but via
+        auto_mask_tint_for - deliberately a DIFFERENT hue for the same
+        colormap, so a pending preview never reads as the same color as an
+        already-applied manual mask, for any colormap or inversion state."""
+        if not preview_crop.any():
+            return
+        tint = auto_mask_tint_for(self.colormap.get(), self._active_lut())
+        self._blend_tint(rgb, preview_crop, tint, 0.55)
+
+    @staticmethod
+    def _blend_tint(rgb: np.ndarray, region: np.ndarray, tint: tuple[int, int, int], alpha: float) -> None:
         for ch, tint_v in enumerate(tint):
             channel = rgb[..., ch].astype(np.float32)
             blended = channel * (1 - alpha) + tint_v * alpha
-            rgb[..., ch] = np.where(mask_crop, blended, channel).astype(np.uint8)
+            rgb[..., ch] = np.where(region, blended, channel).astype(np.uint8)
 
     def render_magnifier(self) -> None:
         canvas = self.magnifier_canvas
@@ -1665,12 +1937,6 @@ class MaskFitsApp:
             self.fit_zoom = self._compute_fit_zoom()
         self._update_zoom_label()
         self.render()
-
-    def zoom_in(self) -> None:
-        self._zoom_at(self.canvas_w / 2, self.canvas_h / 2, ZOOM_STEP)
-
-    def zoom_out(self) -> None:
-        self._zoom_at(self.canvas_w / 2, self.canvas_h / 2, 1 / ZOOM_STEP)
 
     def _on_wheel(self, event: tk.Event) -> None:
         factor = ZOOM_STEP if event.delta > 0 else 1 / ZOOM_STEP
