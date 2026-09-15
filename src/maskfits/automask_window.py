@@ -71,6 +71,7 @@ class AutoMaskWindow(tk.Toplevel):
         self.cleanup_kappa = tk.DoubleVar(value=4.0)
         self.cleanup_iterations = tk.IntVar(value=10)
         self.kappa = tk.DoubleVar(value=5.0)
+        self.max_group_size_enabled = tk.BooleanVar(value=True)
         self.max_group_size = tk.IntVar(value=50)
         self.expand_px = tk.IntVar(value=5)
 
@@ -83,8 +84,8 @@ class AutoMaskWindow(tk.Toplevel):
         # main app's other live sliders, e.g. mask_alpha/radius), not just on
         # release - simplest way to make it feel immediate, at the cost of
         # recomputing more often than strictly necessary during a drag.
-        for var in (self.bg_method, self.error_method, self.cleanup_kappa,
-                    self.cleanup_iterations, self.kappa, self.max_group_size, self.expand_px):
+        for var in (self.bg_method, self.error_method, self.cleanup_kappa, self.cleanup_iterations,
+                    self.kappa, self.max_group_size_enabled, self.max_group_size, self.expand_px):
             var.trace_add("write", lambda *_: self._apply())
         self.protocol("WM_DELETE_WINDOW", self._discard)
         self.bind("<Escape>", lambda e: self._discard())
@@ -132,7 +133,8 @@ class AutoMaskWindow(tk.Toplevel):
         # the clean-up block above it - they shape the FINAL flagged mask,
         # not the background estimate the histogram is showing.
         self._slider_row("mask κ  (threshold above background)", self.kappa, 0.5, 20.0)
-        self._slider_row("max group size  (px, drops larger flagged regions)", self.max_group_size, 1, 500)
+        self._slider_row("max group size  (px, drops larger flagged regions)", self.max_group_size, 1, 500,
+                          enabled_var=self.max_group_size_enabled)
         self._slider_row("expand  (pad each flagged region, px)", self.expand_px, 0, 20)
 
         self.stats_label = tk.Label(self, bg=PANEL_BG, fg=TEXT, font=FONT_SMALL, justify="left", anchor="w")
@@ -207,9 +209,17 @@ class AutoMaskWindow(tk.Toplevel):
         tk.Label(row, text=f"{label}:", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL, anchor="w").pack(side="left")
         SegmentedControl(row, options, var, outer_bg=PANEL_BG).pack(side="right")
 
-    def _slider_row(self, label: str, var: tk.Variable, lo: float, hi: float) -> None:
+    def _slider_row(self, label: str, var: tk.Variable, lo: float, hi: float, *,
+                     enabled_var: Optional[tk.BooleanVar] = None) -> None:
         row = tk.Frame(self, bg=PANEL_BG)
         row.pack(fill="x", padx=16, pady=(10, 0))
+        if enabled_var is not None:
+            # An optional on/off switch for this parameter - the constraint
+            # only applies while checked (see _apply(), which reads
+            # enabled_var directly); the slider/entry stay interactive
+            # either way, they just have no effect while unchecked.
+            tk.Checkbutton(row, variable=enabled_var, bg=PANEL_BG, activebackground=PANEL_BG,
+                           highlightthickness=0, selectcolor=BUTTON_BG).pack(side="left", padx=(0, 4))
         tk.Label(row, text=f"{label}:", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL, anchor="w").pack(side="left")
 
         entry_str = tk.StringVar(value=f"{var.get():.3g}")
@@ -258,7 +268,11 @@ class AutoMaskWindow(tk.Toplevel):
         # Group-size filtering runs on the RAW flagged regions, before
         # expand pads them - padding first would inflate every group's size
         # and defeat the point of keeping only compact, point-like sources.
-        preview = filter_by_group_size(preview, self.max_group_size.get())
+        # filter_by_group_size already treats max_size<=0 as "disabled", so
+        # the checkbox just forces that when unchecked, whatever the slider
+        # is currently set to.
+        max_group_size = self.max_group_size.get() if self.max_group_size_enabled.get() else 0
+        preview = filter_by_group_size(preview, max_group_size)
         # Expansion only pads the FINAL flagged regions - it has no bearing
         # on background isolation, so it's applied after everything the
         # histogram/stats below are about.

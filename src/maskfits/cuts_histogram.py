@@ -58,6 +58,10 @@ class CutsHistogram(tk.Frame):
         self._drag: Optional[str] = None  # "lo" | "hi" | None
         self._drag_range: Optional[tuple[float, float]] = None
         self.show_full_range = False
+        # Locked while a fixed-cuts colormap (IsoPy) is active - see
+        # set_enabled. The "full" range-view toggle stays usable either way,
+        # since it's just a display option, not an edit to the cuts.
+        self.enabled = True
 
         # overlay canvas item ids, created once and repositioned afterwards
         self._sel_id: Optional[int] = None
@@ -94,20 +98,20 @@ class CutsHistogram(tk.Frame):
         entries.pack(fill="x", pady=(8, 0))
 
         tk.Label(entries, text="lowcut:", bg=outer_bg, fg=TEXT_DIM, font=FONT_SMALL).pack(side="left")
-        lo_entry = tk.Entry(entries, textvariable=self.lo_str, width=8, justify="center", bg=BUTTON_BG, fg=TEXT,
-                             insertbackground=TEXT, relief="flat", highlightthickness=1,
-                             highlightbackground=PANEL_BORDER, highlightcolor=DANGER, font=FONT_SMALL)
-        lo_entry.pack(side="left", padx=(6, 14))
-        lo_entry.bind("<Return>", self._on_lo_entry)
-        lo_entry.bind("<FocusOut>", self._on_lo_entry)
+        self._lo_entry = tk.Entry(entries, textvariable=self.lo_str, width=8, justify="center", bg=BUTTON_BG,
+                                   fg=TEXT, insertbackground=TEXT, relief="flat", highlightthickness=1,
+                                   highlightbackground=PANEL_BORDER, highlightcolor=DANGER, font=FONT_SMALL)
+        self._lo_entry.pack(side="left", padx=(6, 14))
+        self._lo_entry.bind("<Return>", self._on_lo_entry)
+        self._lo_entry.bind("<FocusOut>", self._on_lo_entry)
 
         tk.Label(entries, text="highcut:", bg=outer_bg, fg=TEXT_DIM, font=FONT_SMALL).pack(side="left")
-        hi_entry = tk.Entry(entries, textvariable=self.hi_str, width=8, justify="center", bg=BUTTON_BG, fg=TEXT,
-                             insertbackground=TEXT, relief="flat", highlightthickness=1,
-                             highlightbackground=PANEL_BORDER, highlightcolor=GREEN, font=FONT_SMALL)
-        hi_entry.pack(side="left", padx=(6, 8))
-        hi_entry.bind("<Return>", self._on_hi_entry)
-        hi_entry.bind("<FocusOut>", self._on_hi_entry)
+        self._hi_entry = tk.Entry(entries, textvariable=self.hi_str, width=8, justify="center", bg=BUTTON_BG,
+                                   fg=TEXT, insertbackground=TEXT, relief="flat", highlightthickness=1,
+                                   highlightbackground=PANEL_BORDER, highlightcolor=GREEN, font=FONT_SMALL)
+        self._hi_entry.pack(side="left", padx=(6, 8))
+        self._hi_entry.bind("<Return>", self._on_hi_entry)
+        self._hi_entry.bind("<FocusOut>", self._on_hi_entry)
 
         self._range_btn = RoundButton(
             entries, "full", command=self._toggle_range_view, outer_bg=outer_bg,
@@ -153,6 +157,17 @@ class CutsHistogram(tk.Frame):
         self.show_full_range = not self.show_full_range
         self._range_btn.set_active(self.show_full_range)
         self._redraw(full_rebin=True)
+
+    def set_enabled(self, enabled: bool) -> None:
+        """Locks/unlocks editing the cut levels - dragging the handles and
+        the lowcut/highcut entry boxes - for a colormap (IsoPy) whose cuts
+        are fixed by its own formula rather than user-chosen. Viewing (the
+        "full" range toggle, and the histogram itself) stays available
+        either way."""
+        self.enabled = enabled
+        state = "normal" if enabled else "disabled"
+        self._lo_entry.configure(state=state)
+        self._hi_entry.configure(state=state)
 
     # ------------------------------------------------------------- geometry
 
@@ -273,6 +288,9 @@ class CutsHistogram(tk.Frame):
     # ---------------------------------------------------------------- input
 
     def _on_press(self, event: tk.Event) -> None:
+        if not self.enabled:
+            self._drag = None
+            return
         disp_lo, disp_hi = self._compute_disp_range()
         x_lo = self._value_to_x(self.vmin_var.get(), disp_lo, disp_hi)
         x_hi = self._value_to_x(self.vmax_var.get(), disp_lo, disp_hi)

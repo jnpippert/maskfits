@@ -2,7 +2,13 @@ import numpy as np
 import pytest
 from astropy.io import fits
 
-from maskfits.imagedata import list_image_extensions, load_fits_image
+from maskfits.imagedata import (
+    ISOPY_DEFAULT_PXSCALE,
+    ISOPY_DEFAULT_ZP,
+    isopy_cuts_and_stops,
+    list_image_extensions,
+    load_fits_image,
+)
 
 
 def _write_multi_ext(path, with_object_names=True):
@@ -64,3 +70,39 @@ def test_single_extension_file_has_exactly_one_entry(tmp_path):
     extensions = list_image_extensions(str(path))
     assert len(extensions) == 1
     assert extensions[0][0] == 0
+
+
+def test_isopy_cuts_default_zp_and_pxscale_when_absent():
+    header = fits.Header()  # no ZP, no PXSCALE
+    vmin, vmax, stops = isopy_cuts_and_stops(header, None)
+    minflux = 10 ** (-0.4 * (27.0 - ISOPY_DEFAULT_ZP)) * ISOPY_DEFAULT_PXSCALE**2
+    assert vmin == pytest.approx(-minflux)
+    assert vmax == pytest.approx(10 ** (-0.4 * (22.0 - ISOPY_DEFAULT_ZP)) * ISOPY_DEFAULT_PXSCALE**2)
+    assert stops == sorted(stops), "stop positions must be monotonically increasing for LUT interpolation"
+    assert stops[0] == 0.0 and stops[-1] == 1.0
+
+
+def test_isopy_cuts_uses_header_zp():
+    header = fits.Header()
+    header["ZP"] = 25.0
+    vmin, _vmax, _stops = isopy_cuts_and_stops(header, None)
+    default_vmin, _, _ = isopy_cuts_and_stops(fits.Header(), None)
+    assert vmin != default_vmin
+
+
+def test_isopy_cuts_pxscale_header_keyword_takes_priority():
+    header = fits.Header()
+    header["PXSCALE"] = 0.5
+    vmin, vmax, _ = isopy_cuts_and_stops(header, None)
+    default_vmin, default_vmax, _ = isopy_cuts_and_stops(fits.Header(), None)
+    # flux scales with pxscale^2, so halving it should scale vmin/vmax by 0.25
+    assert vmin == pytest.approx(default_vmin * 0.25)
+    assert vmax == pytest.approx(default_vmax * 0.25)
+
+
+def test_isopy_cuts_different_headers_give_different_cuts():
+    h1, h2 = fits.Header(), fits.Header()
+    h1["ZP"], h2["ZP"] = 25.0, 30.0
+    vmin1, vmax1, _ = isopy_cuts_and_stops(h1, None)
+    vmin2, vmax2, _ = isopy_cuts_and_stops(h2, None)
+    assert (vmin1, vmax1) != (vmin2, vmax2)

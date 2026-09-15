@@ -63,7 +63,31 @@ _MIDAS_BOUNDARIES_PCT = [
 ]
 
 MIDAS_NAME = "Midas Rainbow"
-COLORMAP_NAMES = [*_STOPS.keys(), MIDAS_NAME]
+
+# IsoPy: pysophotes' own output.png diagnostic-plot colorbar - a
+# LinearSegmentedColormap built from named matplotlib colors at
+# data/header-dependent stop positions (see imagedata.isopy_cuts_and_stops).
+# The color SEQUENCE below is fixed; only the stop positions vary per image
+# (they depend on that image's ZP/pixel scale), so unlike every other
+# colormap here this can't be precomputed once into a static COLORMAP_LUTS
+# entry - gui.py calls build_isopy_lut() itself, per image, and caches the
+# result instead.
+ISOPY_NAME = "IsoPy"
+ISOPY_COLOR_NAMES = ["black", "lightgray", "blue", "green", "yellow", "orange", "red", "purple"]
+# The standard basic/CSS-named-color RGB values (0-1) matplotlib itself
+# resolves these exact names to - matching pysophotes' own color list.
+_ISOPY_COLOR_RGB: dict[str, tuple[float, float, float]] = {
+    "black": (0.0, 0.0, 0.0),
+    "lightgray": (0.827, 0.827, 0.827),
+    "blue": (0.0, 0.0, 1.0),
+    "green": (0.0, 0.502, 0.0),
+    "yellow": (1.0, 1.0, 0.0),
+    "orange": (1.0, 0.647, 0.0),
+    "red": (1.0, 0.0, 0.0),
+    "purple": (0.502, 0.0, 0.502),
+}
+
+COLORMAP_NAMES = [*_STOPS.keys(), MIDAS_NAME, ISOPY_NAME]
 
 
 def _build_lut(stops: list[tuple[float, float, float, float]]) -> np.ndarray:
@@ -87,6 +111,18 @@ def _build_stepped_lut(colors_hex: list[str], boundaries_pct: list[float]) -> np
 
 COLORMAP_LUTS: dict[str, np.ndarray] = {name: _build_lut(stops) for name, stops in _STOPS.items()}
 COLORMAP_LUTS[MIDAS_NAME] = _build_stepped_lut(_MIDAS_COLORS, _MIDAS_BOUNDARIES_PCT)
+# Deliberately no COLORMAP_LUTS[ISOPY_NAME] entry - see ISOPY_NAME's comment above.
+
+
+def build_isopy_lut(stops_t: list[float]) -> np.ndarray:
+    """256-entry RGB LUT for the IsoPy colormap from its 8 fractional stop
+    positions (see imagedata.isopy_cuts_and_stops), matching
+    ISOPY_COLOR_NAMES in order. Sorted defensively by position before
+    interpolating - normal ZP/pixel-scale values always produce already-
+    increasing positions, but np.interp requires strictly increasing x
+    regardless, and a pathological header shouldn't be able to crash this."""
+    stops = [(t, *_ISOPY_COLOR_RGB[name]) for t, name in sorted(zip(stops_t, ISOPY_COLOR_NAMES))]
+    return _build_lut(stops)
 
 
 def _hue_rotated_rgb(rgb: tuple[int, int, int], turns: float) -> tuple[int, int, int]:
@@ -118,6 +154,11 @@ def mask_tint_for(name: str, lut: np.ndarray) -> tuple[int, int, int]:
         return hex_to_rgb(ACCENT)
     if name == MIDAS_NAME:
         return 255, 0, 0
+    if name == ISOPY_NAME:
+        # Cyan sits outside IsoPy's own black/gray/blue/green/yellow/
+        # orange/red/purple sequence entirely, so it reads clearly against
+        # any part of that palette.
+        return 0, 255, 255
     mid = tuple(int(c) for c in lut[len(lut) // 2])
     return _complementary_rgb(mid)
 
@@ -140,6 +181,10 @@ def auto_mask_tint_for(name: str, lut: np.ndarray) -> tuple[int, int, int]:
         return hex_to_rgb(BLUE)
     if name == MIDAS_NAME:
         return 255, 255, 255
+    if name == ISOPY_NAME:
+        # Magenta, for the same reason mask_tint_for picks cyan above - also
+        # outside IsoPy's own palette, and clearly distinct from that cyan.
+        return 255, 0, 255
     mid = tuple(int(c) for c in lut[len(lut) // 2])
     return _hue_rotated_rgb(mid, 0.25)
 

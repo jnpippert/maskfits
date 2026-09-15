@@ -139,6 +139,76 @@ def percentile_cuts(data: np.ndarray, percent: float) -> tuple[float, float]:
     return (lo, hi) if hi > lo else minmax_cuts(data)
 
 
+# IsoPy colormap: the fixed 22-27 mag/arcsec^2 surface-brightness display
+# range pysophotes' own output.png diagnostic figure uses (its
+# default_sb_cutlevels(), minus the K-band special case - not something a
+# generic viewer like this one has a "filter" concept to key off of).
+ISOPY_MIN_SB = 22.0
+ISOPY_MAX_SB = 27.0
+ISOPY_DEFAULT_ZP = 30.0
+ISOPY_DEFAULT_PXSCALE = 1.0
+
+
+def _pixel_scale_arcsec(header: "fits.Header", wcs: Optional[WCS]) -> float:
+    """Pixel scale in arcsec/pixel: the header's own PXSCALE keyword if
+    present (assumed already in arcsec/pixel), else derived from a celestial
+    WCS if there is one, else the default (1.0 "/px)."""
+    pxscale = header.get("PXSCALE")
+    if pxscale is not None:
+        try:
+            return abs(float(pxscale))
+        except (TypeError, ValueError):
+            pass
+    if wcs is None or not wcs.has_celestial:
+        return ISOPY_DEFAULT_PXSCALE
+    try:
+        from astropy.wcs.utils import proj_plane_pixel_scales
+        scales = proj_plane_pixel_scales(wcs.celestial)
+        return abs(float(np.mean(scales))) * 3600.0
+    except Exception:
+        return ISOPY_DEFAULT_PXSCALE
+
+
+def isopy_cuts_and_stops(header: "fits.Header", wcs: Optional[WCS]) -> tuple[float, float, list[float]]:
+    """Surface-brightness-based cut levels (vmin, vmax, in raw flux units)
+    and the 8 fractional [0, 1] stop positions for the IsoPy colormap (see
+    colormaps.build_isopy_lut and its ISOPY_COLOR_NAMES) - ported from
+    pysophotes' own output.png diagnostic plot: same fixed 22-27
+    mag/arcsec^2 display range, same per-magnitude tick levels between them.
+
+    Positions are computed in plain linear flux, not through pysophotes' own
+    log-like display stretch - maskfits already has its own separate lin/
+    log/asinh scale-function choice (see gui.py's scale_function) that
+    layers on top of whatever lowcut/highcut ends up active, isopy's
+    included, so reproducing that second stretch here would be redundant
+    rather than more faithful.
+
+    ZP comes from the header's ZP keyword (default 30.0 if absent). Pixel
+    scale comes from the header's own PXSCALE keyword if present, else from
+    `wcs` in arcsec/pixel, else the default (1.0 "/px) - see
+    _pixel_scale_arcsec.
+    """
+    zp = float(header.get("ZP", ISOPY_DEFAULT_ZP))
+    pxscale = _pixel_scale_arcsec(header, wcs)
+
+    minflux = 10 ** (-0.4 * (ISOPY_MAX_SB - zp)) * pxscale**2
+    vmin = -minflux
+    vmax = 10 ** (-0.4 * (ISOPY_MIN_SB - zp)) * pxscale**2
+    span = max(vmax - vmin, 1e-30)
+
+    cticklabels = np.arange(ISOPY_MIN_SB, ISOPY_MAX_SB + 1, 1.0)
+    cticks = 10 ** (-0.4 * (cticklabels - zp)) * pxscale**2
+    colorloc = (cticks - vmin) / span
+    bg_frac = -vmin / span
+
+    # Order matches colormaps.ISOPY_COLOR_NAMES: black, lightgray (at the
+    # zero/background crossing), then blue/green/yellow/orange/red at the
+    # faintest-to-brightest per-magnitude tick levels, purple at vmax.
+    stops = [0.0, bg_frac, colorloc[5], colorloc[4], colorloc[3], colorloc[2], colorloc[1], 1.0]
+    stops = [min(max(float(t), 0.0), 1.0) for t in stops]
+    return float(vmin), float(vmax), stops
+
+
 def gaussian_smooth(data: np.ndarray, sigma: float) -> np.ndarray:
     """Blur the image with a Gaussian kernel, without letting non-finite pixels
     (NaN/inf) bleed into their neighbors - standard normalized-convolution trick:

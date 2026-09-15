@@ -12,7 +12,14 @@ from PIL import Image, ImageTk
 
 from maskfits.automask_window import AutoMaskWindow
 from maskfits.binning import bin_func, bin_mask, unbin_mask
-from maskfits.colormaps import COLORMAP_LUTS, COLORMAP_NAMES, auto_mask_tint_for, mask_tint_for
+from maskfits.colormaps import (
+    COLORMAP_LUTS,
+    COLORMAP_NAMES,
+    ISOPY_NAME,
+    auto_mask_tint_for,
+    build_isopy_lut,
+    mask_tint_for,
+)
 from maskfits.cuts_histogram import CutsHistogram
 from maskfits.imagedata import (
     PERCENTILE_PRESETS,
@@ -20,6 +27,7 @@ from maskfits.imagedata import (
     STRETCHES,
     FitsImage,
     gaussian_smooth,
+    isopy_cuts_and_stops,
     list_image_extensions,
     load_fits_image,
     minmax_cuts,
@@ -190,6 +198,25 @@ class Entry:
         self._binned_mask_cache: Optional[np.ndarray] = None
         self._binned_mask_cache_factor: Optional[int] = None
 
+        # IsoPy's cut levels/LUT depend only on this entry's header/WCS
+        # (see imagedata.isopy_cuts_and_stops), not on binning/smoothing/
+        # zoom/anything else that changes more often - cached against the
+        # FitsImage object identity so a fresh load (or a different
+        # extension - see MaskFitsApp.switch_extension) invalidates it, but
+        # nothing else needlessly does.
+        self._isopy_cache_image: Optional[FitsImage] = None
+        self._isopy_vmin: float = 0.0
+        self._isopy_vmax: float = 1.0
+        self._isopy_lut: np.ndarray = np.zeros((256, 3), dtype=np.uint8)
+
+    def isopy_cuts_and_lut(self) -> tuple[float, float, np.ndarray]:
+        if self.image is not None and self._isopy_cache_image is not self.image:
+            vmin, vmax, stops = isopy_cuts_and_stops(self.image.header, self.image.wcs)
+            self._isopy_vmin, self._isopy_vmax = vmin, vmax
+            self._isopy_lut = build_isopy_lut(stops)
+            self._isopy_cache_image = self.image
+        return self._isopy_vmin, self._isopy_vmax, self._isopy_lut
+
     def ensure_loaded(self, stretch: str) -> None:
         if self.image is not None or self.path is None:
             return
@@ -273,7 +300,7 @@ class MaskFitsApp:
         # refresh the preview so the new style's extension shows immediately.
         self.line_style.trace_add("write", lambda *_: self._refresh_active_preview())
         self.scale_function.trace_add("write", lambda *_: self.render())
-        self.colormap.trace_add("write", lambda *_: self.render())
+        self.colormap.trace_add("write", self._on_colormap_changed)
         self.invert_colormap.trace_add("write", lambda *_: self.render())
         self.root.bind("<Control-z>", self._on_undo)
         self.root.bind("<Escape>", lambda e: self._cancel_pending_line())
@@ -860,6 +887,7 @@ class MaskFitsApp:
         # is actually laid out.
         self.root.after_idle(self._reflow_toolbar)
         self.counter_label.config(text=f"{self.index + 1}/{len(self.entries)}")
+        self._sync_isopy_cuts()
         self._update_cuts_display()
         self._update_smooth_button()
         self._update_bin_button()
@@ -896,6 +924,26 @@ class MaskFitsApp:
         (which changes the array the histogram should actually reflect)."""
         if self.image is not None:
             self.cuts_histogram.set_data(self.image.data, self.entry.lowcut, self.entry.highcut)
+
+    def _sync_isopy_cuts(self) -> None:
+        """IsoPy's cut levels come from its own fixed surface-brightness
+        formula (see Entry.isopy_cuts_and_lut), not user editing - forces
+        the current entry's lowcut/highcut to them, and keeps the histogram
+        locked, whenever IsoPy is the active colormap. Called on every
+        colormap change and on every load_current, since navigating to a
+        different entry (or a theme rebuild recreating the histogram widget
+        from scratch) needs this reapplied too - each entry has its own
+        header/WCS, so its isopy cuts can differ from the previous entry's."""
+        is_isopy = self.colormap.get() == ISOPY_NAME
+        if is_isopy and self.image is not None:
+            vmin, vmax, _ = self.entry.isopy_cuts_and_lut()
+            self.entry.lowcut, self.entry.highcut = vmin, vmax
+        self.cuts_histogram.set_enabled(not is_isopy)
+
+    def _on_colormap_changed(self, *_args: object) -> None:
+        self._sync_isopy_cuts()
+        self._update_cuts_display()
+        self.render()
 
     def _on_histogram_apply(self, lowcut: float, highcut: float) -> None:
         self.entry.lowcut = lowcut
@@ -1641,8 +1689,16 @@ class MaskFitsApp:
         self._refresh_active_preview()
 
     def _active_lut(self) -> np.ndarray:
-        """The current colormap's LUT, reversed if Invert Colormap is on."""
-        lut = COLORMAP_LUTS[self.colormap.get()]
+        """The current colormap's LUT, reversed if Invert Colormap is on.
+
+        IsoPy's LUT depends on the current entry's own header/WCS (see
+        Entry.isopy_cuts_and_lut), so unlike every other colormap it isn't a
+        static lookup in COLORMAP_LUTS."""
+        name = self.colormap.get()
+        if name == ISOPY_NAME:
+            _, _, lut = self.entry.isopy_cuts_and_lut()
+        else:
+            lut = COLORMAP_LUTS[name]
         return lut[::-1] if self.invert_colormap.get() else lut
 
     def _cycle_colormap(self, _event: Optional[tk.Event] = None) -> None:
