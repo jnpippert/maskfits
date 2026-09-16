@@ -1,103 +1,442 @@
-"""Color palette and fonts shared across the maskfits GUI.
+"""Color palette, fonts, and live theming for the maskfits Qt GUI.
 
-Two palettes live here - DARK (default) and LIGHT. The module-level names
-below (APP_BG, PANEL_BG, ...) always resolve to whichever one is active.
-gui.py/widgets.py/cuts_histogram.py/colormaps.py all import these names directly
-(`from maskfits.theme import PANEL_BG`), which copies the value into each of
-those modules' own namespaces at import time - so switching themes can't just
-mutate this module's globals, it has to reach into those already-imported
-modules and patch the same names there too. See set_theme().
+Two `Theme` instances live here - DARK (default) and LIGHT. Unlike the old
+Tkinter app (which baked colors into each widget's canvas draw calls at
+construction time, so a theme switch had to destroy and rebuild the whole
+widget tree), Qt widgets restyle live: `theme_manager().set_mode(...)` swaps
+the active `Theme`, re-applies a QSS stylesheet + QPalette to the whole
+QApplication, and emits `theme_changed` so any custom-painted widget (which
+reads `current_theme()` fresh inside its own paintEvent, never caching colors
+at construction) can repaint itself.
 """
 
-import sys
+from __future__ import annotations
 
-DARK = dict(
-    APP_BG="#141415",
-    PANEL_BG="#1d1d1f",
-    PANEL_BORDER="#2f2f32",
-    TEXT="#eae7e2",
-    TEXT_DIM="#96938d",
-    ACCENT="#851212",
-    ACCENT_HOVER="#a3201f",
-    ACCENT_ACTIVE="#5c0d0d",
-    DANGER="#c1554a",
-    DANGER_HOVER="#d16e63",
-    GREEN="#22c55e",
-    WARNING="#e8a33d",
-    BLUE="#3b82f6",
-    TRACK="#3a3a3d",
-    BUTTON_BG="#28282b",
-    BUTTON_HOVER="#333336",
-    CANVAS_BG="#0a0a0b",
+import sys
+from dataclasses import dataclass
+from typing import Optional
+
+from PySide6.QtCore import QObject, Signal
+from PySide6.QtGui import QColor, QPalette
+
+
+@dataclass(frozen=True)
+class Theme:
+    mode: str
+    app_bg: str
+    panel_bg: str
+    panel_border: str
+    text: str
+    text_dim: str
+    accent: str
+    accent_hover: str
+    accent_active: str
+    danger: str
+    danger_hover: str
+    green: str
+    warning: str
+    blue: str
+    track: str
+    button_bg: str
+    button_hover: str
+    canvas_bg: str
+
+
+# Crimson (accent/danger) fills are dark enough in both themes that text on
+# top of them always needs to stay white, regardless of which theme's `text`
+# color is otherwise in effect - so this is a fixed constant, not a Theme field.
+ACCENT_TEXT = "#ffffff"
+
+FONT_FAMILY = "Segoe UI" if sys.platform == "win32" else "Helvetica"
+FONT_SIZE = 11
+FONT_SIZE_SMALL = 10
+
+DARK = Theme(
+    mode="dark",
+    app_bg="#141415", panel_bg="#1d1d1f", panel_border="#2f2f32",
+    text="#eae7e2", text_dim="#96938d",
+    accent="#851212", accent_hover="#a3201f", accent_active="#5c0d0d",
+    danger="#c1554a", danger_hover="#d16e63",
+    green="#22c55e", warning="#e8a33d", blue="#3b82f6",
+    track="#3a3a3d", button_bg="#28282b", button_hover="#333336", canvas_bg="#0a0a0b",
 )
 
-LIGHT = dict(
-    APP_BG="#eeeeec",
-    PANEL_BG="#ffffff",
-    PANEL_BORDER="#d8d8d5",
-    TEXT="#1c1c1e",
-    TEXT_DIM="#68686c",
+LIGHT = Theme(
+    mode="light",
+    app_bg="#eeeeec", panel_bg="#ffffff", panel_border="#d8d8d5",
+    text="#1c1c1e", text_dim="#68686c",
     # Same crimson identity as dark mode, but hover/active move darker rather
     # than lighter - on a white panel, a solid fill gets more contrast (and
     # visible hover feedback) by darkening, not brightening.
-    ACCENT="#851212",
-    ACCENT_HOVER="#6b0e0e",
-    ACCENT_ACTIVE="#4a0a0a",
-    DANGER="#b2453b",
-    DANGER_HOVER="#c1554a",
-    GREEN="#178a43",
-    WARNING="#c9781f",
-    BLUE="#2563eb",
-    TRACK="#d3d3d0",
-    BUTTON_BG="#e7e7e4",
-    BUTTON_HOVER="#dadad7",
-    CANVAS_BG="#ffffff",
+    accent="#851212", accent_hover="#6b0e0e", accent_active="#4a0a0a",
+    danger="#b2453b", danger_hover="#c1554a",
+    green="#178a43", warning="#c9781f", blue="#2563eb",
+    track="#d3d3d0", button_bg="#e7e7e4", button_hover="#dadad7", canvas_bg="#ffffff",
 )
-
-# Crimson is dark enough in both themes that text on top of an accent- (or
-# danger-) filled surface always needs to stay white, regardless of which
-# theme's TEXT color is otherwise in effect - so this is a fixed constant,
-# not part of either palette.
-ACCENT_TEXT = "#ffffff"
-
-FONT_FAMILY = "Helvetica"
-FONT = (FONT_FAMILY, 11)
-FONT_SMALL = (FONT_FAMILY, 10)
-FONT_LABEL = (FONT_FAMILY, 10)
-
-MODE = "dark"
-globals().update(DARK)
-
-# Every module that does `from maskfits.theme import <color name>` needs its
-# copy patched too when the theme changes.
-_THEMED_MODULES = (
-    "maskfits.gui", "maskfits.widgets", "maskfits.cuts_histogram", "maskfits.colormaps",
-    "maskfits.automask_window",
-)
-
-
-def set_theme(mode: str) -> None:
-    """Switch the active palette ("dark" or "light") and propagate the new
-    color values into every module that already imported the old ones.
-
-    This only updates the plain module-level names - it doesn't touch any
-    widget already on screen (those baked in whatever color was active when
-    they were built). Pairing this with a full widget-tree rebuild is what
-    actually re-themes the app; see MaskFitsApp._rebuild_ui.
-    """
-    global MODE
-    palette = LIGHT if mode == "light" else DARK
-    MODE = "light" if mode == "light" else "dark"
-    globals().update(palette)
-    for modname in _THEMED_MODULES:
-        mod = sys.modules.get(modname)
-        if mod is None:
-            continue
-        for name, value in palette.items():
-            if hasattr(mod, name):
-                setattr(mod, name, value)
 
 
 def hex_to_rgb(color: str) -> tuple[int, int, int]:
     color = color.lstrip("#")
     return int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
+
+
+class ThemeManager(QObject):
+    """App-wide singleton owning the currently active Theme.
+
+    Access the active theme via `current_theme()`; switch it via
+    `theme_manager().set_mode(...)`, which re-applies the stylesheet/palette
+    to the running QApplication and emits `theme_changed` for anything that
+    needs to react (custom-painted widgets, the Windows dark-titlebar hook).
+    """
+
+    theme_changed = Signal(Theme)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._theme = DARK
+
+    @property
+    def theme(self) -> Theme:
+        return self._theme
+
+    def set_mode(self, mode: str) -> None:
+        """Applies the theme's QSS/QPalette to the running QApplication and
+        emits theme_changed - deliberately NOT short-circuited when the mode
+        is unchanged, since this is also how the very first theme gets
+        applied at startup (there's no prior "different" state to compare
+        against then), and re-applying identical QSS is cheap."""
+        theme = LIGHT if mode == "light" else DARK
+        self._theme = theme
+        from PySide6.QtWidgets import QApplication
+
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(build_qss(theme))
+            app.setPalette(build_palette(theme))
+        self.theme_changed.emit(theme)
+
+
+_manager: Optional[ThemeManager] = None
+
+
+def theme_manager() -> ThemeManager:
+    global _manager
+    if _manager is None:
+        _manager = ThemeManager()
+    return _manager
+
+
+def current_theme() -> Theme:
+    return theme_manager().theme
+
+
+def build_palette(theme: Theme) -> QPalette:
+    """A QPalette matching the Theme, for native chrome that reads palette
+    roles rather than QSS (dialogs, some menu internals, disabled-state
+    fallbacks)."""
+    p = QPalette()
+    p.setColor(QPalette.ColorRole.Window, QColor(theme.app_bg))
+    p.setColor(QPalette.ColorRole.WindowText, QColor(theme.text))
+    p.setColor(QPalette.ColorRole.Base, QColor(theme.panel_bg))
+    p.setColor(QPalette.ColorRole.AlternateBase, QColor(theme.button_bg))
+    p.setColor(QPalette.ColorRole.Text, QColor(theme.text))
+    p.setColor(QPalette.ColorRole.Button, QColor(theme.button_bg))
+    p.setColor(QPalette.ColorRole.ButtonText, QColor(theme.text))
+    p.setColor(QPalette.ColorRole.Highlight, QColor(theme.accent))
+    p.setColor(QPalette.ColorRole.HighlightedText, QColor(ACCENT_TEXT))
+    p.setColor(QPalette.ColorRole.ToolTipBase, QColor(theme.panel_bg))
+    p.setColor(QPalette.ColorRole.ToolTipText, QColor(theme.text))
+    p.setColor(QPalette.ColorRole.PlaceholderText, QColor(theme.text_dim))
+    disabled_text = QColor(theme.text_dim)
+    p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, disabled_text)
+    p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, disabled_text)
+    p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, disabled_text)
+    return p
+
+
+def build_qss(theme: Theme) -> str:
+    """The app-wide stylesheet, applied via QApplication.setStyleSheet().
+
+    Unlike Tkinter's tk.Menu (confirmed this session to fully ignore bg/fg
+    config on Windows, for both the menu bar strip and its dropdown popups),
+    Qt's QMenuBar/QMenu fully respect QSS - the entire reason for this port.
+    """
+    t = theme
+    return f"""
+    /* Transparent by default - only the actual top-level windows get a
+    solid fill (below), plus whatever specific widget classes declare their
+    own background further down (RoundedPanel, QPushButton, QLineEdit, ...).
+    The old version instead gave EVERY QWidget an opaque app_bg background,
+    which meant every plain QWidget used purely for layout (a toolbar
+    "chunk" wrapper, a row container, tool_options_container, ...) silently
+    painted its own app_bg rectangle over whatever panel (panel_bg) it
+    actually sat inside of - a recurring visible-rectangle bug fixed one
+    widget at a time before this rule was inverted to fix the whole class
+    of it at once. */
+    QWidget {{
+        background: transparent;
+        color: {t.text};
+        font-family: "{FONT_FAMILY}";
+        font-size: {FONT_SIZE}pt;
+        selection-background-color: {t.accent};
+        selection-color: {ACCENT_TEXT};
+    }}
+
+    QMainWindow, QDialog {{
+        background-color: {t.app_bg};
+    }}
+
+    QToolTip {{
+        background-color: {t.panel_bg};
+        color: {t.text};
+        border: 1px solid {t.panel_border};
+        padding: 4px 6px;
+    }}
+
+    /* -------------------------------------------------------------- panels */
+
+    RoundedPanel, .RoundedPanel {{
+        background-color: {t.panel_bg};
+        border: 1px solid {t.panel_border};
+        border-radius: 14px;
+    }}
+
+    /* Plain QWidget containers nested inside a RoundedPanel (the toolbar's
+    FlowLayout and its two rows, its per-control "chunk" wrappers) must stay
+    transparent - otherwise the global QWidget background rule below paints
+    each of them its own app_bg rectangle, visibly darker than the panel_bg
+    panel they sit inside of. */
+    #flowLayout, #flowRow, #toolbarChunk {{
+        background: transparent;
+    }}
+
+    QScrollArea {{
+        border: none;
+        background: transparent;
+    }}
+    QScrollArea > QWidget > QWidget {{
+        background: transparent;
+    }}
+    QScrollBar:vertical {{
+        background: transparent;
+        width: 10px;
+        margin: 0;
+    }}
+    QScrollBar::handle:vertical {{
+        background: {t.button_bg};
+        border-radius: 4px;
+        min-height: 24px;
+    }}
+    QScrollBar::handle:vertical:hover {{
+        background: {t.button_hover};
+    }}
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+        height: 0;
+    }}
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+        background: transparent;
+    }}
+
+    /* ------------------------------------------------------------- labels */
+
+    QLabel {{
+        background: transparent;
+    }}
+    QLabel[dim="true"] {{
+        color: {t.text_dim};
+    }}
+
+    /* ------------------------------------------------------------ buttons */
+
+    QPushButton {{
+        background-color: {t.button_bg};
+        color: {t.text};
+        border: none;
+        border-radius: 10px;
+        padding: 5px 11px;
+    }}
+    QPushButton:hover {{
+        background-color: {t.button_hover};
+    }}
+    QPushButton:disabled {{
+        color: {t.text_dim};
+    }}
+    QPushButton:checked {{
+        background-color: {t.accent};
+        color: {ACCENT_TEXT};
+    }}
+    QPushButton:checked:hover {{
+        background-color: {t.accent_hover};
+    }}
+    QPushButton[accent="true"] {{
+        background-color: {t.accent};
+        color: {ACCENT_TEXT};
+    }}
+    QPushButton[accent="true"]:hover {{
+        background-color: {t.accent_hover};
+    }}
+    QPushButton[danger="true"] {{
+        background-color: {t.danger};
+        color: {ACCENT_TEXT};
+    }}
+    QPushButton[danger="true"]:hover {{
+        background-color: {t.danger_hover};
+    }}
+    QPushButton[flat="true"] {{
+        background: transparent;
+        padding: 2px;
+    }}
+    QPushButton[flat="true"]:hover {{
+        background-color: {t.button_hover};
+    }}
+
+    /* ------------------------------------------------------------- inputs */
+
+    QLineEdit {{
+        background-color: {t.button_bg};
+        color: {t.text};
+        border: 1px solid {t.panel_border};
+        border-radius: 6px;
+        padding: 3px 6px;
+        selection-background-color: {t.accent};
+        selection-color: {ACCENT_TEXT};
+    }}
+    QLineEdit:focus {{
+        border: 1px solid {t.accent};
+    }}
+    QLineEdit:disabled {{
+        color: {t.text_dim};
+    }}
+
+    QComboBox {{
+        background-color: {t.button_bg};
+        color: {t.text};
+        border: 1px solid {t.panel_border};
+        border-radius: 6px;
+        padding: 3px 8px;
+    }}
+    QComboBox:disabled {{
+        color: {t.text_dim};
+    }}
+    QComboBox QAbstractItemView {{
+        background-color: {t.panel_bg};
+        color: {t.text};
+        border: 1px solid {t.panel_border};
+        selection-background-color: {t.accent};
+        selection-color: {ACCENT_TEXT};
+    }}
+
+    QCheckBox {{
+        background: transparent;
+        spacing: 6px;
+    }}
+    QCheckBox::indicator {{
+        width: 15px;
+        height: 15px;
+        border-radius: 4px;
+        border: 1px solid {t.panel_border};
+        background: {t.button_bg};
+    }}
+    QCheckBox::indicator:checked {{
+        background: {t.accent};
+        border: 1px solid {t.accent};
+    }}
+
+    /* ------------------------------------------------------------ slider */
+
+    RoundSlider, QSlider {{
+        background: transparent;
+    }}
+    QSlider::groove:horizontal {{
+        height: 6px;
+        background: {t.track};
+        border-radius: 3px;
+    }}
+    QSlider::sub-page:horizontal {{
+        background: {t.accent};
+        border-radius: 3px;
+    }}
+    QSlider::add-page:horizontal {{
+        /* The unfilled portion right of the handle - without an explicit
+        rule here, Qt falls back to the native platform style for it (a
+        tall light-gray bar on Windows) even though groove/sub-page are
+        styled, since partially-styled QSliders don't fully suppress native
+        rendering per sub-control. */
+        background: {t.track};
+        border-radius: 3px;
+    }}
+    QSlider::handle:horizontal {{
+        background: {t.text};
+        border: 2px solid {t.accent};
+        width: 14px;
+        height: 14px;
+        margin: -5px 0;
+        border-radius: 7px;
+    }}
+    QSlider:disabled::groove:horizontal {{
+        background: {t.panel_border};
+    }}
+    QSlider:disabled::sub-page:horizontal {{
+        background: {t.text_dim};
+    }}
+    QSlider:disabled::add-page:horizontal {{
+        background: {t.panel_border};
+    }}
+    QSlider:disabled::handle:horizontal {{
+        border-color: {t.text_dim};
+    }}
+
+    /* --------------------------------------------------------- menu bar */
+
+    QMenuBar {{
+        background-color: {t.panel_bg};
+        color: {t.text};
+        border-bottom: 1px solid {t.panel_border};
+        padding: 2px;
+    }}
+    QMenuBar::item {{
+        background: transparent;
+        padding: 4px 10px;
+        border-radius: 6px;
+    }}
+    QMenuBar::item:selected {{
+        background-color: {t.button_hover};
+    }}
+    QMenuBar::item:pressed {{
+        background-color: {t.accent};
+        color: {ACCENT_TEXT};
+    }}
+
+    QMenu {{
+        background-color: {t.panel_bg};
+        color: {t.text};
+        border: 1px solid {t.panel_border};
+        padding: 4px;
+    }}
+    QMenu::item {{
+        padding: 5px 24px 5px 12px;
+        border-radius: 6px;
+    }}
+    QMenu::item:selected {{
+        background-color: {t.accent};
+        color: {ACCENT_TEXT};
+    }}
+    QMenu::item:disabled {{
+        color: {t.text_dim};
+    }}
+    QMenu::separator {{
+        height: 1px;
+        background: {t.panel_border};
+        margin: 4px 6px;
+    }}
+    QMenu::indicator {{
+        width: 13px;
+        height: 13px;
+    }}
+
+    /* ------------------------------------------------------------ dialog */
+
+    QMessageBox, QFileDialog {{
+        background-color: {t.app_bg};
+    }}
+    """

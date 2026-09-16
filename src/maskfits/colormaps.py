@@ -4,7 +4,7 @@ import colorsys
 
 import numpy as np
 
-from maskfits.theme import ACCENT, BLUE, hex_to_rgb
+from maskfits.theme import DARK, hex_to_rgb
 
 # (t, r, g, b) control points, t and colors in [0, 1]. Viridis/Inferno are close
 # perceptual approximations (a handful of anchor points interpolated), not exact
@@ -140,7 +140,7 @@ def _complementary_rgb(rgb: tuple[int, int, int]) -> tuple[int, int, int]:
     return _hue_rotated_rgb(rgb, 0.5)
 
 
-def mask_tint_for(name: str, lut: np.ndarray) -> tuple[int, int, int]:
+def mask_tint_for(name: str, lut: np.ndarray, accent_hex: str = DARK.accent) -> tuple[int, int, int]:
     """Mask overlay color for a colormap, given its (possibly inverted) active LUT.
 
     Grayscale and Midas Rainbow are special-cased to a fixed color rather than
@@ -149,9 +149,13 @@ def mask_tint_for(name: str, lut: np.ndarray) -> tuple[int, int, int]:
     fixed regardless of inversion. Everything else uses the color-wheel
     complement of the LUT's current midpoint, so an inverted colormap gets a
     correspondingly different (still-contrasting) tint automatically.
+
+    `accent_hex` is the caller's current theme accent color (same value in
+    both DARK/LIGHT today, but passed explicitly rather than imported so this
+    module has no live dependency on whichever theme happens to be active).
     """
     if name == "Grayscale":
-        return hex_to_rgb(ACCENT)
+        return hex_to_rgb(accent_hex)
     if name == MIDAS_NAME:
         return 255, 0, 0
     if name == ISOPY_NAME:
@@ -163,7 +167,7 @@ def mask_tint_for(name: str, lut: np.ndarray) -> tuple[int, int, int]:
     return _complementary_rgb(mid)
 
 
-def auto_mask_tint_for(name: str, lut: np.ndarray) -> tuple[int, int, int]:
+def auto_mask_tint_for(name: str, lut: np.ndarray, blue_hex: str = DARK.blue) -> tuple[int, int, int]:
     """Auto Mask preview overlay color for a colormap - deliberately a
     DIFFERENT hue from mask_tint_for's manual-mask tint for the same
     colormap/LUT, so a pending (not-yet-confirmed) auto-mask preview never
@@ -176,9 +180,12 @@ def auto_mask_tint_for(name: str, lut: np.ndarray) -> tuple[int, int, int]:
     uses a quarter-turn (90 degree) hue rotation off the LUT's midpoint,
     versus mask_tint_for's half-turn (180 degree) complement - a different
     hue, adapting the same way to colormap inversion.
+
+    `blue_hex` is the caller's current theme blue color, passed explicitly
+    for the same reason `mask_tint_for` takes `accent_hex` - see its docstring.
     """
     if name == "Grayscale":
-        return hex_to_rgb(BLUE)
+        return hex_to_rgb(blue_hex)
     if name == MIDAS_NAME:
         return 255, 255, 255
     if name == ISOPY_NAME:

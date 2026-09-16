@@ -1,339 +1,299 @@
-"""Small rounded-corner Tkinter widgets used by the maskfits GUI, themed via maskfits.theme."""
+"""Small reusable Qt widgets used by the maskfits GUI, themed via maskfits.theme.
 
-import tkinter as tk
-import tkinter.font as tkfont
-from typing import Callable, Optional
+Unlike the old Tkinter version (which had to hand-draw every rounded shape on
+a Canvas, since Tk has no real widget styling), most of these are thin
+QWidget/QPushButton/QSlider subclasses whose actual look comes from the QSS
+in theme.build_qss() - selected either by Qt's built-in widget-class
+selectors (QPushButton, QSlider, ...) or by these classes' own Python class
+names (RoundedPanel). `ResizeGrip` is the one exception that still needs a
+real paintEvent, since no native widget matches its drag-affordance look.
+"""
 
-from maskfits.theme import (
-    ACCENT,
-    ACCENT_HOVER,
-    ACCENT_TEXT,
-    BUTTON_BG,
-    BUTTON_HOVER,
-    DANGER,
-    DANGER_HOVER,
-    FONT_SMALL,
-    PANEL_BG,
-    PANEL_BORDER,
-    TEXT,
-    TRACK,
+from __future__ import annotations
+
+from typing import Optional
+
+from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QEnterEvent, QMouseEvent, QPainter, QPainterPath
+from PySide6.QtWidgets import (
+    QButtonGroup,
+    QFrame,
+    QHBoxLayout,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSlider,
+    QVBoxLayout,
+    QWidget,
 )
 
-
-def rounded_rect_points(x0: float, y0: float, x1: float, y1: float, r: float) -> list[float]:
-    """Point list for a rounded rectangle, for use with create_polygon(..., smooth=True)."""
-    r = max(min(r, (x1 - x0) / 2, (y1 - y0) / 2), 0)
-    return [
-        x0 + r, y0,
-        x1 - r, y0,
-        x1, y0,
-        x1, y0 + r,
-        x1, y1 - r,
-        x1, y1,
-        x1 - r, y1,
-        x0 + r, y1,
-        x0, y1,
-        x0, y1 - r,
-        x0, y0 + r,
-        x0, y0,
-    ]
+from maskfits.theme import current_theme, theme_manager
 
 
-class RoundedPanel(tk.Frame):
-    """A card-like panel with rounded corners. Pack/grid children into `.inner`.
+class RoundedPanel(QFrame):
+    """A card-like panel with rounded corners (all styling via the QSS
+    `RoundedPanel` selector - see theme.build_qss). Add children to `.inner`'s
+    layout, not the panel itself when scrollable.
 
-    mode="fill" (default): the panel takes whatever size its parent gives it
-      (e.g. a sidebar stretched to the window height by its container).
-    mode="hug": the panel sizes itself to its content's natural height instead
-      (e.g. a toolbar or status bar that should stay compact).
-    scrollable: only meaningful with mode="fill" - if the content's natural
-      height exceeds the space available, scroll instead of clipping it.
+    mode="fill" (default): takes whatever size its parent gives it.
+    mode="hug": sizes itself to its content's natural height instead (a
+      toolbar or status bar that should stay compact).
+    scrollable: only meaningful with mode="fill" - scrolls instead of
+      clipping when content exceeds the available height.
     """
 
-    def __init__(self, parent: tk.Widget, *, radius: int = 14, bg: Optional[str] = None,
-                 outer_bg: Optional[str] = None, border: Optional[str] = None,
-                 mode: str = "fill", scrollable: bool = False):
-        # Resolved from the current theme at call time (not baked in as a
-        # default argument) so a freshly-built panel always picks up whichever
-        # palette is active, including right after a theme switch.
-        bg = bg if bg is not None else PANEL_BG
-        border = border if border is not None else PANEL_BORDER
-        outer_bg = outer_bg if outer_bg is not None else parent["bg"]
-        super().__init__(parent, bg=outer_bg)
-        self.radius = radius
-        self.bg_color = bg
-        self.border_color = border
-        self.mode = mode
-        self.scrollable = scrollable and mode == "fill"
+    def __init__(self, parent: Optional[QWidget] = None, *, mode: str = "fill", scrollable: bool = False):
+        super().__init__(parent)
+        self.setObjectName("RoundedPanel")
 
-        self.canvas = tk.Canvas(self, bg=outer_bg, highlightthickness=0, width=1, height=1)
-        self.canvas.pack(fill="both", expand=True)
-        self.inner = tk.Frame(self.canvas, bg=bg)
-        self._win = self.canvas.create_window(0, 0, window=self.inner, anchor="nw")
-
-        self.bind("<Configure>", self._sync)
-        self.inner.bind("<Configure>", self._sync)
-        if self.scrollable:
-            self.canvas.bind("<Enter>", lambda e: self._bind_wheel())
-            self.canvas.bind("<Leave>", lambda e: self._unbind_wheel())
-
-    def _sync(self, _event: Optional[tk.Event] = None) -> None:
-        if self.mode == "hug":
-            w = self.winfo_width()
-            h = self.inner.winfo_reqheight()
-            if w <= 1:
-                return
-            self.canvas.configure(width=w, height=h)
-            self.canvas.itemconfig(self._win, width=w, height=h)
-            self._draw_bg(w, h)
+        if scrollable and mode == "fill":
+            # Only the scrollable case needs a layout of its own here (to
+            # host the QScrollArea) - the non-scrollable case leaves `self`
+            # layout-less on purpose, since `self.inner` IS `self` there and
+            # callers (e.g. MaskFitsApp._build_toolbar) install their own
+            # layout directly on `.inner`. Installing one here too would
+            # give the widget two layouts - Qt silently refuses the second
+            # one, so nothing added to it would ever actually display (this
+            # is exactly what made the toolbar/status bar disappear before
+            # this was fixed).
+            outer_layout = QVBoxLayout(self)
+            outer_layout.setContentsMargins(0, 0, 0, 0)
+            scroll = QScrollArea(self)
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.inner = QWidget()
+            self.inner.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+            scroll.setWidget(self.inner)
+            outer_layout.addWidget(scroll)
         else:
-            w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
-            if w <= 1 or h <= 1:
-                return
-            if self.scrollable:
-                content_h = max(self.inner.winfo_reqheight(), h)
-                self.canvas.itemconfig(self._win, width=w)
-                self.canvas.configure(scrollregion=(0, 0, w, content_h))
-            else:
-                self.canvas.itemconfig(self._win, width=w, height=h)
-            self._draw_bg(w, h)
+            self.inner = self
 
-    def _draw_bg(self, w: int, h: int) -> None:
-        self.canvas.delete("bg")
-        if w > 2 and h > 2:
-            pts = rounded_rect_points(1, 1, w - 1, h - 1, self.radius)
-            self.canvas.create_polygon(pts, smooth=True, fill=self.bg_color, outline=self.border_color, tags="bg")
-            self.canvas.tag_lower("bg")
-
-    def _bind_wheel(self) -> None:
-        self.canvas.bind_all("<MouseWheel>", self._on_wheel)
-        self.canvas.bind_all("<Button-4>", lambda e: self.canvas.yview_scroll(-3, "units"))
-        self.canvas.bind_all("<Button-5>", lambda e: self.canvas.yview_scroll(3, "units"))
-
-    def _unbind_wheel(self) -> None:
-        self.canvas.unbind_all("<MouseWheel>")
-        self.canvas.unbind_all("<Button-4>")
-        self.canvas.unbind_all("<Button-5>")
-
-    def _on_wheel(self, event: tk.Event) -> None:
-        self.canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+        if mode == "hug":
+            self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
 
-class RoundButton(tk.Canvas):
-    """A rounded-rectangle button, optionally behaving as a toggle for segmented controls."""
+class RoundButton(QPushButton):
+    """A themed push button - checkable (for toggle/segmented-control use),
+    or with an accent/danger/flat variant (see the QSS dynamic-property
+    selectors in theme.build_qss)."""
 
-    def __init__(self, parent: tk.Widget, text: str, command: Optional[Callable[[], None]] = None, *,
-                 width: Optional[int] = None, height: int = 30, radius: int = 10,
-                 outer_bg: Optional[str] = None, bg: Optional[str] = None, hover_bg: Optional[str] = None,
-                 fg: Optional[str] = None, font=FONT_SMALL, accent: bool = False, danger: bool = False,
-                 toggle: bool = False, active: bool = False, padx: int = 14):
-        # Resolved at call time (not a baked-in default) so a button built
-        # after a theme switch picks up the newly active palette.
-        bg = bg if bg is not None else BUTTON_BG
-        hover_bg = hover_bg if hover_bg is not None else BUTTON_HOVER
-        fg = fg if fg is not None else TEXT
-        outer_bg = outer_bg if outer_bg is not None else parent["bg"]
-        self._text = text
-        self._command = command
-        self._radius = radius
-        self._fg = fg
-        self._font = font
-        self._accent = accent
-        self._danger = danger
-        self._toggle = toggle
-        self._active = active
-        self._base_bg = bg
-        self._hover_bg = hover_bg
-        self._hovering = False
-        self._pressed = False
-
-        measured = tkfont.Font(font=font)
-        text_w = measured.measure(text)
-        text_h = measured.metrics("linespace")
-        if width is None:
-            width = text_w + padx * 2
-        height = max(height, text_h + 10)
-
-        super().__init__(parent, width=width, height=height, bg=outer_bg, highlightthickness=0, cursor="hand2")
-        self.bind("<Enter>", lambda e: self._set_hover(True))
-        self.bind("<Leave>", lambda e: self._set_hover(False))
-        self.bind("<ButtonPress-1>", lambda e: setattr(self, "_pressed", True))
-        self.bind("<ButtonRelease-1>", self._on_release)
-        self._redraw()
-
-    def _set_hover(self, hovering: bool) -> None:
-        self._hovering = hovering
-        self._redraw()
-
-    def _on_release(self, event: tk.Event) -> None:
-        was_pressed = self._pressed
-        self._pressed = False
-        inside = 0 <= event.x <= int(self["width"]) and 0 <= event.y <= int(self["height"])
-        if was_pressed and inside and self._command is not None:
-            self._command()
-
-    def set_active(self, active: bool) -> None:
-        self._active = active
-        self._redraw()
-
-    def set_text(self, text: str) -> None:
-        self._text = text
-        self._redraw()
-
-    def _on_solid_surface(self) -> bool:
-        """True while the button is filled with a strong solid color (accent
-        or danger) rather than its neutral bg - both are dark enough in every
-        theme that only white text stays legible on top of them, regardless
-        of which theme's TEXT color would otherwise apply."""
-        return self._danger or self._accent or (self._toggle and self._active)
-
-    def _current_fill(self) -> str:
-        if self._danger:
-            return DANGER_HOVER if self._hovering else DANGER
-        if self._accent or (self._toggle and self._active):
-            return ACCENT_HOVER if self._hovering else ACCENT
-        return self._hover_bg if self._hovering else self._base_bg
-
-    def _redraw(self) -> None:
-        self.delete("all")
-        w, h = int(self["width"]), int(self["height"])
-        pts = rounded_rect_points(1, 1, w - 1, h - 1, self._radius)
-        self.create_polygon(pts, smooth=True, fill=self._current_fill(), outline="")
-        text_fill = ACCENT_TEXT if self._on_solid_surface() else self._fg
-        self.create_text(w / 2, h / 2, text=self._text, fill=text_fill, font=self._font)
+    def __init__(self, text: str = "", parent: Optional[QWidget] = None, *, checkable: bool = False,
+                 accent: bool = False, danger: bool = False, flat: bool = False):
+        super().__init__(text, parent)
+        self.setCheckable(checkable)
+        if accent:
+            self.setProperty("accent", True)
+        if danger:
+            self.setProperty("danger", True)
+        if flat:
+            self.setProperty("flat", True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
 
 
-class SegmentedControl(tk.Frame):
-    """A row of toggle buttons acting as a single-select group bound to a StringVar.
+class SegmentedControl(QWidget):
+    """A row of toggle buttons acting as a single-select group.
 
-    Stays in sync regardless of what changes the variable - a menu radiobutton, a
-    CLI startup flag, or a plain `.set()` - not just its own button clicks.
+    Stays in sync regardless of what changes the value - not just its own
+    button clicks - via `set_value()`; emits `valueChanged(str)` only for
+    changes that originate from a button click, mirroring how the old
+    Tkinter version's StringVar trace worked from either direction.
     """
 
-    def __init__(self, parent: tk.Widget, options: list[tuple[str, str]], variable: tk.StringVar, *,
-                 outer_bg: Optional[str] = None, command: Optional[Callable[[str], None]] = None):
-        outer_bg = outer_bg if outer_bg is not None else parent["bg"]
-        super().__init__(parent, bg=outer_bg)
-        self.variable = variable
-        self.command = command
-        self.buttons: dict[str, RoundButton] = {}
-        for value, label in options:
-            btn = RoundButton(
-                self, label, command=lambda v=value: self._select(v),
-                outer_bg=outer_bg, toggle=True, active=(variable.get() == value),
-                height=26, radius=7,
-            )
-            btn.pack(side="left", padx=(0, 4), pady=2)
-            self.buttons[value] = btn
+    valueChanged = Signal(str)
 
-        self._trace_id = variable.trace_add("write", self._on_variable_changed)
-        self.bind("<Destroy>", self._on_destroy, add="+")
+    def __init__(self, options: list[tuple[str, str]], value: str, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+        self._buttons: dict[str, RoundButton] = {}
+        self._value = value
+        for val, label in options:
+            btn = RoundButton(label, checkable=True)
+            btn.setChecked(val == value)
+            layout.addWidget(btn)
+            self._group.addButton(btn)
+            self._buttons[val] = btn
+            btn.clicked.connect(lambda _checked=False, v=val: self._on_clicked(v))
 
-    def _on_variable_changed(self, *_args: object) -> None:
-        current = self.variable.get()
-        for value, btn in self.buttons.items():
-            if btn.winfo_exists():
-                btn.set_active(value == current)
+    def _on_clicked(self, value: str) -> None:
+        if value != self._value:
+            self._value = value
+            self.valueChanged.emit(value)
 
-    def _select(self, value: str) -> None:
-        self.variable.set(value)
-        if self.command:
-            self.command(value)
+    def value(self) -> str:
+        return self._value
 
-    def _on_destroy(self, _event: tk.Event) -> None:
-        try:
-            self.variable.trace_remove("write", self._trace_id)
-        except tk.TclError:
+    def set_value(self, value: str) -> None:
+        if value not in self._buttons or value == self._value:
+            return
+        self._value = value
+        self._buttons[value].setChecked(True)
+
+
+class RoundSlider(QWidget):
+    """A horizontal slider over an arbitrary float (or int) range.
+
+    QSlider is integer-only, so a float range is represented internally as
+    an integer 0..STEPS and mapped to/from the real [lo, hi] range - callers
+    only ever see real float values via `value()`/`setValue()`/`valueChanged`.
+    `sliderPressed`/`sliderReleased` are forwarded from the underlying
+    QSlider for the "cheap update while dragging, expensive work only on
+    release" pattern used by the cuts histogram and mask-alpha slider.
+    """
+
+    valueChanged = Signal(float)
+    _STEPS = 1000
+
+    def __init__(self, lo: float, hi: float, value: float, *, integer: bool = False,
+                 parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._lo, self._hi, self._integer = lo, hi, integer
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self._slider = QSlider(Qt.Orientation.Horizontal, self)
+        self._slider.setCursor(Qt.CursorShape.PointingHandCursor)
+        # QSlider is a "complex control" Qt paints via QStyle::drawComplexControl
+        # - without WA_StyledBackground, it still erases its own bounding box
+        # with the palette's Window color before drawing groove/handle/etc,
+        # regardless of the QSS `background: transparent` rule for it. That
+        # erase is exactly app_bg, visibly darker than whatever panel (panel_bg)
+        # the slider sits on - this makes Qt actually respect the transparency.
+        self._slider.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        if integer:
+            self._slider.setMinimum(int(round(lo)))
+            self._slider.setMaximum(int(round(hi)))
+        else:
+            self._slider.setMinimum(0)
+            self._slider.setMaximum(self._STEPS)
+        layout.addWidget(self._slider)
+        self.setValue(value)
+        self._slider.valueChanged.connect(self._on_raw_changed)
+        self.sliderPressed = self._slider.sliderPressed
+        self.sliderReleased = self._slider.sliderReleased
+
+    def _raw_to_value(self, raw: int) -> float:
+        if self._integer:
+            return float(raw)
+        frac = raw / self._STEPS
+        return self._lo + frac * (self._hi - self._lo)
+
+    def _value_to_raw(self, value: float) -> int:
+        if self._integer:
+            return int(round(value))
+        span = self._hi - self._lo
+        frac = (value - self._lo) / span if span else 0.0
+        frac = min(max(frac, 0.0), 1.0)
+        return int(round(frac * self._STEPS))
+
+    def _on_raw_changed(self, raw: int) -> None:
+        self.valueChanged.emit(self._raw_to_value(raw))
+
+    def value(self) -> float:
+        return self._raw_to_value(self._slider.value())
+
+    def setValue(self, value: float) -> None:  # noqa: N802 - matches Qt naming convention
+        value = max(self._lo, min(value, self._hi))
+        raw = self._value_to_raw(value)
+        if raw != self._slider.value():
+            self._slider.setValue(raw)
+        else:
+            # setValue with an unchanged raw step wouldn't otherwise emit -
+            # callers (e.g. a linked spin-box) still expect the float value
+            # to be current on return, so this just ensures state agreement,
+            # no signal needed since nothing actually moved.
             pass
 
-
-class RoundSlider(tk.Canvas):
-    """A pill-shaped, mouse-draggable slider bound to an IntVar/DoubleVar."""
-
-    def __init__(self, parent: tk.Widget, variable, from_: float, to: float, *,
-                 width: int = 200, height: int = 20, outer_bg: Optional[str] = None,
-                 track_color: Optional[str] = None, fill_color: Optional[str] = None,
-                 thumb_color: Optional[str] = None,
-                 on_change: Optional[Callable[[float], None]] = None):
-        # Resolved at call time (not a baked-in default) so a slider built
-        # after a theme switch picks up the newly active palette.
-        track_color = track_color if track_color is not None else TRACK
-        fill_color = fill_color if fill_color is not None else ACCENT
-        thumb_color = thumb_color if thumb_color is not None else TEXT
-        outer_bg = outer_bg if outer_bg is not None else parent["bg"]
-        super().__init__(parent, width=width, height=height, bg=outer_bg, highlightthickness=0, cursor="hand2")
-        self.variable = variable
-        self.from_ = from_
-        self.to = to
-        self.on_change = on_change
-        self.track_color = track_color
-        self.fill_color = fill_color
-        self.thumb_color = thumb_color
-        self._pad = 9
-
-        self.bind("<Configure>", lambda e: self._redraw())
-        self.bind("<ButtonPress-1>", self._on_drag)
-        self.bind("<B1-Motion>", self._on_drag)
-        self._trace_id = variable.trace_add("write", lambda *_: self._redraw())
-        self.bind("<Destroy>", self._on_destroy, add="+")
-        self._redraw()
-
-    def _on_destroy(self, event: tk.Event) -> None:
-        try:
-            self.variable.trace_remove("write", self._trace_id)
-        except tk.TclError:
-            pass
-
-    def _value_to_x(self, value: float, w: int) -> float:
-        span = self.to - self.from_
-        frac = (value - self.from_) / span if span else 0.0
-        frac = min(max(frac, 0.0), 1.0)
-        return self._pad + frac * (w - 2 * self._pad)
-
-    def _x_to_value(self, x: float, w: int) -> float:
-        frac = (x - self._pad) / max(w - 2 * self._pad, 1)
-        frac = min(max(frac, 0.0), 1.0)
-        return self.from_ + frac * (self.to - self.from_)
-
-    def _on_drag(self, event: tk.Event) -> None:
-        w = self.winfo_width() or int(self["width"])
-        value = self._x_to_value(event.x, w)
-        if isinstance(self.variable, tk.IntVar):
-            value = int(round(value))
-        self.variable.set(value)
-        if self.on_change:
-            self.on_change(value)
-
-    def _redraw(self) -> None:
-        self.delete("all")
-        w = self.winfo_width() or int(self["width"])
-        h = self.winfo_height() or int(self["height"])
-        cy = h / 2
-        track_h = 6
-        pts = rounded_rect_points(self._pad, cy - track_h / 2, w - self._pad, cy + track_h / 2, track_h / 2)
-        self.create_polygon(pts, smooth=True, fill=self.track_color, outline="")
-
-        thumb_x = self._value_to_x(self.variable.get(), w)
-        if thumb_x > self._pad:
-            fpts = rounded_rect_points(self._pad, cy - track_h / 2, thumb_x, cy + track_h / 2, track_h / 2)
-            self.create_polygon(fpts, smooth=True, fill=self.fill_color, outline="")
-
-        r = 7
-        self.create_oval(thumb_x - r, cy - r, thumb_x + r, cy + r, fill=self.thumb_color, outline=self.fill_color, width=2)
+    def setEnabled(self, enabled: bool) -> None:  # noqa: N802
+        self._slider.setEnabled(enabled)
+        super().setEnabled(enabled)
 
 
-class ThemeToggle(tk.Label):
-    """A sun/moon emoji button for switching between light and dark mode -
-    plain Unicode glyphs rather than hand-drawn icons, so it renders as the
-    platform's native full-color emoji."""
+class ThemeToggle(QPushButton):
+    """A sun/moon emoji button for switching between light and dark mode."""
 
     SUN = "☀️"
     MOON = "\U0001F319"
 
-    def __init__(self, parent: tk.Widget, command: Optional[Callable[[], None]] = None, *,
-                 light: bool = False, outer_bg: Optional[str] = None):
-        outer_bg = outer_bg if outer_bg is not None else parent["bg"]
-        super().__init__(parent, text=self.SUN if light else self.MOON, bg=outer_bg,
-                          font=("Apple Color Emoji", 16), cursor="hand2")
-        self._command = command
-        self.bind("<Button-1>", lambda e: self._command() if self._command else None)
+    def __init__(self, parent: Optional[QWidget] = None, *, light: bool = False):
+        super().__init__(cls_text(light), parent)
+        self.setProperty("flat", True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedWidth(34)
+
+    def set_light(self, light: bool) -> None:
+        self.setText(cls_text(light))
+
+
+def cls_text(light: bool) -> str:
+    return ThemeToggle.SUN if light else ThemeToggle.MOON
+
+
+class ResizeGrip(QWidget):
+    """A thin vertical drag handle for resizing a panel next to it, with a
+    small rounded grabber mark at its vertical center as a visual affordance
+    that the gap between the two panels is draggable.
+
+    Emits `dragged(int)` as a delta (dx) for each drag step, and `released()`
+    once dragging ends - mirroring the old Tkinter callback shape so callers
+    just accumulate the delta into whatever width they're tracking, and can
+    defer expensive work (like re-laying-out a child widget) to `released()`.
+    """
+
+    dragged = Signal(int)
+    released = Signal()
+
+    def __init__(self, parent: Optional[QWidget] = None, *, width: int = 10):
+        super().__init__(parent)
+        self.setFixedWidth(width)
+        self.setCursor(Qt.CursorShape.SizeHorCursor)
+        self._hovering = False
+        self._drag_last_x: Optional[int] = None
+        theme_manager().theme_changed.connect(lambda _t: self.update())
+
+    def enterEvent(self, event: QEnterEvent) -> None:  # noqa: N802
+        self._hovering = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self._hovering = False
+        self.update()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_last_x = event.globalPosition().toPoint().x()
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._drag_last_x is None:
+            return
+        x = event.globalPosition().toPoint().x()
+        dx = x - self._drag_last_x
+        self._drag_last_x = x
+        if dx:
+            self.dragged.emit(dx)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._drag_last_x is None:
+            return
+        self._drag_last_x = None
+        self.released.emit()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        theme = current_theme()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        cx = w / 2
+        cy = h / 2
+        bar_w = 4
+        bar_h = min(36, max(h - 8, 0))
+        color = QColor(theme.text) if self._hovering else QColor(theme.panel_border)
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(cx - bar_w / 2, cy - bar_h / 2, bar_w, bar_h), bar_w / 2, bar_w / 2)
+        painter.fillPath(path, color)

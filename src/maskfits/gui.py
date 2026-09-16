@@ -1,14 +1,43 @@
-"""Tkinter GUI: view FITS images and paint circular/elliptical or line (satellite trail) masks."""
+"""Qt GUI: view FITS images and paint circular/elliptical or line (satellite trail) masks."""
+
+from __future__ import annotations
 
 import os
 import sys
-import tkinter as tk
-from tkinter import filedialog, messagebox
 from typing import Optional
 
 import numpy as np
 from astropy.io import fits
-from PIL import Image, ImageTk
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QCloseEvent,
+    QColor,
+    QIcon,
+    QImage,
+    QKeySequence,
+    QMouseEvent,
+    QPainter,
+    QPen,
+    QPixmap,
+    QPolygonF,
+    QShortcut,
+    QWheelEvent,
+)
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 from maskfits.automask_window import AutoMaskWindow
 from maskfits.binning import bin_func, bin_mask, unbin_mask
@@ -34,6 +63,7 @@ from maskfits.imagedata import (
     percentile_cuts,
     zscale_cuts,
 )
+from maskfits.layouts import FlowLayout
 from maskfits.masking import (
     ellipse_mask,
     ellipse_polygon_points,
@@ -41,29 +71,18 @@ from maskfits.masking import (
     extend_ray_to_border,
     line_mask,
 )
-from maskfits.theme import (
-    ACCENT,
-    APP_BG,
-    BUTTON_BG,
-    BUTTON_HOVER,
-    CANVAS_BG,
-    FONT,
-    FONT_SMALL,
-    GREEN,
-    PANEL_BG,
-    PANEL_BORDER,
-    TEXT,
-    TEXT_DIM,
-    set_theme,
-)
-from maskfits.widgets import RoundButton, RoundedPanel, RoundSlider, SegmentedControl, ThemeToggle
+from maskfits.theme import current_theme, theme_manager
+from maskfits.widgets import ResizeGrip, RoundButton, RoundedPanel, RoundSlider, SegmentedControl, ThemeToggle
 
 MAG_SIZE = 31
 MAG_BLOCK = 6
 PAN_W = PAN_H = MAG_SIZE * MAG_BLOCK
 MAX_SHAPE_SIZE = 500
 RADIUS_MIN = 0.5  # small enough to mask a single pixel
-SIDEBAR_W = 300
+SIDEBAR_W = 340
+SIDEBAR_W_MIN = 220
+SIDEBAR_W_MAX = 560
+GRIP_W = 10
 ZOOM_STEP = 1.25
 ZOOM_MULT_MIN = 0.5
 ZOOM_MULT_MAX = 100.0
@@ -81,16 +100,13 @@ HOTKEY_ENTRIES = [
     ("Right-click / drag", "Erase mask"),
     ("Middle-click", "Cancel pending line, or redo (satellite mode only)"),
     ("Ctrl + left-click drag", "Pan the view"),
-    ("Mouse wheel", "Zoom in"),
+    ("Mouse wheel", "Zoom in / out"),
     ("← / →", "Previous / next image"),
     ("Ctrl+Z / U", "Undo last mask stroke"),
     ("Ctrl+Shift+Z / Y", "Redo"),
     ("R", "Clear the whole mask"),
     ("Ctrl+R", "Reset zoom"),
-    ("E / W", "Grow / shrink radius or thickness"),
-    ("1 / 2", "Lower / raise ellipticity (ellipse mode)"),
-    ("3 / 4", "Lower / raise angle (ellipse mode)"),
-    ("1 / 2 / 3", "Jump to Segment / Arrow / Line style (satellite mode)"),
+    ("E / W", "Grow / shrink shape size"),
     ("C", "Cycle colormap"),
     ("I", "Invert colormap"),
     ("S", "Smooth image (Gaussian, current sigma)"),
@@ -99,48 +115,82 @@ HOTKEY_ENTRIES = [
 ]
 
 ICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "icon.png")
+ICON_ICO_PATH = os.path.join(os.path.dirname(__file__), "assets", "icon.ico")
 
 
-def _apply_icon(root: tk.Tk) -> None:
-    """Set the window/taskbar icon cross-platform.
+def _set_windows_app_id() -> None:
+    """Give the process its own Application User Model ID on Windows.
 
-    On Windows/Linux, iconphoto() is enough to change the taskbar icon too.
-    On macOS it only affects the window itself - a plain Python process's Dock
-    icon stays the generic Python icon otherwise - so also set it live via
-    PyObjC (AppKit) if available. That's an optional dependency: if it isn't
-    installed, the Dock icon is simply left as-is rather than erroring.
+    Without this, Windows treats the process as plain python.exe/pythonw.exe
+    for taskbar purposes. Must run before QApplication is constructed.
     """
-    if not os.path.exists(ICON_PATH):
+    if sys.platform != "win32":
         return
     try:
-        icon_image = tk.PhotoImage(file=ICON_PATH)
-        root.iconphoto(True, icon_image)
-        root._icon_image_ref = icon_image  # keep a reference so Tk doesn't GC it
-    except tk.TclError:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("maskfits.app")
+    except Exception:
         pass
 
-    if sys.platform == "darwin":
-        try:
-            from AppKit import NSApplication, NSImage
 
-            ns_image = NSImage.alloc().initByReferencingFile_(ICON_PATH)
-            NSApplication.sharedApplication().setApplicationIconImage_(ns_image)
-        except Exception:
-            pass
+def _app_icon() -> QIcon:
+    path = ICON_ICO_PATH if (sys.platform == "win32" and os.path.exists(ICON_ICO_PATH)) else ICON_PATH
+    return QIcon(path) if os.path.exists(path) else QIcon()
 
 
-def _bring_to_front(root: tk.Tk) -> None:
-    """Force the window to open in front of every other window.
+def _detect_os_light_mode() -> bool:
+    """Best-effort read of the OS-wide light/dark preference, used to pick the
+    app's initial theme so it opens matching the desktop instead of always
+    defaulting to dark. Falls back to dark (returns False) wherever this can't
+    be determined - an unrecognized platform, or the lookup failing for any
+    reason (missing registry key, sandboxed `defaults`, etc.)."""
+    try:
+        if sys.platform == "win32":
+            import winreg
 
-    A freshly-created Tk window doesn't always land on top of whatever
-    already has focus (e.g. the terminal it was launched from, especially on
-    macOS) - briefly toggling -topmost forces it to the front once at
-    startup, without leaving it permanently pinned above other windows.
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+            )
+            value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+            return bool(value)
+        if sys.platform == "darwin":
+            import subprocess
+
+            result = subprocess.run(
+                ["defaults", "read", "-g", "AppleInterfaceStyle"],
+                capture_output=True, text=True, timeout=1,
+            )
+            return result.returncode != 0
+    except Exception:
+        pass
+    return False
+
+
+def _set_windows_titlebar_dark(widget: QWidget, dark: bool) -> None:
+    """Match the native window chrome (title bar, drawn by the Windows
+    compositor) to the app's current theme - a plain Qt window keeps a
+    plain white title bar on Windows 10/11 regardless of the OS dark-mode
+    setting unless this DWM attribute is set explicitly.
+
+    A Qt top-level widget's winId() IS the real HWND directly - no need for
+    the GetParent() indirection a Tkinter root window needed.
     """
-    root.lift()
-    root.attributes("-topmost", True)
-    root.after(250, lambda: root.attributes("-topmost", False))
-    root.focus_force()
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        hwnd = int(widget.winId())
+        value = ctypes.c_int(1 if dark else 0)
+        for attr in (20, 19):
+            result = ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, attr, ctypes.byref(value), ctypes.sizeof(value))
+            if result == 0:
+                break
+    except Exception:
+        pass
 
 
 class Entry:
@@ -152,9 +202,6 @@ class Entry:
         # Which HDU to load - defaults to 0, but ensure_loaded falls back to
         # the first HDU that actually has 2D image data if 0 doesn't (e.g.
         # an empty primary HDU with the real data in extension 1+).
-        # available_extensions is populated on first load; the picker next
-        # to the filename only becomes interactive once it has more than
-        # one entry - see MaskFitsApp._build_extension_picker.
         self.ext: int = 0
         self.available_extensions: list[tuple[int, str]] = []
         self.lowcut = 0.0
@@ -162,11 +209,8 @@ class Entry:
         # Smoothing and binning are independent and composable: original_data
         # is the one pristine array (captured the first time either is turned
         # on), and up to three more arrays cache each combination actually
-        # used - smoothed-only, binned-only, and smoothed-then-binned -
-        # keyed on the sigma/factor they were built at, so toggling either
-        # effect back on (or switching between combinations already seen)
-        # reuses a cache instead of recomputing. A cache is only rebuilt when
-        # the sigma and/or factor it depends on has actually changed.
+        # used - smoothed-only, binned-only, and smoothed-then-binned - keyed
+        # on the sigma/factor they were built at.
         self.original_data: Optional[np.ndarray] = None
 
         self.is_smoothed = False
@@ -183,31 +227,25 @@ class Entry:
         self._smoothed_binned_cache_sigma: Optional[float] = None
         self._smoothed_binned_cache_factor: Optional[int] = None
 
-        # The mask, unlike the data, only ever changes shape via binning (never
-        # smoothing). It's user-edited at whatever resolution is currently
-        # active - mask_backup holds the full-res mask while currently binned
-        # (the source both to unbin back into and to fall back on for whatever
-        # bottom/right remainder binning trimmed off). Reshaping it (bin_mask/
-        # unbin_mask) touches the full-res array regardless of bin factor, so
-        # it's not cheap - mask_dirty tracks whether the mask has actually been
-        # painted on (or cleared/undone/redone) since the last reshape, so
-        # toggling bin/unbin back and forth with no edits in between can reuse
-        # the cached arrays below instead of recomputing the reshape each time.
         self.mask_backup: Optional[np.ndarray] = None
         self.mask_dirty: bool = False
         self._binned_mask_cache: Optional[np.ndarray] = None
         self._binned_mask_cache_factor: Optional[int] = None
 
-        # IsoPy's cut levels/LUT depend only on this entry's header/WCS
-        # (see imagedata.isopy_cuts_and_stops), not on binning/smoothing/
-        # zoom/anything else that changes more often - cached against the
-        # FitsImage object identity so a fresh load (or a different
-        # extension - see MaskFitsApp.switch_extension) invalidates it, but
-        # nothing else needlessly does.
         self._isopy_cache_image: Optional[FitsImage] = None
         self._isopy_vmin: float = 0.0
         self._isopy_vmax: float = 1.0
         self._isopy_lut: np.ndarray = np.zeros((256, 3), dtype=np.uint8)
+
+        # The user's own lowcut/highcut, remembered from just before IsoPy's
+        # fixed cuts last overwrote them - IsoPy's cuts come from its own
+        # surface-brightness formula, not user editing (see
+        # isopy_cuts_and_lut), so switching to another colormap should bring
+        # the user's previous choice back rather than leaving IsoPy's values
+        # in place. None whenever this entry isn't currently "inside" an
+        # IsoPy view (i.e. nothing pending to restore).
+        self._pre_isopy_lowcut: Optional[float] = None
+        self._pre_isopy_highcut: Optional[float] = None
 
     def isopy_cuts_and_lut(self) -> tuple[float, float, np.ndarray]:
         if self.image is not None and self._isopy_cache_image is not self.image:
@@ -240,31 +278,167 @@ class Entry:
             self.lowcut, self.highcut = minmax_cuts(self.image.data)
 
 
-class MaskFitsApp:
-    def __init__(self, root: tk.Tk, paths: list[str]):
-        self.root = root
-        self.root.title("maskfits")
-        self.root.geometry("1400x900")
-        self.root.configure(bg=APP_BG)
-        _apply_icon(self.root)
-        _bring_to_front(self.root)
+class ImageCanvas(QWidget):
+    """The main zoomable/pannable image view - a thin event-routing shell;
+    all actual state and math lives on MaskFitsApp (see img_to_canvas/
+    canvas_to_img/render/_on_button/etc.), mirroring how the old Tkinter
+    version kept everything on the app object and the canvas was just a
+    dumb drawing surface."""
+
+    def __init__(self, app: "MaskFitsApp", parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.app = app
+        self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        theme_manager().theme_changed.connect(lambda _t: self.update())
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        self.app.canvas_w, self.app.canvas_h = self.width(), self.height()
+        if self.app.image is not None:
+            self.app.fit_zoom = self.app._compute_fit_zoom()
+        self.app.render()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(current_theme().canvas_bg))
+        if self.app._base_pixmap is not None:
+            painter.drawPixmap(self.app._base_pos, self.app._base_pixmap)
+        self.app._paint_overlays(painter)
+        # _paint_overlays may have left a translucent fill brush set (for the
+        # ellipse hover preview) - without clearing it, drawRect() below
+        # would fill this ENTIRE border rectangle with that brush, not just
+        # stroke its outline, tinting the whole canvas the moment the mouse
+        # first hovers over it.
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QColor(current_theme().panel_border))
+        painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        self.setFocus()
+        pos = event.position()
+        if event.button() == Qt.MouseButton.LeftButton:
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                self.app._on_pan_start(pos.x(), pos.y())
+            else:
+                self.app._on_button(pos.x(), pos.y(), erase=False)
+        elif event.button() == Qt.MouseButton.RightButton:
+            self.app._on_button(pos.x(), pos.y(), erase=True)
+        elif event.button() == Qt.MouseButton.MiddleButton:
+            self.app._on_middle_click()
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        pos = event.position()
+        self.app._on_motion(pos.x(), pos.y())
+        buttons = event.buttons()
+        if buttons & Qt.MouseButton.LeftButton:
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                self.app._on_pan_drag(pos.x(), pos.y())
+            else:
+                self.app._on_drag(pos.x(), pos.y(), erase=False)
+        elif buttons & Qt.MouseButton.RightButton:
+            self.app._on_drag(pos.x(), pos.y(), erase=True)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.app._pan_drag = None
+
+    def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
+        pos = event.position()
+        factor = ZOOM_STEP if event.angleDelta().y() > 0 else 1 / ZOOM_STEP
+        self.app._zoom_at(pos.x(), pos.y(), factor)
+
+
+class MagnifierWidget(QWidget):
+    """Small fixed-size panel showing a pixel-block-zoomed crop around the
+    cursor, plus x/y/RA/DEC/value readouts live above/below it in the
+    sidebar (see MaskFitsApp._build_sidebar)."""
+
+    def __init__(self, app: "MaskFitsApp", parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.app = app
+        self.setFixedSize(PAN_W, PAN_H)
+        theme_manager().theme_changed.connect(lambda _t: self.update())
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        theme = current_theme()
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(theme.canvas_bg))
+        app = self.app
+        image = app.image
+        if image is None or app._cursor_img_pos is None:
+            painter.setPen(QColor(theme.panel_border))
+            step = 10
+            for x in range(0, self.width(), step):
+                painter.drawLine(x, 0, x, self.height())
+            for y in range(0, self.height(), step):
+                painter.drawLine(0, y, self.width(), y)
+            return
+
+        ny, nx = image.data.shape
+        half = MAG_SIZE // 2
+        cx_i = int(round(app._cursor_img_pos[0]))
+        cy_i = int(round(app._cursor_img_pos[1]))
+        x0, y0 = cx_i - half, cy_i - half
+
+        crop = np.full((MAG_SIZE, MAG_SIZE), np.nan, dtype=np.float64)
+        mask_crop = np.zeros((MAG_SIZE, MAG_SIZE), dtype=bool)
+        sx0, sx1 = max(x0, 0), min(x0 + MAG_SIZE, nx)
+        sy0, sy1 = max(y0, 0), min(y0 + MAG_SIZE, ny)
+        if sx1 > sx0 and sy1 > sy0:
+            crop[sy0 - y0:sy1 - y0, sx0 - x0:sx1 - x0] = image.data[sy0:sy1, sx0:sx1]
+            mask_crop[sy0 - y0:sy1 - y0, sx0 - x0:sx1 - x0] = image.mask[sy0:sy1, sx0:sx1]
+
+        entry = app.entry
+        span = max(entry.highcut - entry.lowcut, 1e-12)
+        norm = np.clip((crop - entry.lowcut) / span, 0, 1)
+        norm = np.where(np.isnan(crop), 0.12, norm)
+        rgb = app._scale_and_color(norm)
+        app._tint_masked(rgb, mask_crop)
+        rgb = np.ascontiguousarray(rgb[::-1])  # same bottom-up flip as render()
+
+        square = min(self.width(), self.height())
+        block = max(square // MAG_SIZE, 1)
+        disp = block * MAG_SIZE
+        qimg = QImage(rgb.data, MAG_SIZE, MAG_SIZE, 3 * MAG_SIZE, QImage.Format.Format_RGB888)
+        pixmap = QPixmap.fromImage(qimg).scaled(
+            disp, disp, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.FastTransformation)
+        ox, oy = (self.width() - disp) // 2, (self.height() - disp) // 2
+        painter.drawPixmap(ox, oy, pixmap)
+
+        cxp, cyp = ox + half * block, oy + half * block
+        painter.setPen(QPen(QColor(theme.green), 2))
+        painter.drawRect(cxp, cyp, block, block)
+
+
+MODE_FLAGS = {"s": "line", "e": "ellipse"}
+
+
+class MaskFitsApp(QMainWindow):
+    def __init__(self, paths: list[str]):
+        super().__init__()
+        self.setWindowTitle("maskfits")
+        self.resize(1400, 980)
+        self.setWindowIcon(_app_icon())
+
+        self.light_mode = _detect_os_light_mode()
+        theme_manager().set_mode("light" if self.light_mode else "dark")
+        theme_manager().theme_changed.connect(self._on_theme_changed)
 
         self.entries: list[Entry] = [Entry(p) for p in paths] or [Entry(None)]
         self.index = 0
 
         self.stretch = "zscale"
-        self.scale_function = tk.StringVar(value="linear")
-        self.colormap = tk.StringVar(value="Grayscale")
-        self.invert_colormap = tk.BooleanVar(value=False)
-        self.mask_alpha = tk.IntVar(value=100)
-        self.tool = tk.StringVar(value="ellipse")
-        self.ellipticity = tk.IntVar(value=0)
-        self.angle = tk.IntVar(value=0)
-        self.radius = tk.DoubleVar(value=40.0)
-        self.thickness = tk.IntVar(value=15)
-        self.line_style = tk.StringVar(value="segment")
-        self.smooth_sigma_var = tk.StringVar(value="2")
-        self.bin_factor_var = tk.StringVar(value="4")
+        self.scale_function = "linear"
+        self.colormap = "Grayscale"
+        self.invert_colormap = False
+        self.mask_alpha = 100
+        self.tool = "ellipse"
+        self.ellipticity = 0
+        self.angle = 0
+        self.radius = 40.0
+        self.thickness = 15
+        self.line_style = "segment"
 
         self.fit_zoom = 1.0
         self.zoom_mult = 1.0
@@ -273,170 +447,138 @@ class MaskFitsApp:
         self.canvas_w = 1
         self.canvas_h = 1
         self._cursor_img_pos: Optional[tuple[float, float]] = None
+        self._cursor_canvas_pos: Optional[tuple[float, float]] = None
 
-        self._pan_drag: Optional[tuple[int, int, float, float]] = None
+        self._pan_drag: Optional[tuple[float, float, float, float]] = None
         self._line_anchor: Optional[tuple[float, float]] = None
         self._line_anchor_erase = False
-        self._preview_photo: Optional[ImageTk.PhotoImage] = None
-        self._line_preview_photo: Optional[ImageTk.PhotoImage] = None
         self._undo: Optional[tuple[int, np.ndarray]] = None
         self._redo: Optional[tuple[int, np.ndarray]] = None
-        self.light_mode = False
+        self.sidebar_width = SIDEBAR_W
+
+        self._base_pixmap: Optional[QPixmap] = None
+        self._base_pos = QPointF(0, 0)
 
         # Auto Mask: a pending preview overlay (boolean array matching
         # _auto_mask_entry.image.data's current shape) shown on top of the
         # image + manual mask, but not written into the real mask until the
-        # user confirms in AutoMaskWindow. See open_auto_mask/
-        # set_auto_mask_preview/confirm_auto_mask/discard_auto_mask.
+        # user confirms in AutoMaskWindow.
         self._auto_mask_window: Optional[AutoMaskWindow] = None
-        self._auto_mask_entry: Optional["Entry"] = None
+        self._auto_mask_entry: Optional[Entry] = None
         self._auto_mask_preview: Optional[np.ndarray] = None
 
         self._build_ui()
-
-        self.tool.trace_add("write", lambda *_: self._on_tool_changed())
-        # Switching style (via the segmented control or the 1/2/3 hotkeys)
-        # shouldn't discard a start point that's already been clicked - just
-        # refresh the preview so the new style's extension shows immediately.
-        self.line_style.trace_add("write", lambda *_: self._refresh_active_preview())
-        self.scale_function.trace_add("write", lambda *_: self.render())
-        self.colormap.trace_add("write", self._on_colormap_changed)
-        self.invert_colormap.trace_add("write", lambda *_: self.render())
-        self.root.bind("<Control-z>", self._on_undo)
-        self.root.bind("<Escape>", lambda e: self._cancel_pending_line())
-        self.root.bind("<Left>", lambda e: self.prev_image())
-        self.root.bind("<Right>", lambda e: self.next_image())
-        self.root.bind("<u>", self._on_undo)
-        self.root.bind("<Control-Shift-Z>", self._on_redo)
-        self.root.bind("<y>", self._on_redo)
-        self.root.bind("<r>", lambda e: self.reset_mask())
-        self.root.bind("<e>", lambda e: self._adjust_shape_size(1))
-        self.root.bind("<w>", lambda e: self._adjust_shape_size(-1))
-        self.root.bind("<c>", self._cycle_colormap)
-        self.root.bind("<i>", lambda e: self.invert_colormap.set(not self.invert_colormap.get()))
-        self.root.bind("<s>", self._toggle_smoothing)
-        self.root.bind("<b>", self._toggle_binning)
-        self.root.bind("<Control-r>", lambda e: self.reset_zoom())
-        self.root.bind("<Key-1>", lambda e: self._hotkey_digit(1))
-        self.root.bind("<Key-2>", lambda e: self._hotkey_digit(2))
-        self.root.bind("<Key-3>", lambda e: self._hotkey_digit(3))
-        self.root.bind("<Key-4>", lambda e: self._hotkey_digit(4))
-
-        # A text box should give up keyboard focus once you're done with it -
-        # otherwise every hotkey above keeps typing into it instead of firing.
-        # These fire on the "all" bindtag, after any widget-specific handler
-        # (e.g. an entry's own <Return> handler applies its value first, then
-        # this runs and releases focus).
-        self.root.bind_all("<Return>", self._defocus_active_entry, add="+")
-        self.root.bind_all("<Button-1>", self._on_global_click, add="+")
-
+        self._build_shortcuts()
         self._rebuild_tool_options()
         self.load_current(reset_view=True)
 
-    # ---------------------------------------------------------------- theme
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        _set_windows_titlebar_dark(self, dark=not self.light_mode)
 
-    def _build_ui(self) -> None:
-        self._build_menu()
-        self._build_layout()
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        if self._auto_mask_window is not None:
+            self._auto_mask_window.close()
+        super().closeEvent(event)
+
+    # ---------------------------------------------------------------- theme
 
     def _toggle_theme(self) -> None:
         self.light_mode = not self.light_mode
-        set_theme("light" if self.light_mode else "dark")
-        self._rebuild_ui()
+        theme_manager().set_mode("light" if self.light_mode else "dark")
 
-    def _rebuild_ui(self) -> None:
-        """Tear down and reconstruct the whole widget tree after a theme switch.
-
-        The custom canvas-drawn widgets (RoundButton, RoundedPanel, RoundSlider)
-        bake their colors into their canvas draw calls at construction time, so
-        restyling them means rebuilding, not recoloring in place. All actual
-        state - loaded images, masks, zoom, current tool, colormap, smoothing
-        cache, etc. - lives in plain attributes and tk Variables on self, none
-        of which this touches; only the widgets themselves are thrown away and
-        rebuilt against the now-active palette.
-        """
-        # winfo_children() includes Toplevels (AutoMaskWindow among them) -
-        # those are independent windows with their own lifecycle, not part
-        # of the widget tree being rebuilt here, so destroying them too would
-        # silently kill something like an open, non-modal Auto Mask window
-        # out from under the user just because they toggled the theme.
-        for child in self.root.winfo_children():
-            if not isinstance(child, tk.Toplevel):
-                child.destroy()
-        self.root.configure(bg=APP_BG)
-        self._build_ui()
-        self._rebuild_tool_options()
-        self._update_cuts_display()
-        self._update_smooth_button()
-        self._update_bin_button()
-        self.load_current(reset_view=False)
+    def _on_theme_changed(self, _theme) -> None:
+        _set_windows_titlebar_dark(self, dark=not self.light_mode)
+        if hasattr(self, "theme_toggle"):
+            self.theme_toggle.set_light(self.light_mode)
+        self.render()
 
     # ---------------------------------------------------------------- menu
 
     def _build_menu(self) -> None:
-        menubar = tk.Menu(self.root)
+        menubar = self.menuBar()
 
-        file_menu = tk.Menu(menubar, tearoff=0)
-        file_menu.add_command(label="Open...", command=self.open_files)
-        file_menu.add_command(label="Export Mask", command=self.export_mask)
-        file_menu.add_command(label="Save Mask As...", command=self.export_mask_as)
-        file_menu.add_separator()
-        file_menu.add_command(label="Quit", command=self.root.destroy)
-        menubar.add_cascade(label="File", menu=file_menu)
+        file_menu = menubar.addMenu("File")
+        file_menu.addAction("Open...", self.open_files)
+        file_menu.addAction("Export Mask", self.export_mask)
+        file_menu.addAction("Save Mask As...", self.export_mask_as)
+        file_menu.addSeparator()
+        file_menu.addAction("Quit", self.close)
 
-        mode_menu = tk.Menu(menubar, tearoff=0)
-        mode_menu.add_radiobutton(label="Ellipse Mask", variable=self.tool, value="ellipse")
-        mode_menu.add_radiobutton(label="Line Mask (satellite trail)", variable=self.tool, value="line")
-        menubar.add_cascade(label="Mode", menu=mode_menu)
+        mode_menu = menubar.addMenu("Mode")
+        mode_group = QActionGroup(self)
+        mode_group.setExclusive(True)
+        self._mode_actions: dict[str, QAction] = {}
+        for value, label in (("ellipse", "Ellipse Mask"), ("line", "Line Mask (satellite trail)")):
+            action = QAction(label, self, checkable=True)
+            action.setChecked(value == self.tool)
+            action.triggered.connect(lambda _checked=False, v=value: self.set_tool(v))
+            mode_group.addAction(action)
+            mode_menu.addAction(action)
+            self._mode_actions[value] = action
 
-        # Cuts and Scale used to be separate menus; combined here into one
-        # "Scale" menu with the two groups kept visually distinct by a
-        # separator, since both are about how pixel values map to the screen.
-        scale_menu = tk.Menu(menubar, tearoff=0)
-        scale_menu.add_command(label="Min/Max", command=lambda: self.set_stretch("minmax"))
-        scale_menu.add_command(label="ZScale", command=lambda: self.set_stretch("zscale"))
-        scale_menu.add_separator()
+        scale_menu = menubar.addMenu("Scale")
+        scale_menu.addAction("Min/Max", lambda: self.set_stretch("minmax"))
+        scale_menu.addAction("ZScale", lambda: self.set_stretch("zscale"))
+        scale_menu.addSeparator()
         for percent in PERCENTILE_PRESETS:
-            scale_menu.add_command(label=f"{percent}%", command=lambda p=percent: self.set_stretch(f"pct{p}"))
-        scale_menu.add_separator()
+            scale_menu.addAction(f"{percent}%", lambda p=percent: self.set_stretch(f"pct{p}"))
+        scale_menu.addSeparator()
+        scale_group = QActionGroup(self)
+        scale_group.setExclusive(True)
+        self._scale_actions: dict[str, QAction] = {}
         for value, label in SCALE_OPTIONS:
-            scale_menu.add_radiobutton(label=label, variable=self.scale_function, value=value)
-        scale_menu.add_separator()
-        scale_menu.add_command(label="Reset", command=self.reset_scale)
-        menubar.add_cascade(label="Scale", menu=scale_menu)
+            action = QAction(label, self, checkable=True)
+            action.setChecked(value == self.scale_function)
+            action.triggered.connect(lambda _checked=False, v=value: self.set_scale_function(v))
+            scale_group.addAction(action)
+            scale_menu.addAction(action)
+            self._scale_actions[value] = action
+        scale_menu.addSeparator()
+        scale_menu.addAction("Reset", self.reset_scale)
 
-        color_menu = tk.Menu(menubar, tearoff=0)
+        color_menu = menubar.addMenu("Color")
+        color_group = QActionGroup(self)
+        color_group.setExclusive(True)
+        self._color_actions: dict[str, QAction] = {}
         for name in COLORMAP_NAMES:
-            color_menu.add_radiobutton(label=name, variable=self.colormap, value=name)
-        color_menu.add_separator()
-        color_menu.add_checkbutton(label="Invert Colormap", variable=self.invert_colormap)
-        menubar.add_cascade(label="Color", menu=color_menu)
+            action = QAction(name, self, checkable=True)
+            action.setChecked(name == self.colormap)
+            action.triggered.connect(lambda _checked=False, v=name: self.set_colormap(v))
+            color_group.addAction(action)
+            color_menu.addAction(action)
+            self._color_actions[name] = action
+        color_menu.addSeparator()
+        self._invert_action = QAction("Invert Colormap", self, checkable=True)
+        self._invert_action.setChecked(self.invert_colormap)
+        self._invert_action.triggered.connect(self._on_invert_action)
+        color_menu.addAction(self._invert_action)
 
-        help_menu = tk.Menu(menubar, tearoff=0)
-        help_menu.add_command(label="About", command=self._show_help)
-        help_menu.add_separator()
+        help_menu = menubar.addMenu("Help")
+        help_menu.addAction("About", self._show_help)
+        help_menu.addSeparator()
         for keys, description in HOTKEY_ENTRIES:
-            help_menu.add_command(label=f"{keys}    {description}", state="disabled")
-
-        menubar.add_cascade(label="Help", menu=help_menu)
-
-        self.root.config(menu=menubar)
+            action = QAction(f"{keys}    {description}", self)
+            action.setEnabled(False)
+            help_menu.addAction(action)
 
     def _show_help(self) -> None:
-        messagebox.showinfo(
-            "maskfits",
-            "maskfits IMAGE1 IMAGE2 ...\n\n"
+        QMessageBox.information(
+            self, "maskfits",
             "Left-click / drag: paint mask with the current tool\n"
             "Right-click / drag: erase mask\n"
             "Middle-click: cancel a pending line start point, or redo (satellite mode only)\n"
             "Ctrl + left-click drag: pan the view\n"
-            "Mouse wheel: zoom in (zoom 1 shows the full image; you can only zoom in from there)\n"
+            "Mouse wheel: zoom in / out\n"
             "Ctrl+Z or U: undo last mask stroke\n"
             "Ctrl+Shift+Z or Y: redo\n"
             "R: clear the whole mask\n"
             "Ctrl+R: reset zoom\n"
-            "← / →: previous / next image\n"
-            "E / W: grow / shrink the active tool's radius or thickness\n"
+            "E / W: grow / shrink shape size\n"
+            "C: cycle colormap\n"
+            "I: invert colormap\n"
+            "S: smooth image (Gaussian, current sigma)\n"
+            "B: bin image (NxN, current factor)\n"
             "1 / 2: lower / raise ellipticity (ellipse mode)\n"
             "3 / 4: lower / raise angle (ellipse mode)\n"
             "1 / 2 / 3: jump to Segment / Arrow / Line style (satellite mode)\n"
@@ -448,402 +590,334 @@ class MaskFitsApp:
             "  Arrow   - click start, click a second point; the trail extends\n"
             "            past it to the image border\n"
             "  Line    - click two points; the trail extends to both borders",
-            parent=self.root,
         )
-
 
     # -------------------------------------------------------------- layout
 
-    def _build_layout(self) -> None:
-        toolbar_container = tk.Frame(self.root, bg=APP_BG)
-        toolbar_container.pack(side="top", fill="x", padx=10, pady=(10, 6))
-        toolbar_panel = RoundedPanel(toolbar_container, outer_bg=APP_BG, bg=PANEL_BG, radius=14, mode="hug")
-        toolbar_panel.pack(fill="x")
+    def _build_ui(self) -> None:
+        self._build_menu()
+
+        central = QWidget(self)
+        self.setCentralWidget(central)
+        root_layout = QVBoxLayout(central)
+        root_layout.setContentsMargins(10, 10, 10, 10)
+        root_layout.setSpacing(6)
+
+        toolbar_panel = RoundedPanel(central, mode="hug")
+        root_layout.addWidget(toolbar_panel)
         self._build_toolbar(toolbar_panel.inner)
 
-        body = tk.Frame(self.root, bg=APP_BG)
-        body.pack(side="top", fill="both", expand=True, padx=10)
+        body_widget = QWidget(central)
+        root_layout.addWidget(body_widget, 1)
+        body = QHBoxLayout(body_widget)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
 
-        sidebar_container = tk.Frame(body, width=SIDEBAR_W, bg=APP_BG)
-        sidebar_container.pack(side="left", fill="y", padx=(0, 6))
-        sidebar_container.pack_propagate(False)
-        sidebar_panel = RoundedPanel(sidebar_container, outer_bg=APP_BG, bg=PANEL_BG, radius=16, scrollable=True)
-        sidebar_panel.pack(fill="both", expand=True)
+        self.sidebar_container = QWidget(body_widget)
+        self.sidebar_container.setFixedWidth(self.sidebar_width)
+        sidebar_layout = QVBoxLayout(self.sidebar_container)
+        sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        sidebar_panel = RoundedPanel(self.sidebar_container, mode="fill", scrollable=True)
+        sidebar_layout.addWidget(sidebar_panel)
+        body.addWidget(self.sidebar_container)
         self._build_sidebar(sidebar_panel.inner)
 
-        canvas_container = tk.Frame(body, bg=APP_BG)
-        canvas_container.pack(side="left", fill="both", expand=True)
-        self.canvas = tk.Canvas(canvas_container, bg=CANVAS_BG, highlightthickness=1, highlightbackground=PANEL_BORDER)
-        self.canvas.pack(fill="both", expand=True)
-        self.canvas.bind("<Configure>", self._on_canvas_resize)
-        self.canvas.bind("<Motion>", self._on_motion)
-        self.canvas.bind("<ButtonPress-1>", lambda e: self._on_button(e, erase=False))
-        self.canvas.bind("<B1-Motion>", lambda e: self._on_drag(e, erase=False))
-        self.canvas.bind("<ButtonRelease-1>", lambda e: setattr(self, "_pan_drag", None))
-        # Tk's Aqua (macOS) port numbers the secondary mouse buttons the
-        # opposite way from X11/Windows: physical right-click reports as
-        # Button-2 there and middle-click as Button-3 (backwards from every
-        # other platform, a longstanding Tk/Aqua quirk) - so which literal
-        # button number means "erase" vs "right-click" has to flip by platform
-        # for the buttons to actually match up with the physical mouse button.
-        middle_click_num, right_click_num = (3, 2) if sys.platform == "darwin" else (2, 3)
-        self.canvas.bind(f"<ButtonPress-{right_click_num}>", self._on_secondary_click)
-        self.canvas.bind(f"<B{right_click_num}-Motion>", self._on_secondary_drag)
-        self.canvas.bind(f"<ButtonPress-{middle_click_num}>", self._on_middle_click)
-        self.canvas.bind("<Control-Button-1>", self._on_pan_start)
-        self.canvas.bind("<Control-B1-Motion>", self._on_pan_drag)
-        self.canvas.bind("<MouseWheel>", self._on_wheel)
-        self.canvas.bind("<Button-4>", lambda e: self._zoom_at(e.x, e.y, ZOOM_STEP))
-        self.canvas.bind("<Button-5>", lambda e: self._zoom_at(e.x, e.y, 1 / ZOOM_STEP))
+        grip = ResizeGrip(body_widget, width=GRIP_W)
+        grip.dragged.connect(self._on_sidebar_grip_drag)
+        grip.released.connect(self._on_sidebar_grip_release)
+        body.addWidget(grip)
 
-        status_container = tk.Frame(self.root, bg=APP_BG)
-        status_container.pack(side="bottom", fill="x", padx=10, pady=(6, 10))
-        status_panel = RoundedPanel(status_container, outer_bg=APP_BG, bg=PANEL_BG, radius=10, mode="hug")
-        status_panel.pack(fill="x")
-        self.status = tk.Label(status_panel.inner, text="new file", bg=PANEL_BG, fg=TEXT_DIM, anchor="w", font=FONT_SMALL)
-        self.status.pack(side="left", fill="x", expand=True, padx=14, pady=8)
-        tk.Label(status_panel.inner, text="\u00A9 Jan-Niklas Pippert 2026", bg=PANEL_BG, fg=TEXT_DIM,
-                 anchor="e", font=FONT_SMALL).pack(side="right", padx=14, pady=8)
+        self.canvas = ImageCanvas(self, body_widget)
+        body.addWidget(self.canvas, 1)
 
-    def _build_toolbar(self, parent: tk.Frame) -> None:
-        """Builds the toolbar out of small per-control "chunk" frames whose
-        master is `parent` itself (never row1/row2 directly), so each chunk
-        can be freely reassigned between row1 and row2 via pack(in_=...) as
-        the window is resized - Tk widgets can't be reparented after
-        creation, but pack's `in_` lets the same widget be geometry-managed
-        by a different container. See _reflow_toolbar for the actual
-        left-to-right greedy wrap.
-        """
-        parent.configure(bg=PANEL_BG)
-        pad = dict(padx=4, pady=10)
+        status_panel = RoundedPanel(central, mode="hug")
+        root_layout.addWidget(status_panel)
+        status_layout = QHBoxLayout(status_panel.inner)
+        status_layout.setContentsMargins(14, 8, 14, 8)
+        self.status = QLabel("new file")
+        self.status.setProperty("dim", True)
+        status_layout.addWidget(self.status, 1)
+        copyright_label = QLabel("© Jan-Niklas Pippert 2026")
+        copyright_label.setProperty("dim", True)
+        status_layout.addWidget(copyright_label)
 
-        self._toolbar_row1 = tk.Frame(parent, bg=PANEL_BG)
-        self._toolbar_row1.pack(side="top", fill="x")
-        # row2 is only pack()'d (mounted at all) while something's actually
-        # in it - an empty Tk Frame that ONCE held a packed child keeps
-        # reporting that child's old size from winfo_reqheight() even after
-        # the child is moved out (a long-standing Tk quirk), so leaving row2
-        # permanently mounted would show a phantom empty second row forever
-        # after the toolbar wraps even once. Fully unmounting/remounting it
-        # sidesteps that stale-geometry bug entirely.
-        self._toolbar_row2 = tk.Frame(parent, bg=PANEL_BG)
-
-        def chunk() -> tk.Frame:
-            return tk.Frame(parent, bg=PANEL_BG)
-
-        theme_chunk = chunk()
-        ThemeToggle(theme_chunk, command=self._toggle_theme, light=self.light_mode, outer_bg=PANEL_BG).pack(
-            side="left", padx=(14, 12), pady=10)
-
-        zoom_chunk = chunk()
-        self.zoom_label = tk.Label(zoom_chunk, text="1", bg=PANEL_BG, fg=TEXT, font=FONT, width=5)
-        self.zoom_label.pack(side="left")
-        RoundButton(zoom_chunk, "reset zoom", command=self.reset_zoom, outer_bg=PANEL_BG).pack(
-            side="left", padx=(0, 16), pady=10)
-
-        smooth_chunk = chunk()
-        self.smooth_button = RoundButton(smooth_chunk, "smooth", command=self._toggle_smoothing,
-                                          outer_bg=PANEL_BG, toggle=True, width=72)
-        self.smooth_button.pack(side="left", padx=(0, 4), pady=10)
-        sigma_entry = tk.Entry(smooth_chunk, textvariable=self.smooth_sigma_var, width=4, justify="center",
-                                bg=BUTTON_BG, fg=TEXT, insertbackground=TEXT, relief="flat", highlightthickness=1,
-                                highlightbackground=PANEL_BORDER, highlightcolor=ACCENT, font=FONT_SMALL)
-        sigma_entry.pack(side="left", padx=(0, 16), pady=10)
-        sigma_entry.bind("<Return>", self._apply_sigma_entry)
-        sigma_entry.bind("<FocusOut>", self._apply_sigma_entry)
-
-        bin_chunk = chunk()
-        self.bin_button = RoundButton(bin_chunk, "bin", command=self._toggle_binning, outer_bg=PANEL_BG,
-                                       toggle=True, width=60)
-        self.bin_button.pack(side="left", padx=(0, 4), pady=10)
-        bin_entry = tk.Entry(bin_chunk, textvariable=self.bin_factor_var, width=4, justify="center",
-                              bg=BUTTON_BG, fg=TEXT, insertbackground=TEXT, relief="flat", highlightthickness=1,
-                              highlightbackground=PANEL_BORDER, highlightcolor=ACCENT, font=FONT_SMALL)
-        bin_entry.pack(side="left", padx=(0, 16), pady=10)
-        bin_entry.bind("<Return>", self._apply_bin_entry)
-        bin_entry.bind("<FocusOut>", self._apply_bin_entry)
-
-        scale_chunk = chunk()
-        SegmentedControl(scale_chunk, SCALE_OPTIONS, self.scale_function, outer_bg=PANEL_BG).pack(
-            side="left", padx=(0, 16), pady=10)
-
-        nav_chunk = chunk()
-        RoundButton(nav_chunk, "<-", command=self.prev_image, outer_bg=PANEL_BG, width=36).pack(side="left", **pad)
-        self.counter_label = tk.Label(nav_chunk, text="1/1", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL, width=6)
-        self.counter_label.pack(side="left")
-        RoundButton(nav_chunk, "->", command=self.next_image, outer_bg=PANEL_BG, width=36).pack(
-            side="left", padx=(4, 16), pady=10)
-
-        filename_chunk = chunk()
-        self.filename_label = tk.Label(filename_chunk, text="noname", bg=PANEL_BG, fg=TEXT, font=FONT)
-        self.filename_label.pack(side="left", padx=(0, 10))
-
-        # Extension picker: only meaningfully interactive once the current
-        # file actually has more than one image HDU to choose from - see
-        # _update_extension_picker, called from load_current.
-        self.ext_var = tk.StringVar(value="")
-        self.ext_menu = tk.OptionMenu(filename_chunk, self.ext_var, "")
-        self.ext_menu.configure(bg=BUTTON_BG, fg=TEXT, activebackground=BUTTON_HOVER, activeforeground=TEXT,
-                                 highlightthickness=1, highlightbackground=PANEL_BORDER, relief="flat",
-                                 font=FONT_SMALL)
-        self.ext_menu["menu"].configure(bg=BUTTON_BG, fg=TEXT, activebackground=BUTTON_HOVER,
-                                         activeforeground=TEXT, font=FONT_SMALL)
-        self.ext_menu.pack(side="left")
-
-        actions_chunk = chunk()
-        RoundButton(actions_chunk, "kill", command=self.kill_current, outer_bg=PANEL_BG,
-                    danger=True).pack(side="right", padx=14, pady=10)
-        RoundButton(actions_chunk, "reset mask", command=self.reset_mask, outer_bg=PANEL_BG).pack(
-            side="right", pady=10)
-        RoundButton(actions_chunk, "export mask", command=self.export_mask, outer_bg=PANEL_BG,
-                    accent=True).pack(side="right", padx=(0, 8), pady=10)
-        RoundButton(actions_chunk, "auto mask", command=self.open_auto_mask, outer_bg=PANEL_BG).pack(
-            side="right", padx=(0, 8), pady=10)
-
-        # Left-to-right flow order; actions_chunk is handled separately by
-        # _reflow_toolbar since it's always right-anchored on whichever row
-        # it ends up on, instead of flowing in sequence with the others.
-        self._toolbar_left_chunks = [
-            theme_chunk, zoom_chunk, smooth_chunk, bin_chunk, scale_chunk, nav_chunk, filename_chunk,
-        ]
-        self._toolbar_actions = actions_chunk
-        self._toolbar_layout: Optional[tuple[int, ...]] = None
-        for c in self._toolbar_left_chunks:
-            c.pack(in_=self._toolbar_row1, side="left")
-        self._toolbar_actions.pack(in_=self._toolbar_row1, side="right")
-
-        # `add="+"` since RoundedPanel already binds its own <Configure> on
-        # this same widget (parent, its .inner) to keep the panel's rounded
-        # background sized to content - a plain bind() here would silently
-        # replace that instead of adding to it.
-        parent.bind("<Configure>", self._reflow_toolbar, add="+")
-        # A <Configure> only fires on a SIZE CHANGE - if the app is launched
-        # already narrow, the panel's first layout pass may settle at that
-        # size without ever firing one, so check explicitly once the event
-        # loop catches up and geometry is actually realized.
-        parent.after_idle(self._reflow_toolbar)
-
-    def _reflow_toolbar(self, _event: Optional[tk.Event] = None) -> None:
-        """Distributes the toolbar's chunks (see _build_toolbar) across row1
-        and, once row1 runs out of room, row2 - instead of the window just
-        clipping overflowing controls as it narrows.
-
-        Three tiers, checked in order:
-          1. Everything (all left-flow chunks + the action cluster) fits on
-             one row - the common case, nothing wraps.
-          2. The left-flow chunks fit by themselves, but not alongside the
-             action cluster too - only the action cluster (kill/reset mask/
-             export mask/auto mask) wraps down to row2.
-          3. Even the left-flow chunks alone overflow row1 - greedily fill
-             row1 with as many of them (in their normal order) as fit, and
-             push the rest down to row2 alongside the action cluster, rather
-             than leaving them clipped with nowhere to go.
-        """
-        available = self._toolbar_row1.master.winfo_width()
-        if available <= 1:
+    def _on_sidebar_grip_drag(self, dx: int) -> None:
+        new_width = max(SIDEBAR_W_MIN, min(SIDEBAR_W_MAX, self.sidebar_width + dx))
+        if new_width == self.sidebar_width:
             return
-        chunks = self._toolbar_left_chunks
-        widths = [c.winfo_reqwidth() for c in chunks]
-        total_left = sum(widths)
-        actions_width = self._toolbar_actions.winfo_reqwidth()
+        self.sidebar_width = new_width
+        self.sidebar_container.setFixedWidth(new_width)
 
-        if total_left + actions_width <= available:
-            row1_chunks, row2_chunks, actions_wraps = chunks, [], False
-        elif total_left <= available:
-            row1_chunks, row2_chunks, actions_wraps = chunks, [], True
-        else:
-            cum = 0
-            split = 0
-            for w in widths:
-                if cum + w > available:
-                    break
-                cum += w
-                split += 1
-            row1_chunks, row2_chunks, actions_wraps = chunks[:split], chunks[split:], True
+    def _on_sidebar_grip_release(self) -> None:
+        if hasattr(self, "cuts_histogram"):
+            self.cuts_histogram.resize_width(self.sidebar_width - 28)
 
-        # A layout is fully described by how many chunks (from the front)
-        # are on row1, plus whether actions wrapped - skip the actual
-        # repacking if neither changed, so a resize that doesn't cross a
-        # wrap boundary doesn't needlessly tear down and rebuild the pack
-        # order on every pixel of the drag.
-        layout_key = (len(row1_chunks), actions_wraps)
-        if layout_key == self._toolbar_layout:
-            return
-        self._toolbar_layout = layout_key
+    def _chunk(self, *widgets: QWidget) -> QWidget:
+        box = QWidget()
+        box.setObjectName("toolbarChunk")
+        layout = QHBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        for w in widgets:
+            layout.addWidget(w)
+        return box
 
-        for c in chunks:
-            c.pack_forget()
-        self._toolbar_actions.pack_forget()
-        self._toolbar_row2.pack_forget()
+    def _build_toolbar(self, parent: QWidget) -> None:
+        outer = QVBoxLayout(parent)
+        outer.setContentsMargins(0, 0, 0, 0)
+        layout = FlowLayout(parent, h_spacing=10, v_spacing=6)
+        layout.setContentsMargins(14, 8, 14, 8)
+        outer.addWidget(layout)
 
-        for c in row1_chunks:
-            c.pack(in_=self._toolbar_row1, side="left")
+        self.theme_toggle = ThemeToggle(light=self.light_mode)
+        self.theme_toggle.clicked.connect(self._toggle_theme)
+        layout.addWidget(self.theme_toggle)
 
-        if row2_chunks or actions_wraps:
-            self._toolbar_row2.pack(side="top", fill="x")
-            for c in row2_chunks:
-                c.pack(in_=self._toolbar_row2, side="left")
+        self.zoom_label = QLabel("1")
+        self.zoom_label.setFixedWidth(36)
+        reset_zoom_btn = RoundButton("reset zoom")
+        reset_zoom_btn.clicked.connect(self.reset_zoom)
+        layout.addWidget(self._chunk(self.zoom_label, reset_zoom_btn))
 
-        self._toolbar_actions.pack(in_=(self._toolbar_row2 if actions_wraps else self._toolbar_row1), side="right")
+        self.smooth_button = RoundButton("smooth", checkable=True)
+        self.smooth_button.clicked.connect(self._toggle_smoothing)
+        self.smooth_sigma_entry = QLineEdit("2")
+        self.smooth_sigma_entry.setFixedWidth(44)
+        self.smooth_sigma_entry.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.smooth_sigma_entry.editingFinished.connect(self._apply_sigma_entry)
+        layout.addWidget(self._chunk(self.smooth_button, self.smooth_sigma_entry))
 
-    def _build_sidebar(self, parent: tk.Frame) -> None:
-        parent.configure(bg=PANEL_BG)
+        self.bin_button = RoundButton("bin", checkable=True)
+        self.bin_button.clicked.connect(self._toggle_binning)
+        self.bin_factor_entry = QLineEdit("4")
+        self.bin_factor_entry.setFixedWidth(44)
+        self.bin_factor_entry.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.bin_factor_entry.editingFinished.connect(self._apply_bin_entry)
+        layout.addWidget(self._chunk(self.bin_button, self.bin_factor_entry))
 
-        self.magnifier_canvas = tk.Canvas(parent, width=PAN_W, height=PAN_H, bg=CANVAS_BG, highlightthickness=0)
-        self.magnifier_canvas.pack(padx=10, pady=10)
+        self.scale_control = SegmentedControl(SCALE_OPTIONS, self.scale_function)
+        self.scale_control.valueChanged.connect(self.set_scale_function)
+        layout.addWidget(self.scale_control)
 
-        info = tk.Frame(parent, bg=PANEL_BG)
-        info.pack(fill="x", padx=14, pady=(0, 10))
-        self.readout = {}
-        for row, (left_key, right_key) in enumerate((("x", "RA"), ("y", "DEC"))):
-            tk.Label(info, text=f"{left_key}:", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).grid(
-                row=row, column=0, sticky="w")
-            left_lbl = tk.Label(info, text="", bg=PANEL_BG, fg=TEXT, font=FONT_SMALL)
-            left_lbl.grid(row=row, column=1, sticky="w", padx=(8, 14))
+        prev_btn = RoundButton("<-")
+        prev_btn.clicked.connect(self.prev_image)
+        self.counter_label = QLabel("1/1")
+        self.counter_label.setFixedWidth(50)
+        self.counter_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        next_btn = RoundButton("->")
+        next_btn.clicked.connect(self.next_image)
+        layout.addWidget(self._chunk(prev_btn, self.counter_label, next_btn))
+
+        self.filename_label = QLabel("noname")
+        self.ext_combo = QComboBox()
+        self.ext_combo.setEnabled(False)
+        self.ext_combo.currentIndexChanged.connect(self._on_ext_combo_changed)
+        layout.addWidget(self._chunk(self.filename_label, self.ext_combo))
+
+        auto_mask_btn = RoundButton("auto mask")
+        auto_mask_btn.clicked.connect(self.open_auto_mask)
+        export_btn = RoundButton("export mask", accent=True)
+        export_btn.clicked.connect(self.export_mask)
+        reset_btn = RoundButton("reset mask")
+        reset_btn.clicked.connect(self.reset_mask)
+        kill_btn = RoundButton("kill", danger=True)
+        kill_btn.clicked.connect(self.kill_current)
+        layout.addWidget(self._chunk(auto_mask_btn, export_btn, reset_btn, kill_btn))
+
+    def _build_sidebar(self, parent: QWidget) -> None:
+        layout = QVBoxLayout(parent)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+
+        self.magnifier = MagnifierWidget(self)
+        mag_row = QHBoxLayout()
+        mag_row.addStretch(1)
+        mag_row.addWidget(self.magnifier)
+        mag_row.addStretch(1)
+        layout.addLayout(mag_row)
+
+        readout_layout = QVBoxLayout()
+        readout_layout.setSpacing(2)
+        self.readout: dict[str, QLabel] = {}
+        for left_key, right_key in (("x", "RA"), ("y", "DEC")):
+            row = QHBoxLayout()
+            row.addWidget(self._dim_label(f"{left_key}:"))
+            left_lbl = QLabel("")
+            row.addWidget(left_lbl)
+            row.addSpacing(10)
+            row.addWidget(self._dim_label(f"{right_key}:"))
+            right_lbl = QLabel("")
+            row.addWidget(right_lbl)
+            row.addStretch(1)
             self.readout[left_key] = left_lbl
-
-            tk.Label(info, text=f"{right_key}:", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).grid(
-                row=row, column=2, sticky="w")
-            right_lbl = tk.Label(info, text="", bg=PANEL_BG, fg=TEXT, font=FONT_SMALL)
-            right_lbl.grid(row=row, column=3, sticky="w", padx=(8, 0))
             self.readout[right_key] = right_lbl
-
-        tk.Label(info, text="value:", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).grid(row=2, column=0, sticky="w")
-        value_lbl = tk.Label(info, text="", bg=PANEL_BG, fg=TEXT, font=FONT_SMALL)
-        value_lbl.grid(row=2, column=1, columnspan=3, sticky="w", padx=(8, 0))
+            readout_layout.addLayout(row)
+        value_row = QHBoxLayout()
+        value_row.addWidget(self._dim_label("value:"))
+        value_lbl = QLabel("")
+        value_row.addWidget(value_lbl)
+        value_row.addStretch(1)
         self.readout["value"] = value_lbl
+        readout_layout.addLayout(value_row)
+        layout.addLayout(readout_layout)
 
-        self._divider(parent)
+        self._divider(layout)
 
         # Live pixel-value histogram with draggable lowcut/highcut lines,
         # embedded directly in the sidebar instead of a separate popup.
-        self.cuts_histogram = CutsHistogram(
-            parent, np.array([0.0, 1.0]), 0.0, 1.0, self._on_histogram_apply,
-            width=SIDEBAR_W - 28, height=150, bins=40, outer_bg=PANEL_BG,
-        )
-        self.cuts_histogram.pack(padx=14, pady=(10, 10))
+        self.cuts_histogram = CutsHistogram(np.array([0.0, 1.0]), 0.0, 1.0, bins=40)
+        self.cuts_histogram.cuts_applied.connect(self._on_histogram_apply)
+        layout.addWidget(self.cuts_histogram)
 
-        alpha_frame = tk.Frame(parent, bg=PANEL_BG)
-        alpha_frame.pack(fill="x", padx=14, pady=(0, 10))
-        alpha_label = tk.Label(alpha_frame, bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL, anchor="w")
-        alpha_label.pack(fill="x")
+        alpha_label = QLabel(f"mask opacity: {self.mask_alpha}%")
+        alpha_label.setProperty("dim", True)
+        self._alpha_label = alpha_label
+        layout.addWidget(alpha_label)
+        self.alpha_slider = RoundSlider(0, 100, self.mask_alpha, integer=True)
+        self.alpha_slider.valueChanged.connect(self._on_alpha_changed)
+        self.alpha_slider.sliderReleased.connect(self.render)
+        layout.addWidget(self.alpha_slider)
 
-        def _update_alpha_label(*_args: object) -> None:
-            alpha_label.config(text=f"mask opacity: {self.mask_alpha.get()}%")
+        self._divider(layout)
 
-        self.mask_alpha.trace_add("write", _update_alpha_label)
-        _update_alpha_label()
-        alpha_slider = RoundSlider(alpha_frame, self.mask_alpha, 0, 100, width=SIDEBAR_W - 40, height=22,
-                                    outer_bg=PANEL_BG)
-        alpha_slider.pack(pady=(4, 0))
-        # Re-render only once the slider is released, not on every drag step -
-        # this drives a full main-canvas repaint, same reasoning as the cuts
-        # histogram above: continuous re-rendering during a drag is what feels slow.
-        alpha_slider.bind("<ButtonRelease-1>", lambda e: self.render())
+        self.mode_control = SegmentedControl([("ellipse", "Ellipse"), ("line", "Satellite")], self.tool)
+        self.mode_control.valueChanged.connect(self.set_tool)
+        layout.addWidget(self.mode_control)
 
-        self._divider(parent)
+        self.tool_options_container = QWidget()
+        self.tool_options_layout = QVBoxLayout(self.tool_options_container)
+        self.tool_options_layout.setContentsMargins(0, 4, 0, 0)
+        self.tool_options_layout.setSpacing(4)
+        layout.addWidget(self.tool_options_container)
+        layout.addStretch(1)
 
-        mode_frame = tk.Frame(parent, bg=PANEL_BG)
-        mode_frame.pack(fill="x", padx=14, pady=(10, 4))
-        SegmentedControl(
-            mode_frame, [("ellipse", "Ellipse"), ("line", "Satellite")], self.tool,
-            outer_bg=PANEL_BG,
-        ).pack(anchor="w")
+    @staticmethod
+    def _dim_label(text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setProperty("dim", True)
+        return lbl
 
-        self.tool_options_frame = tk.Frame(parent, bg=PANEL_BG)
-        self.tool_options_frame.pack(fill="x")
-
-    def _divider(self, parent: tk.Frame) -> None:
-        tk.Frame(parent, bg=PANEL_BORDER, height=1).pack(fill="x", padx=14)
+    @staticmethod
+    def _divider(layout: QVBoxLayout) -> None:
+        line = QWidget()
+        line.setFixedHeight(1)
+        line.setAutoFillBackground(True)
+        pal = line.palette()
+        pal.setColor(line.backgroundRole(), QColor(current_theme().panel_border))
+        line.setPalette(pal)
+        layout.addWidget(line)
 
     @staticmethod
     def _fmt_slider_value(value: float) -> str:
         return str(int(value)) if float(value).is_integer() else f"{value:g}"
 
-    def _build_slider_row(self, parent: tk.Frame, name: str, var: tk.Variable, lo: float, hi: float,
-                           suffix: str = "") -> None:
-        # Name (static, plus a unit hint) on the left; the value itself lives only
-        # in the text box on the right - showing it in both the label and the box
-        # would just be redundant. Slider goes on the row below.
-        row = tk.Frame(parent, bg=PANEL_BG)
-        row.pack(fill="x", padx=14, pady=(6, 2))
-
+    def _build_slider_row(self, layout: QVBoxLayout, name: str, value: float, lo: float, hi: float, *,
+                           suffix: str = "", integer: bool = False, on_change=None) -> RoundSlider:
+        row = QHBoxLayout()
         unit_hint = f" ({suffix.strip()})" if suffix.strip() else ""
-        tk.Label(row, text=f"{name}{unit_hint}:", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL, anchor="w").pack(
-            side="left")
+        row.addWidget(self._dim_label(f"{name}{unit_hint}:"))
+        row.addStretch(1)
+        entry = QLineEdit(self._fmt_slider_value(value))
+        entry.setFixedWidth(60)
+        entry.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        row.addWidget(entry)
+        layout.addLayout(row)
 
-        # A text box for typing an exact value - handy for precise sizes the
-        # slider itself is too coarse to hit reliably (e.g. a 0.5px radius to
-        # mask a single pixel).
-        entry_str = tk.StringVar(value=self._fmt_slider_value(var.get()))
+        slider = RoundSlider(lo, hi, value, integer=integer)
+        layout.addWidget(slider)
 
-        def sync_entry(*_args: object) -> None:
-            if entry.winfo_exists():
-                entry_str.set(self._fmt_slider_value(var.get()))
-
-        entry_trace_id = var.trace_add("write", sync_entry)
-
-        def apply_entry(_event: Optional[tk.Event] = None) -> None:
+        def apply_entry() -> None:
             try:
-                value = float(entry_str.get())
+                v = float(entry.text())
             except ValueError:
-                entry_str.set(self._fmt_slider_value(var.get()))
+                entry.setText(self._fmt_slider_value(slider.value()))
                 return
-            value = max(lo, min(value, hi))
-            if isinstance(var, tk.IntVar):
-                value = int(round(value))
-            var.set(value)
-            entry_str.set(self._fmt_slider_value(var.get()))
+            v = max(lo, min(v, hi))
+            slider.setValue(v)
+            entry.setText(self._fmt_slider_value(slider.value()))
+            if on_change is not None:
+                on_change(slider.value())
 
-        entry = tk.Entry(row, textvariable=entry_str, width=6, justify="center", bg=BUTTON_BG, fg=TEXT,
-                          insertbackground=TEXT, relief="flat", highlightthickness=1,
-                          highlightbackground=PANEL_BORDER, highlightcolor=ACCENT, font=FONT_SMALL)
-        entry.pack(side="right")
-        entry.bind("<Return>", apply_entry)
-        entry.bind("<FocusOut>", apply_entry)
-        entry.bind("<Destroy>", lambda e: var.trace_remove("write", entry_trace_id), add="+")
+        def sync_entry(v: float) -> None:
+            entry.setText(self._fmt_slider_value(v))
+            if on_change is not None:
+                on_change(v)
 
-        RoundSlider(parent, var, lo, hi, width=SIDEBAR_W - 40, height=22, outer_bg=PANEL_BG).pack(padx=14, pady=(0, 8))
+        entry.editingFinished.connect(apply_entry)
+        slider.valueChanged.connect(sync_entry)
+        return slider
 
     def _rebuild_tool_options(self) -> None:
-        for child in list(self.tool_options_frame.winfo_children()):
-            child.destroy()
+        while self.tool_options_layout.count():
+            item = self.tool_options_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+            elif item.layout() is not None:
+                self._clear_layout(item.layout())
         self._cancel_pending_line()
 
-        if self.tool.get() == "ellipse":
-            self._build_slider_row(self.tool_options_frame, "radius", self.radius, RADIUS_MIN, MAX_SHAPE_SIZE, suffix=" px")
-            self._build_slider_row(self.tool_options_frame, "ellipticity", self.ellipticity, 0, 90, suffix="%")
-            self._build_slider_row(self.tool_options_frame, "angle", self.angle, -180, 180, suffix="°")
+        if self.tool == "ellipse":
+            self._build_slider_row(self.tool_options_layout, "radius", self.radius, RADIUS_MIN, MAX_SHAPE_SIZE,
+                                    suffix=" px", on_change=self._on_radius_changed)
+            self._build_slider_row(self.tool_options_layout, "ellipticity", self.ellipticity, 0, 90,
+                                    suffix="%", integer=True, on_change=self._on_ellipticity_changed)
+            self._build_slider_row(self.tool_options_layout, "angle", self.angle, -180, 180,
+                                    suffix="°", integer=True, on_change=self._on_angle_changed)
         else:
-            self._build_slider_row(self.tool_options_frame, "thickness", self.thickness, 1, MAX_SHAPE_SIZE, suffix=" px")
-            style_frame = tk.Frame(self.tool_options_frame, bg=PANEL_BG)
-            style_frame.pack(fill="x", padx=14, pady=(8, 4))
-            tk.Label(style_frame, text="style", bg=PANEL_BG, fg=TEXT_DIM, font=FONT_SMALL).pack(anchor="w")
-            SegmentedControl(style_frame, LINE_STYLES, self.line_style, outer_bg=PANEL_BG).pack(anchor="w", pady=(4, 0))
+            self._build_slider_row(self.tool_options_layout, "thickness", self.thickness, 1, MAX_SHAPE_SIZE,
+                                    suffix=" px", integer=True, on_change=self._on_thickness_changed)
+            style_box = QWidget()
+            style_layout = QVBoxLayout(style_box)
+            style_layout.setContentsMargins(0, 8, 0, 4)
+            style_layout.addWidget(self._dim_label("style"))
+            style_control = SegmentedControl(LINE_STYLES, self.line_style)
+            style_control.valueChanged.connect(self._on_line_style_changed)
+            style_layout.addWidget(style_control)
+            self.tool_options_layout.addWidget(style_box)
 
-        for var in (self.ellipticity, self.angle, self.radius, self.thickness):
-            var.trace_add("write", lambda *_: self._refresh_active_preview())
+    @staticmethod
+    def _clear_layout(layout) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
 
-    def _on_tool_changed(self) -> None:
+    def _on_radius_changed(self, v: float) -> None:
+        self.radius = v
+        self._refresh_active_preview()
+
+    def _on_ellipticity_changed(self, v: float) -> None:
+        self.ellipticity = v
+        self._refresh_active_preview()
+
+    def _on_angle_changed(self, v: float) -> None:
+        self.angle = v
+        self._refresh_active_preview()
+
+    def _on_thickness_changed(self, v: float) -> None:
+        self.thickness = v
+        self._refresh_active_preview()
+
+    def _on_line_style_changed(self, v: str) -> None:
+        self.line_style = v
+        self._refresh_active_preview()
+
+    def _on_alpha_changed(self, v: float) -> None:
+        self.mask_alpha = int(v)
+        self._alpha_label.setText(f"mask opacity: {self.mask_alpha}%")
+
+    def set_tool(self, value: str) -> None:
+        if value == self.tool:
+            return
+        self.tool = value
+        if hasattr(self, "mode_control"):
+            self.mode_control.set_value(value)
+        if hasattr(self, "_mode_actions"):
+            self._mode_actions[value].setChecked(True)
         self._rebuild_tool_options()
-        self._update_shape_preview(-1000, -1000)
-
-    def _cancel_pending_line(self) -> None:
-        self._line_anchor = None
-        self._line_preview_photo = None
-        if hasattr(self, "canvas"):
-            self.canvas.delete("line_preview")
-
-    def _current_round_params(self) -> tuple[float, float, float]:
-        """(semi-major axis, semi-minor axis, angle) for the ellipse tool.
-
-        The radius slider sets the overall size (a); the ellipticity slider
-        (0-90%) shrinks b = a * (1 - ellipticity/100), so ellipticity=0 is
-        exactly a circle of that radius - there's no separate circle mode.
-        """
-        r = self.radius.get()
-        b = r * (1 - self.ellipticity.get() / 100.0)
-        return r, b, self.angle.get()
+        self._update_shape_preview_state()
 
     # --------------------------------------------------------- image state
 
@@ -865,84 +939,87 @@ class MaskFitsApp:
         try:
             entry.ensure_loaded(self.stretch)
         except Exception as exc:  # noqa: BLE001 - surface any load failure to the user
-            # Without an explicit parent, this dialog isn't a transient child
-            # of the main window, so window managers (macOS especially) can
-            # leave it stacked behind the window that spawned it instead of
-            # in front - lifting the main window first, then passing it as
-            # parent, keeps the error actually visible and modal to it.
-            self.root.lift()
-            self.root.focus_force()
-            messagebox.showerror("maskfits", f"Could not load {entry.path}:\n{exc}", parent=self.root)
+            QMessageBox.critical(self, "maskfits", f"Could not load {entry.path}:\n{exc}")
             entry.path = None
 
         if entry.image is not None and reset_view:
             self.reset_zoom()
 
-        self.filename_label.config(text=os.path.basename(entry.path) if entry.path else "noname")
+        self.filename_label.setText(os.path.basename(entry.path) if entry.path else "noname")
         self._update_extension_picker()
-        # The filename's own width feeds into the toolbar's wrap decision
-        # (see _reflow_toolbar), but changing a label's text doesn't itself
-        # change .inner's size, so the reflow's <Configure> binding won't
-        # fire from this alone - check explicitly once the label's new width
-        # is actually laid out.
-        self.root.after_idle(self._reflow_toolbar)
-        self.counter_label.config(text=f"{self.index + 1}/{len(self.entries)}")
+        self.counter_label.setText(f"{self.index + 1}/{len(self.entries)}")
         self._sync_isopy_cuts()
         self._update_cuts_display()
         self._update_smooth_button()
         self._update_bin_button()
-        self.status.config(text=f"loaded {entry.path}" if entry.path else "new file")
+        self.status.setText(f"loaded {entry.path}" if entry.path else "new file")
 
         self.render()
 
     def _update_extension_picker(self) -> None:
-        """Rebuilds the HDU-picker dropdown next to the filename for the
-        current entry - only interactive once its file actually has more
-        than one image extension to choose from (see Entry.ensure_loaded,
-        which populates available_extensions on first load)."""
         entry = self.entry
-        menu = self.ext_menu["menu"]
-        menu.delete(0, "end")
+        self.ext_combo.blockSignals(True)
+        self.ext_combo.clear()
         extensions = entry.available_extensions
-        current_label = next((label for i, label in extensions if i == entry.ext), "")
-        self.ext_var.set(current_label)
-        if len(extensions) <= 1:
-            self.ext_menu.configure(state="disabled")
-            return
         for idx, label in extensions:
-            menu.add_command(label=label, command=lambda i=idx: self.switch_extension(i))
-        self.ext_menu.configure(state="normal")
+            self.ext_combo.addItem(label, idx)
+        current_index = next((i for i, (idx, _) in enumerate(extensions) if idx == entry.ext), -1)
+        if current_index >= 0:
+            self.ext_combo.setCurrentIndex(current_index)
+        self.ext_combo.setEnabled(len(extensions) > 1)
+        self.ext_combo.blockSignals(False)
+
+    def _on_ext_combo_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        ext = self.ext_combo.itemData(index)
+        if ext is not None:
+            self.switch_extension(ext)
 
     @staticmethod
     def _fmt(value: float) -> str:
         return f"{value:.4g}"
 
     def _update_cuts_display(self) -> None:
-        """Refresh the embedded histogram from the current entry's data and
-        cut levels - call whenever either could have changed: loading an
-        image, switching the stretch/cut preset, or toggling smoothing/binning
-        (which changes the array the histogram should actually reflect)."""
         if self.image is not None:
             self.cuts_histogram.set_data(self.image.data, self.entry.lowcut, self.entry.highcut)
 
     def _sync_isopy_cuts(self) -> None:
-        """IsoPy's cut levels come from its own fixed surface-brightness
-        formula (see Entry.isopy_cuts_and_lut), not user editing - forces
-        the current entry's lowcut/highcut to them, and keeps the histogram
-        locked, whenever IsoPy is the active colormap. Called on every
-        colormap change and on every load_current, since navigating to a
-        different entry (or a theme rebuild recreating the histogram widget
-        from scratch) needs this reapplied too - each entry has its own
-        header/WCS, so its isopy cuts can differ from the previous entry's."""
-        is_isopy = self.colormap.get() == ISOPY_NAME
+        """Applies (or un-applies) IsoPy's fixed cuts to the current entry.
+
+        Called both when the colormap itself changes and when navigating
+        between images while IsoPy stays active (each entry has its own
+        header/WCS-derived IsoPy cuts) - either way, the entry's own
+        pre-IsoPy lowcut/highcut are cached the first time IsoPy overwrites
+        them, and restored as soon as IsoPy is no longer the active
+        colormap, so switching back to e.g. ZScale brings back what the
+        user actually had before, not IsoPy's values.
+        """
+        entry = self.entry
+        is_isopy = self.colormap == ISOPY_NAME
         if is_isopy and self.image is not None:
-            vmin, vmax, _ = self.entry.isopy_cuts_and_lut()
-            self.entry.lowcut, self.entry.highcut = vmin, vmax
+            if entry._pre_isopy_lowcut is None:
+                entry._pre_isopy_lowcut, entry._pre_isopy_highcut = entry.lowcut, entry.highcut
+            vmin, vmax, _ = entry.isopy_cuts_and_lut()
+            entry.lowcut, entry.highcut = vmin, vmax
+        elif entry._pre_isopy_lowcut is not None:
+            entry.lowcut, entry.highcut = entry._pre_isopy_lowcut, entry._pre_isopy_highcut
+            entry._pre_isopy_lowcut = None
+            entry._pre_isopy_highcut = None
         self.cuts_histogram.set_enabled(not is_isopy)
 
-    def _on_colormap_changed(self, *_args: object) -> None:
+    def set_colormap(self, name: str) -> None:
+        if name == self.colormap:
+            return
+        self.colormap = name
+        if hasattr(self, "_color_actions"):
+            self._color_actions[name].setChecked(True)
         self._sync_isopy_cuts()
         self._update_cuts_display()
+        self.render()
+
+    def _on_invert_action(self, checked: bool) -> None:
+        self.invert_colormap = checked
         self.render()
 
     def _on_histogram_apply(self, lowcut: float, highcut: float) -> None:
@@ -957,14 +1034,19 @@ class MaskFitsApp:
         self.render()
 
     def reset_scale(self) -> None:
-        self.scale_function.set("linear")
+        self.set_scale_function("linear")
+
+    def set_scale_function(self, value: str) -> None:
+        if value == self.scale_function:
+            return
+        self.scale_function = value
+        if hasattr(self, "scale_control"):
+            self.scale_control.set_value(value)
+        if hasattr(self, "_scale_actions"):
+            self._scale_actions[value].setChecked(True)
+        self.render()
 
     def switch_extension(self, ext: int) -> None:
-        """Reloads the current entry's image data from a different HDU of
-        the same file - unlike ordinary navigation (_release_mask), the
-        underlying pixel data itself is changing, so the cached FitsImage
-        has to be dropped and re-read from disk, not just have its mask/
-        smoothing/binning state reset."""
         entry = self.entry
         if entry.path is None or ext == entry.ext:
             return
@@ -976,16 +1058,6 @@ class MaskFitsApp:
     # ------------------------------------------------------------- navigation
 
     def _release_mask(self) -> None:
-        """Drop the current entry's in-memory mask (and any smoothing/binning
-        caches) before navigating away from it.
-
-        Each mask - and each smoothing/binning cache array - is a full- (or
-        near full-) resolution array; for a multi-image session with large
-        FITS files, keeping every visited image's copies around adds up fast.
-        Export first if you want to keep the mask - navigating back re-loads
-        the image (fast, it stays cached) with a fresh empty mask and no
-        smoothing/binning applied.
-        """
         entry = self.entry
         image = entry.image
         if image is not None:
@@ -1012,9 +1084,9 @@ class MaskFitsApp:
         self._redo = None
 
     def open_files(self) -> None:
-        paths = filedialog.askopenfilenames(
-            title="Open FITS files",
-            filetypes=[("FITS files", "*.fits *.fit *.fts *.fits.gz"), ("All files", "*.*")],
+        paths, _filter = QFileDialog.getOpenFileNames(
+            self, "Open FITS files", "",
+            "FITS files (*.fits *.fit *.fts *.fits.gz);;All files (*.*)",
         )
         if not paths:
             return
@@ -1054,45 +1126,37 @@ class MaskFitsApp:
         self.image.mask[:] = False
         self._mark_mask_dirty()
         self.render()
-        self.status.config(text="mask cleared")
+        self.status.setText("mask cleared")
 
-    def _ensure_original(self, entry: "Entry") -> None:
-        """Capture entry's true, pristine data the first time smoothing or
-        binning is ever used - every other cache is derived from this one
-        array, which is never itself overwritten."""
+    # ------------------------------------------------------------- smoothing
+
+    def _ensure_original(self, entry: Entry) -> None:
         if entry.original_data is None:
             entry.original_data = entry.image.data
 
-    def _smoothed_cache_for(self, entry: "Entry", sigma: float) -> np.ndarray:
+    def _smoothed_cache_for(self, entry: Entry, sigma: float) -> np.ndarray:
         if entry.smoothed_cache is None or entry._smoothed_cache_sigma != sigma:
             entry.smoothed_cache = gaussian_smooth(entry.original_data, sigma)
             entry._smoothed_cache_sigma = sigma
         return entry.smoothed_cache
 
-    def _binned_cache_for(self, entry: "Entry", factor: int) -> np.ndarray:
+    def _binned_cache_for(self, entry: Entry, factor: int) -> np.ndarray:
         if entry.binned_cache is None or entry._binned_cache_factor != factor:
             entry.binned_cache = bin_func(entry.original_data, factor)
             entry._binned_cache_factor = factor
         return entry.binned_cache
 
-    def _smoothed_binned_cache_for(self, entry: "Entry", sigma: float, factor: int) -> np.ndarray:
+    def _smoothed_binned_cache_for(self, entry: Entry, sigma: float, factor: int) -> np.ndarray:
         if (entry.smoothed_binned_cache is None
                 or entry._smoothed_binned_cache_sigma != sigma
                 or entry._smoothed_binned_cache_factor != factor):
-            # Smooth first, then bin - low-pass filtering before downsampling
-            # avoids the blockiness/aliasing that binning-then-smoothing a
-            # much coarser grid would introduce. Reuses smoothed_cache when
-            # it's already fresh at this sigma instead of reblurring.
             base = self._smoothed_cache_for(entry, sigma)
             entry.smoothed_binned_cache = bin_func(base, factor)
             entry._smoothed_binned_cache_sigma = sigma
             entry._smoothed_binned_cache_factor = factor
         return entry.smoothed_binned_cache
 
-    def _current_display_data(self, entry: "Entry") -> np.ndarray:
-        """The array for entry's current is_smoothed/is_binned combination -
-        one of up to four cached arrays (original / smoothed / binned /
-        smoothed-then-binned), computed and cached lazily."""
+    def _current_display_data(self, entry: Entry) -> np.ndarray:
         if entry.is_smoothed and entry.is_binned:
             return self._smoothed_binned_cache_for(entry, entry.smooth_sigma, entry.bin_factor)
         if entry.is_smoothed:
@@ -1101,30 +1165,15 @@ class MaskFitsApp:
             return self._binned_cache_for(entry, entry.bin_factor)
         return entry.original_data
 
-    def _mark_mask_dirty(self, entry: Optional["Entry"] = None) -> None:
-        """Flag that a working mask was just directly edited (painted, erased,
-        cleared, undone, or redone) - invalidates the bin/unbin reshape
-        shortcuts in _unbin_mask_cached/_bin_mask_cached below, since the
-        full-res mask no longer matches what they last saw. Defaults to the
-        current entry; undo/redo pass the entry they actually touched, which
-        may not be the one currently on screen."""
+    def _mark_mask_dirty(self, entry: Optional[Entry] = None) -> None:
         (entry if entry is not None else self.entry).mask_dirty = True
 
-    def _unbin_mask_cached(self, entry: "Entry") -> np.ndarray:
-        """Full-res mask matching entry.image.mask's current (binned)
-        content. Reshaping a binned mask back to full resolution touches the
-        whole full-res array regardless of bin factor, so if nothing has been
-        painted since it was last binned down, this just reuses mask_backup
-        (exactly what unbin_mask would reconstruct anyway) instead of paying
-        for that reshape again."""
+    def _unbin_mask_cached(self, entry: Entry) -> np.ndarray:
         if not entry.mask_dirty:
             return entry.mask_backup
         return unbin_mask(entry.image.mask, entry.bin_factor, entry.mask_backup)
 
-    def _bin_mask_cached(self, entry: "Entry", full_res_mask: np.ndarray, factor: int) -> np.ndarray:
-        """Binned-resolution mask for full_res_mask at `factor`, reusing the
-        last binned-down result at this same factor when nothing has changed
-        since (same reasoning as _unbin_mask_cached, other direction)."""
+    def _bin_mask_cached(self, entry: Entry, full_res_mask: np.ndarray, factor: int) -> np.ndarray:
         if (not entry.mask_dirty and entry._binned_mask_cache is not None
                 and entry._binned_mask_cache_factor == factor):
             return entry._binned_mask_cache
@@ -1134,32 +1183,24 @@ class MaskFitsApp:
         return computed
 
     def _read_sigma(self) -> float:
-        """Parse/clamp the sigma box, writing the cleaned-up value back to it."""
         try:
-            sigma = float(self.smooth_sigma_var.get())
+            sigma = float(self.smooth_sigma_entry.text())
         except ValueError:
             entry = self.entry
             sigma = entry.smooth_sigma if entry.smooth_sigma is not None else 3.0
         sigma = max(sigma, 0.0)
-        self.smooth_sigma_var.set(self._fmt(sigma))
+        self.smooth_sigma_entry.setText(self._fmt(sigma))
         return sigma
 
     def _update_smooth_button(self) -> None:
         smoothed = self.image is not None and self.entry.is_smoothed
-        self.smooth_button.set_text("unsmooth" if smoothed else "smooth")
-        self.smooth_button.set_active(smoothed)
+        self.smooth_button.setText("unsmooth" if smoothed else "smooth")
+        self.smooth_button.setChecked(smoothed)
 
-    def _toggle_smoothing(self, _event: Optional[tk.Event] = None) -> None:
-        """Hotkey s / the smooth-unsmooth toolbar button.
-
-        Composable with binning - toggling this only ever changes pixel
-        values, never the array shape or the mask, so it can be freely
-        combined with binning in either order. Whichever of the (up to four)
-        cached arrays the current combination needs is computed once and
-        reused until its sigma/factor actually changes.
-        """
+    def _toggle_smoothing(self) -> None:
         entry = self.entry
         if entry.image is None:
+            self._update_smooth_button()
             return
         if entry.is_smoothed:
             entry.is_smoothed = False
@@ -1167,10 +1208,11 @@ class MaskFitsApp:
             self._update_smooth_button()
             self._update_cuts_display()
             self.render()
-            self.status.config(text="smoothing removed")
+            self.status.setText("smoothing removed")
             return
         sigma = self._read_sigma()
         if sigma <= 0:
+            self._update_smooth_button()
             return
         self._ensure_original(entry)
         entry.smooth_sigma = sigma
@@ -1179,14 +1221,9 @@ class MaskFitsApp:
         self._update_smooth_button()
         self._update_cuts_display()
         self.render()
-        self.status.config(text=f"smoothed (sigma={self._fmt(sigma)})")
+        self.status.setText(f"smoothed (sigma={self._fmt(sigma)})")
 
-    def _apply_sigma_entry(self, _event: Optional[tk.Event] = None) -> None:
-        """Commit the sigma box. If the image is already smoothed, re-smooths
-        from the untouched original at the new sigma (cached, so re-entering a
-        previously-used sigma doesn't recompute) rather than compounding onto
-        the already-blurred data; otherwise just formats/clamps the value for
-        when "smooth" is next pressed."""
+    def _apply_sigma_entry(self) -> None:
         entry = self.entry
         sigma = self._read_sigma()
         if entry.image is None or not entry.is_smoothed:
@@ -1197,51 +1234,37 @@ class MaskFitsApp:
             self._update_smooth_button()
             self._update_cuts_display()
             self.render()
-            self.status.config(text="smoothing removed")
+            self.status.setText("smoothing removed")
             return
         entry.smooth_sigma = sigma
         entry.image.data = self._current_display_data(entry)
         self._update_cuts_display()
         self.render()
-        self.status.config(text=f"smoothed (sigma={self._fmt(sigma)})")
+        self.status.setText(f"smoothed (sigma={self._fmt(sigma)})")
 
     # -------------------------------------------------------------- binning
 
     def _read_bin_factor(self) -> int:
-        """Parse/clamp the bin-factor box, writing the cleaned-up value back to it."""
         try:
-            factor = int(round(float(self.bin_factor_var.get())))
+            factor = int(round(float(self.bin_factor_entry.text())))
         except ValueError:
             entry = self.entry
             factor = entry.bin_factor if entry.bin_factor is not None else 3
         factor = max(factor, 1)
         if self.image is not None:
             factor = min(factor, max(min(self.image.data.shape), 1))
-        self.bin_factor_var.set(str(factor))
+        self.bin_factor_entry.setText(str(factor))
         return factor
 
     def _update_bin_button(self) -> None:
         binned = self.image is not None and self.entry.is_binned
-        self.bin_button.set_text("unbin" if binned else "bin")
-        self.bin_button.set_active(binned)
+        self.bin_button.setText("unbin" if binned else "bin")
+        self.bin_button.setChecked(binned)
 
-    def _toggle_binning(self, _event: Optional[tk.Event] = None) -> None:
-        """Hotkey b / the bin-unbin toolbar button.
-
-        Composable with smoothing - see _toggle_smoothing/_current_display_data
-        for the data side. The mask is additionally reshaped to match: going
-        in, the current full-res mask is block-OR'd down to the binned grid so
-        painting continues to work; coming back out, whatever's currently on
-        the binned mask (including edits made while binned) is expanded back
-        over the full-res mask. Export always uses the full-res mask
-        regardless of which state this is currently in - see _full_res_mask /
-        export_mask. Binning changes the array shape, so the view center and
-        the tool's radius/thickness are rescaled to match (see
-        _rescale_view_for_bin_change) rather than snapping back to zoom 1 -
-        you keep looking at the same region, at the same apparent zoom.
-        """
+    def _toggle_binning(self) -> None:
         entry = self.entry
         if entry.image is None:
+            self._update_bin_button()
             return
         if entry.is_binned:
             old_factor = entry.bin_factor
@@ -1255,10 +1278,11 @@ class MaskFitsApp:
             self._update_bin_button()
             self._update_cuts_display()
             self._rescale_view_for_bin_change(old_factor)
-            self.status.config(text="binning removed")
+            self.status.setText("binning removed")
             return
         factor = self._read_bin_factor()
         if factor <= 1:
+            self._update_bin_button()
             return
         self._ensure_original(entry)
         entry.mask_backup = entry.image.mask
@@ -1272,21 +1296,9 @@ class MaskFitsApp:
         self._update_bin_button()
         self._update_cuts_display()
         self._rescale_view_for_bin_change(1.0 / factor)
-        self.status.config(text=f"binned {factor}x{factor}")
+        self.status.setText(f"binned {factor}x{factor}")
 
-    def _apply_bin_entry(self, _event: Optional[tk.Event] = None) -> None:
-        """Commit the bin-factor box. If the image is already binned, re-bins
-        from the untouched original at the new factor (cached, so re-entering
-        a previously-used factor doesn't recompute); otherwise just
-        formats/clamps the value for when "bin" is next pressed.
-
-        Changing the factor while binned first expands the current binned mask
-        (which may hold edits made at the old factor) back over the full-res
-        mask, then re-derives both data and mask fresh at the new factor - so
-        edits are never lost and never compounded. The view center and the
-        tool's radius/thickness are rescaled to match the new factor (see
-        _rescale_view_for_bin_change) rather than snapping back to zoom 1.
-        """
+    def _apply_bin_entry(self) -> None:
         entry = self.entry
         factor = self._read_bin_factor()
         if entry.image is None or not entry.is_binned:
@@ -1303,7 +1315,7 @@ class MaskFitsApp:
             self._update_bin_button()
             self._update_cuts_display()
             self._rescale_view_for_bin_change(old_factor)
-            self.status.config(text="binning removed")
+            self.status.setText("binning removed")
             return
         full_res_mask = self._unbin_mask_cached(entry)
         entry.mask_backup = full_res_mask
@@ -1315,85 +1327,44 @@ class MaskFitsApp:
         self._redo = None
         self._update_cuts_display()
         self._rescale_view_for_bin_change(old_factor / factor)
-        self.status.config(text=f"binned {factor}x{factor}")
+        self.status.setText(f"binned {factor}x{factor}")
 
     def _rescale_view_for_bin_change(self, k: float) -> None:
-        """Keep the same physical region and the same effective mask size in
-        view across a binning change that rescales the pixel grid: new_pos =
-        old_pos * k. k=1/factor when binning turns on (each new pixel covers
-        `factor` old ones, so the same point sits at 1/factor its old
-        coordinate - e.g. an 8px radius becomes 4px at factor 2), k=factor
-        when it turns off, and k=old_factor/new_factor when the factor
-        changes while already binned.
-
-        zoom_mult itself is left untouched: it's already a ratio relative to
-        fit-to-window, and fit_zoom (recomputed here from the new array
-        shape) scales by the same 1/k automatically, so the ratio - and thus
-        the apparent on-screen zoom - stays correct without adjustment.
-
-        fit_zoom is recomputed FIRST, before radius/thickness are touched:
-        setting those fires the shape-preview trace synchronously (see
-        _refresh_active_preview), and that preview sizes itself in canvas
-        pixels as radius * self.zoom. Rescaling radius while self.zoom still
-        reflects the old (pre-change) array size means the two are briefly
-        out of sync - one already rescaled, the other not yet - and their
-        product can overshoot by the full bin factor (e.g. a radius newly
-        expanded by 20x, multiplied by a zoom that's still 20x too high from
-        the old, much smaller binned array) instead of cancelling out.
-        """
         self.view_cx *= k
         self.view_cy *= k
         if self.image is not None:
             self.fit_zoom = self._compute_fit_zoom()
-        self.radius.set(max(min(self.radius.get() * k, MAX_SHAPE_SIZE), RADIUS_MIN))
-        self.thickness.set(max(min(int(round(self.thickness.get() * k)), MAX_SHAPE_SIZE), 1))
+        self.radius = max(min(self.radius * k, MAX_SHAPE_SIZE), RADIUS_MIN)
+        self.thickness = max(min(int(round(self.thickness * k)), MAX_SHAPE_SIZE), 1)
+        self._sync_tool_option_widgets()
         self._update_zoom_label()
         self.render()
 
-    def _full_res_mask(self, entry: "Entry") -> np.ndarray:
-        """entry.image.mask translated back to full (unbinned) resolution -
-        what export_mask always writes, regardless of whether the display is
-        currently binned for painting convenience."""
+    def _sync_tool_option_widgets(self) -> None:
+        """Refresh the tool-option sliders/entries after a programmatic value
+        change (e.g. a bin-factor rescale) that didn't go through their own
+        widgets - cheapest correct way is just rebuilding the row, since the
+        rows are already torn down/rebuilt on every tool switch anyway."""
+        self._rebuild_tool_options()
+
+    def _full_res_mask(self, entry: Entry) -> np.ndarray:
         if entry.is_binned:
             return self._unbin_mask_cached(entry)
         return entry.image.mask
 
-    def _defocus_active_entry(self, _event: Optional[tk.Event] = None) -> None:
-        if isinstance(self.root.focus_get(), tk.Entry):
-            self.root.focus_set()
-
-    def _on_global_click(self, event: tk.Event) -> None:
-        """Release focus from whatever entry box was being edited as soon as
-        the user clicks anywhere that isn't itself a text box."""
-        if not isinstance(event.widget, tk.Entry):
-            self._defocus_active_entry()
-
     def _adjust_shape_size(self, direction: int) -> None:
-        """Hotkey e/w: grow/shrink the active tool's size (radius/thickness).
-
-        The step shrinks as you zoom in - at the default zoom (zoom_mult=1)
-        it's the usual 5px, but at 4x zoom each pixel is 4x bigger on screen
-        so a 5px jump is coarse; scaling the step down by zoom_mult (floored
-        at 1px) gives pixel-by-pixel control once you're zoomed in enough to
-        actually see individual pixels.
-        """
         step = max(1, round(5 / self.zoom_mult))
-        tool = self.tool.get()
-        if tool == "ellipse":
-            var, lo, hi = self.radius, RADIUS_MIN, MAX_SHAPE_SIZE
-        elif tool == "line":
-            var, lo, hi = self.thickness, 1, MAX_SHAPE_SIZE
+        if self.tool == "ellipse":
+            self.radius = max(RADIUS_MIN, min(self.radius + direction * step, MAX_SHAPE_SIZE))
+        elif self.tool == "line":
+            self.thickness = max(1, min(self.thickness + direction * step, MAX_SHAPE_SIZE))
         else:
             return
-        var.set(max(lo, min(var.get() + direction * step, hi)))
+        self._sync_tool_option_widgets()
         self._refresh_active_preview()
 
     def _hotkey_digit(self, n: int) -> None:
-        """Hotkeys 1-4 are mode-dependent: in ellipse mode they nudge
-        ellipticity (1/2) or angle (3/4); in satellite mode 1/2/3 jump
-        straight to the corresponding line style (Segment/Arrow/Line)."""
-        tool = self.tool.get()
-        if tool == "ellipse":
+        if self.tool == "ellipse":
             if n == 1:
                 self._adjust_ellipticity(-1)
             elif n == 2:
@@ -1402,22 +1373,22 @@ class MaskFitsApp:
                 self._adjust_angle(-1)
             elif n == 4:
                 self._adjust_angle(1)
-        elif tool == "line" and 1 <= n <= len(LINE_STYLES):
-            self.line_style.set(LINE_STYLES[n - 1][0])
+        elif self.tool == "line" and 1 <= n <= len(LINE_STYLES):
+            self.line_style = LINE_STYLES[n - 1][0]
+            self._sync_tool_option_widgets()
+            self._refresh_active_preview()
 
     def _adjust_ellipticity(self, direction: int) -> None:
-        """Hotkeys 1/2: lower/raise ellipticity. Ellipse mode only."""
-        if self.tool.get() != "ellipse":
+        if self.tool != "ellipse":
             return
-        step = 2
-        self.ellipticity.set(max(0, min(self.ellipticity.get() + direction * step, 90)))
+        self.ellipticity = max(0, min(self.ellipticity + direction * 2, 90))
+        self._sync_tool_option_widgets()
 
     def _adjust_angle(self, direction: int) -> None:
-        """Hotkeys 3/4: lower/raise angle. Ellipse mode only."""
-        if self.tool.get() != "ellipse":
+        if self.tool != "ellipse":
             return
-        step = 2
-        self.angle.set(max(-180, min(self.angle.get() + direction * step, 180)))
+        self.angle = max(-180, min(self.angle + direction * 2, 180))
+        self._sync_tool_option_widgets()
 
     # -------------------------------------------------------------- export
 
@@ -1428,88 +1399,68 @@ class MaskFitsApp:
             return stem[: -len(".fits.gz")]
         return os.path.splitext(stem)[0]
 
-    def _build_mask_hdu(self, entry: "Entry") -> "fits.PrimaryHDU":
+    def _build_mask_hdu(self, entry: Entry) -> "fits.PrimaryHDU":
         header = entry.image.header.copy()
         header["OBJECT"] = "MASK"
-        # entry.image.mask is True where the user painted a mask, in WORKING (possibly
-        # load-time-transposed, and possibly currently binned for painting
-        # convenience) orientation. _full_res_mask undoes the binning (if any)
-        # so the exported mask always matches the original file's resolution;
-        # detranspose back to match the ORIGINAL file/header before writing.
-        # Exported convention is inverted (0 = masked/excluded, 1 = kept),
-        # matching typical good-pixel maps.
         full_res_mask = self._full_res_mask(entry)
         mask = full_res_mask.T if entry.image.rotated else full_res_mask
         exported = (~mask).astype("uint8")
         return fits.PrimaryHDU(data=exported, header=header)
 
     def export_mask(self) -> None:
-        """Quick-save: the sidebar 'export mask' button. Always writes
-        mask_<original filename> next to the source file, no prompt."""
         entry = self.entry
         if entry.image is None or entry.path is None:
-            messagebox.showwarning("maskfits", "No image loaded to export a mask for.", parent=self.root)
+            QMessageBox.warning(self, "maskfits", "No image loaded to export a mask for.")
             return
         out_path = os.path.join(os.path.dirname(entry.path), f"mask_{self._mask_stem(entry.path)}.fits")
         self._build_mask_hdu(entry).writeto(out_path, overwrite=True)
-        self.status.config(text=f"exported mask to {out_path}")
+        self.status.setText(f"exported mask to {out_path}")
 
     def export_mask_as(self) -> None:
-        """File > Save Mask As...: prompts for a location/name via a file
-        browser, starting in the directory maskfits was launched from and
-        pre-filled with the same mask_<original filename> default."""
         entry = self.entry
         if entry.image is None or entry.path is None:
-            messagebox.showwarning("maskfits", "No image loaded to export a mask for.", parent=self.root)
+            QMessageBox.warning(self, "maskfits", "No image loaded to export a mask for.")
             return
         default_name = f"mask_{self._mask_stem(entry.path)}.fits"
-        out_path = filedialog.asksaveasfilename(
-            title="Save Mask As",
-            initialdir=os.getcwd(),
-            initialfile=default_name,
-            defaultextension=".fits",
-            filetypes=[("FITS files", "*.fits *.fit *.fts"), ("All files", "*.*")],
+        out_path, _filter = QFileDialog.getSaveFileName(
+            self, "Save Mask As", os.path.join(os.getcwd(), default_name),
+            "FITS files (*.fits *.fit *.fts);;All files (*.*)",
         )
         if not out_path:
             return
         self._build_mask_hdu(entry).writeto(out_path, overwrite=True)
-        self.status.config(text=f"exported mask to {out_path}")
+        self.status.setText(f"exported mask to {out_path}")
 
     # ---------------------------------------------------------- auto mask
 
     def open_auto_mask(self) -> None:
         if self.image is None:
             return
-        if self._auto_mask_window is not None and self._auto_mask_window.winfo_exists():
-            self._auto_mask_window.lift()
-            self._auto_mask_window.focus_force()
+        if self._auto_mask_window is not None:
+            self._auto_mask_window.raise_()
+            self._auto_mask_window.activateWindow()
             return
         self._auto_mask_window = AutoMaskWindow(self, self.entry)
+        self._auto_mask_window.show()
 
-    def set_auto_mask_preview(self, entry: "Entry", preview: np.ndarray) -> None:
-        """Called by AutoMaskWindow (on Apply) to show/refresh its pending
-        preview overlay - not written into the real mask yet."""
+    def set_auto_mask_preview(self, entry: Entry, preview: np.ndarray) -> None:
         self._auto_mask_entry = entry
         self._auto_mask_preview = preview
         self.render()
 
-    def confirm_auto_mask(self, entry: "Entry", preview: np.ndarray) -> None:
-        """Called by AutoMaskWindow's Confirm button: merges the preview into
-        the entry's real (working-resolution) mask, the same way manual
-        painting already does - undoable, and independent of whether the
-        image is currently binned/smoothed."""
+    def confirm_auto_mask(self, entry: Entry, preview: np.ndarray) -> None:
         if entry.image is not None and preview.shape == entry.image.mask.shape:
             if entry is self.entry:
                 self._push_undo()
             entry.image.mask = entry.image.mask | preview
             self._mark_mask_dirty(entry)
-            self.status.config(text=f"auto mask applied: {int(preview.sum()):,} px")
+            self.status.setText(f"auto mask applied: {int(preview.sum()):,} px")
         else:
-            self.status.config(text="auto mask discarded: image changed while the window was open")
+            self.status.setText("auto mask discarded: image changed while the window was open")
         self._clear_auto_mask_preview()
 
-    def discard_auto_mask(self, _entry: "Entry") -> None:
-        self.status.config(text="auto mask discarded")
+    def discard_auto_mask(self, _entry: Entry) -> None:
+        self.status.setText("auto mask discarded")
         self._clear_auto_mask_preview()
 
     def _clear_auto_mask_preview(self) -> None:
@@ -1526,7 +1477,7 @@ class MaskFitsApp:
         self._undo = (self.index, self.image.mask.copy())
         self._redo = None  # a fresh edit invalidates any pending redo
 
-    def _on_undo(self, _event: Optional[tk.Event] = None) -> None:
+    def undo(self) -> None:
         if self._undo is None:
             return
         idx, mask = self._undo
@@ -1539,7 +1490,7 @@ class MaskFitsApp:
             if idx == self.index:
                 self.render()
 
-    def _on_redo(self, _event: Optional[tk.Event] = None) -> None:
+    def redo(self) -> None:
         if self._redo is None:
             return
         idx, mask = self._redo
@@ -1552,42 +1503,26 @@ class MaskFitsApp:
             if idx == self.index:
                 self.render()
 
-    def _on_secondary_click(self, event: tk.Event) -> None:
-        """The mouse button that's the platform's actual right-click: erases,
-        the same in both ellipse mode (an eraser, mirroring left-click's
-        paint) and satellite mode (erases along a trail, or sets/finalizes an
-        erase-mode line start point, same as _on_button already does for any
-        click once an anchor is pending)."""
-        self._on_button(event, erase=True)
-
-    def _on_secondary_drag(self, event: tk.Event) -> None:
-        """Dragging with the right-click button erases continuously - a
-        no-op in satellite mode, which doesn't use drag at all."""
-        self._on_drag(event, erase=True)
-
-    def _on_middle_click(self, event: tk.Event) -> None:
-        """The mouse button that's the platform's actual middle-click: does
-        nothing in ellipse mode (right-click alone is the eraser there); in
-        satellite mode it exits a pending line start point (like Esc), or
-        redoes if nothing's pending."""
-        if self.tool.get() != "ellipse":
+    def _on_middle_click(self) -> None:
+        if self.tool != "ellipse":
             self._on_cancel_or_redo()
 
-    def _on_cancel_or_redo(self, _event: Optional[tk.Event] = None) -> None:
-        """Cancels a pending line start point (like Esc) if one is currently
-        clicked in satellite mode; otherwise redoes, its usual meaning."""
-        if self.tool.get() == "line" and self._line_anchor is not None:
+    def _on_cancel_or_redo(self) -> None:
+        if self.tool == "line" and self._line_anchor is not None:
             self._cancel_pending_line()
             return
-        self._on_redo()
+        self.redo()
+
+    def _cycle_colormap(self) -> None:
+        idx = COLORMAP_NAMES.index(self.colormap)
+        self.set_colormap(COLORMAP_NAMES[(idx + 1) % len(COLORMAP_NAMES)])
 
     # ------------------------------------------------------- coordinate math
 
     def img_to_canvas(self, ix: float, iy: float) -> tuple[float, float]:
         # y is inverted relative to array/canvas indexing: FITS convention
-        # (and plt.imshow(origin="lower")) puts row 0 at the BOTTOM of the
-        # image, while canvas y (like array row index) increases downward -
-        # so increasing iy must map to a DEcreasing canvas y, not increasing.
+        # (row 0 at the bottom of the image) while canvas y increases
+        # downward - so increasing iy must map to a DEcreasing canvas y.
         cx = self.canvas_w / 2 + (ix - self.view_cx) * self.zoom
         cy = self.canvas_h / 2 - (iy - self.view_cy) * self.zoom
         return cx, cy
@@ -1607,19 +1542,17 @@ class MaskFitsApp:
 
     def _update_zoom_label(self) -> None:
         text = f"{self.zoom_mult:.2f}".rstrip("0").rstrip(".")
-        self.zoom_label.config(text=text or "1")
-
-    def _on_canvas_resize(self, event: tk.Event) -> None:
-        self.canvas_w, self.canvas_h = event.width, event.height
-        if self.image is not None:
-            self.fit_zoom = self._compute_fit_zoom()
-        self.render()
+        self.zoom_label.setText(text or "1")
 
     def render(self) -> None:
-        self.render_magnifier()
-        self.canvas.delete("img")
+        if hasattr(self, "magnifier"):
+            self.magnifier.update()
+        self._base_pixmap = None
+        if not hasattr(self, "canvas"):
+            return
         image = self.image
         if image is None or self.canvas_w <= 1:
+            self.canvas.update()
             return
 
         data = image.data
@@ -1631,6 +1564,7 @@ class MaskFitsApp:
         y0 = max(int(np.floor(min(iy0, iy1))), 0)
         y1 = min(int(np.ceil(max(iy0, iy1))), ny)
         if x1 <= x0 or y1 <= y0:
+            self.canvas.update()
             return
 
         entry = self.entry
@@ -1641,9 +1575,6 @@ class MaskFitsApp:
         # When zoomed out, downsample toward display resolution BEFORE the
         # per-pixel stretch/colormap work, instead of computing it at full
         # source resolution and throwing most of it away in the final resize.
-        # For a huge image at fit-to-window zoom this is the difference between
-        # processing tens of millions of pixels and a couple million - the
-        # actual source of the sluggishness, not rotation-related overhead.
         step_x = max(crop_w // max(disp_w, 1), 1)
         step_y = max(crop_h // max(disp_h, 1), 1)
         crop = data[y0:y1:step_y, x0:x1:step_x]
@@ -1656,14 +1587,6 @@ class MaskFitsApp:
 
         self._tint_masked(rgb, mask_crop)
 
-        # Auto Mask's pending preview overlay (see set_auto_mask_preview) -
-        # drawn ON TOP of the image + real mask, in a different color, so it
-        # reads as "about to be masked" rather than blending into the
-        # already-applied manual mask. Guarded by shape/entry identity since
-        # it's a stale snapshot from whatever resolution was active when the
-        # auto mask window last applied - it goes stale (and is just skipped,
-        # not shown wrong) if binning/smoothing changes while the window is
-        # still open, or if a different image entry is now on screen.
         if (self._auto_mask_preview is not None and self._auto_mask_entry is entry
                 and self._auto_mask_preview.shape == image.mask.shape):
             preview_crop = self._auto_mask_preview[y0:y1:step_y, x0:x1:step_x]
@@ -1671,72 +1594,52 @@ class MaskFitsApp:
 
         # crop's row 0 is array row y0 (the smallest iy in view), but with
         # y0 = bottom_row and y1 = top_row - so flip vertically before
-        # handing it to PIL, which always draws its own row 0 at the top.
-        rgb = rgb[::-1]
+        # handing it to Qt, which always draws its own row 0 at the top.
+        rgb = np.ascontiguousarray(rgb[::-1])
 
-        pil_img = Image.fromarray(rgb, mode="RGB")
-        resample = Image.NEAREST if self.zoom >= 1 else Image.BOX
-        pil_img = pil_img.resize((disp_w, disp_h), resample)
+        qimg = QImage(rgb.data, crop_w, crop_h, 3 * crop_w, QImage.Format.Format_RGB888)
+        pixmap = QPixmap.fromImage(qimg)
+        resample = (Qt.TransformationMode.FastTransformation if self.zoom >= 1
+                    else Qt.TransformationMode.SmoothTransformation)
+        pixmap = pixmap.scaled(disp_w, disp_h, Qt.AspectRatioMode.IgnoreAspectRatio, resample)
 
-        # anchor="nw" below places the image's (now-flipped) top-left corner
-        # at this canvas point - that corner corresponds to image coordinate
-        # (x0, y1), the crop's top edge under the inverted y-axis, not
-        # (x0, y0) which is now its bottom edge.
+        # anchor point below places the (now-flipped) top-left corner at this
+        # canvas point - that corner corresponds to image coordinate (x0, y1),
+        # the crop's top edge under the inverted y-axis, not (x0, y0).
         cx0, cy0 = self.img_to_canvas(x0, y1)
-        self._photo = ImageTk.PhotoImage(pil_img)
-        self.canvas.create_image(cx0, cy0, image=self._photo, anchor="nw", tags="img")
-        self.canvas.tag_lower("img")
-        self._refresh_active_preview()
+        self._base_pixmap = pixmap
+        self._base_pos = QPointF(cx0, cy0)
+        self.canvas.update()
 
     def _active_lut(self) -> np.ndarray:
-        """The current colormap's LUT, reversed if Invert Colormap is on.
-
-        IsoPy's LUT depends on the current entry's own header/WCS (see
-        Entry.isopy_cuts_and_lut), so unlike every other colormap it isn't a
-        static lookup in COLORMAP_LUTS."""
-        name = self.colormap.get()
+        name = self.colormap
         if name == ISOPY_NAME:
             _, _, lut = self.entry.isopy_cuts_and_lut()
         else:
             lut = COLORMAP_LUTS[name]
-        return lut[::-1] if self.invert_colormap.get() else lut
-
-    def _cycle_colormap(self, _event: Optional[tk.Event] = None) -> None:
-        idx = COLORMAP_NAMES.index(self.colormap.get())
-        self.colormap.set(COLORMAP_NAMES[(idx + 1) % len(COLORMAP_NAMES)])
+        return lut[::-1] if self.invert_colormap else lut
 
     def _scale_and_color(self, norm: np.ndarray) -> np.ndarray:
-        """Map cut-normalized [0, 1] values (no NaN) to a uint8 RGB array via the
-        current scale function (stretch curve) and colormap."""
-        stretch = STRETCHES[self.scale_function.get()]
+        stretch = STRETCHES[self.scale_function]
         stretched = np.clip(np.asarray(stretch(norm)), 0.0, 1.0)
         gray = (stretched * 255).astype(np.uint8)
         return self._active_lut()[gray]
 
-    def _mask_tint_hex(self) -> str:
-        """The current (possibly inverted) colormap's mask-tint color as a
-        Tk-friendly hex string, for canvas outlines/lines that should visually
-        match the actual mask."""
-        return "#%02x%02x%02x" % mask_tint_for(self.colormap.get(), self._active_lut())
+    def _mask_tint(self) -> tuple[int, int, int]:
+        return mask_tint_for(self.colormap, self._active_lut(), current_theme().accent)
+
+    def _auto_mask_tint(self) -> tuple[int, int, int]:
+        return auto_mask_tint_for(self.colormap, self._active_lut(), current_theme().blue)
 
     def _tint_masked(self, rgb: np.ndarray, mask_crop: np.ndarray) -> None:
-        """Blend the current colormap's complementary tint into masked pixels, in place."""
         if not mask_crop.any():
             return
-        tint = mask_tint_for(self.colormap.get(), self._active_lut())
-        self._blend_tint(rgb, mask_crop, tint, self.mask_alpha.get() / 100.0)
+        self._blend_tint(rgb, mask_crop, self._mask_tint(), self.mask_alpha / 100.0)
 
     def _tint_preview(self, rgb: np.ndarray, preview_crop: np.ndarray) -> None:
-        """Blend the Auto Mask preview color into flagged pixels, in place.
-
-        Colormap-aware like the real mask tint (see mask_tint_for), but via
-        auto_mask_tint_for - deliberately a DIFFERENT hue for the same
-        colormap, so a pending preview never reads as the same color as an
-        already-applied manual mask, for any colormap or inversion state."""
         if not preview_crop.any():
             return
-        tint = auto_mask_tint_for(self.colormap.get(), self._active_lut())
-        self._blend_tint(rgb, preview_crop, tint, 0.55)
+        self._blend_tint(rgb, preview_crop, self._auto_mask_tint(), 0.55)
 
     @staticmethod
     def _blend_tint(rgb: np.ndarray, region: np.ndarray, tint: tuple[int, int, int], alpha: float) -> None:
@@ -1745,206 +1648,131 @@ class MaskFitsApp:
             blended = channel * (1 - alpha) + tint_v * alpha
             rgb[..., ch] = np.where(region, blended, channel).astype(np.uint8)
 
-    def render_magnifier(self) -> None:
-        canvas = self.magnifier_canvas
-        canvas.delete("all")
-        w, h = PAN_W, PAN_H
-        image = self.image
-        if image is None or self._cursor_img_pos is None:
-            self._draw_grid(canvas, w, h)
+    # ------------------------------------------------------------ overlays
+
+    def _paint_overlays(self, painter: QPainter) -> None:
+        """Hover previews for the active tool - drawn as vector shapes
+        directly (rotated-ellipse outline via the exact same geometry as the
+        real mask stamp, thick flat-capped line for the satellite trail),
+        unlike the old Tkinter version which had to pre-render a small RGBA
+        raster because Tk canvas ovals can't be rotated."""
+        if self.image is None or self._cursor_canvas_pos is None:
             return
-
-        ny, nx = image.data.shape
-        half = MAG_SIZE // 2
-        cx_i = int(round(self._cursor_img_pos[0]))
-        cy_i = int(round(self._cursor_img_pos[1]))
-        x0, y0 = cx_i - half, cy_i - half
-
-        crop = np.full((MAG_SIZE, MAG_SIZE), np.nan, dtype=np.float64)
-        mask_crop = np.zeros((MAG_SIZE, MAG_SIZE), dtype=bool)
-        sx0, sx1 = max(x0, 0), min(x0 + MAG_SIZE, nx)
-        sy0, sy1 = max(y0, 0), min(y0 + MAG_SIZE, ny)
-        if sx1 > sx0 and sy1 > sy0:
-            crop[sy0 - y0:sy1 - y0, sx0 - x0:sx1 - x0] = image.data[sy0:sy1, sx0:sx1]
-            mask_crop[sy0 - y0:sy1 - y0, sx0 - x0:sx1 - x0] = image.mask[sy0:sy1, sx0:sx1]
-
-        entry = self.entry
-        span = max(entry.highcut - entry.lowcut, 1e-12)
-        norm = np.clip((crop - entry.lowcut) / span, 0, 1)
-        norm = np.where(np.isnan(crop), 0.12, norm)
-        rgb = self._scale_and_color(norm)
-
-        self._tint_masked(rgb, mask_crop)
-        rgb = rgb[::-1]  # same bottom-up flip as render() - keep orientation consistent
-
-        square = min(w, h)
-        block = max(square // MAG_SIZE, 1)
-        disp = block * MAG_SIZE
-        pil_img = Image.fromarray(rgb, mode="RGB").resize((disp, disp), Image.NEAREST)
-        self._mag_photo = ImageTk.PhotoImage(pil_img)
-        ox, oy = (w - disp) // 2, (h - disp) // 2
-        canvas.create_image(ox, oy, image=self._mag_photo, anchor="nw")
-
-        cxp, cyp = ox + half * block, oy + half * block
-        canvas.create_rectangle(cxp, cyp, cxp + block, cyp + block, outline=GREEN, width=2)
-
-    @staticmethod
-    def _draw_grid(canvas: tk.Canvas, w: int, h: int, step: int = 10) -> None:
-        for x in range(0, w, step):
-            canvas.create_line(x, 0, x, h, fill=PANEL_BORDER)
-        for y in range(0, h, step):
-            canvas.create_line(0, y, w, y, fill=PANEL_BORDER)
-
-    # ---------------------------------------------------------------- input
-
-    def _on_motion(self, event: tk.Event) -> None:
-        ix, iy = self.canvas_to_img(event.x, event.y)
-        self._cursor_img_pos = (ix, iy)
-        self.render_magnifier()
-        ix_i, iy_i = int(round(ix)), int(round(iy))
-        self.readout["x"].config(text=str(ix_i))
-        self.readout["y"].config(text=str(iy_i))
-
-        image = self.image
-        if image is not None and 0 <= iy_i < image.data.shape[0] and 0 <= ix_i < image.data.shape[1]:
-            self.readout["value"].config(text=self._fmt(float(image.data[iy_i, ix_i])))
-        else:
-            self.readout["value"].config(text="")
-
-        if image is not None and image.wcs is not None:
-            try:
-                # image.wcs describes the ORIGINAL (untransposed, unbinned) file;
-                # ix/iy are in working (possibly load-time-transposed, and
-                # possibly currently-binned) space, so swap them back and scale
-                # back up to original-file pixels before the WCS lookup.
-                wcs_ix, wcs_iy = (iy, ix) if image.rotated else (ix, iy)
-                if self.entry.is_binned:
-                    factor = self.entry.bin_factor
-                    wcs_ix, wcs_iy = wcs_ix * factor, wcs_iy * factor
-                sky = image.wcs.pixel_to_world(wcs_ix, wcs_iy)
-                self.readout["RA"].config(text=sky.ra.to_string(unit="hourangle", sep=":", precision=2))
-                self.readout["DEC"].config(text=sky.dec.to_string(sep=":", precision=1, alwayssign=True))
-            except Exception:
-                self.readout["RA"].config(text="")
-                self.readout["DEC"].config(text="")
-        else:
-            self.readout["RA"].config(text="")
-            self.readout["DEC"].config(text="")
-
-        if self.tool.get() == "ellipse":
-            self._update_shape_preview(event.x, event.y)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        cx, cy = self._cursor_canvas_pos
+        if self.tool == "ellipse":
+            self._paint_ellipse_preview(painter, cx, cy)
         elif self._line_anchor is not None:
-            self._update_click_line_preview(event.x, event.y)
+            self._paint_line_preview(painter, cx, cy)
 
-    def _refresh_active_preview(self) -> None:
-        """Redraw whichever hover preview is currently showing, at the last
-        known cursor position - for anything that changes its size/position
-        (radius, ellipticity, angle, thickness, zoom) without the mouse
-        itself moving, so the preview doesn't go stale until the next
-        physical mouse movement happens to trigger a redraw."""
-        if self._cursor_img_pos is None:
-            return
-        cx, cy = self.img_to_canvas(*self._cursor_img_pos)
-        if self.tool.get() == "ellipse":
-            self._update_shape_preview(cx, cy)
-        elif self._line_anchor is not None:
-            self._update_click_line_preview(cx, cy)
-
-    def _update_shape_preview(self, cx: float, cy: float) -> None:
-        self.canvas.delete("shape_preview")
-        self._preview_photo = None
-        if self.tool.get() != "ellipse" or self.image is None:
-            return
+    def _paint_ellipse_preview(self, painter: QPainter, cx: float, cy: float) -> None:
         a, b, angle = self._current_round_params()
         disp_a, disp_b = a * self.zoom, b * self.zoom
         pts = ellipse_polygon_points(cx, cy, disp_a, disp_b, angle)
+        poly = QPolygonF([QPointF(pts[i], pts[i + 1]) for i in range(0, len(pts), 2)])
+        tint = self._mask_tint()
+        fill = QColor(*tint)
+        fill.setAlpha(round(0.25 * 255))
+        painter.setBrush(fill)
+        painter.setPen(QPen(QColor(*tint), 1))
+        painter.drawPolygon(poly)
 
-        # A translucent fill shows the actual area the shape covers, not just
-        # its edge. Tkinter canvas fills have no real alpha, so this is drawn
-        # as a small RGBA raster instead; a crisp polygon outline on top keeps
-        # the boundary precise. Fixed opacity, independent of the mask-opacity
-        # slider (that slider controls how painted mask pixels blend into the
-        # image once applied, not this hover preview).
-        tint = mask_tint_for(self.colormap.get(), self._active_lut())
-        alpha = round(0.25 * 255)
-        half = max(int(np.ceil(max(disp_a, disp_b))) + 2, 1)
-        box = 2 * half
-        local_mask = ellipse_mask((box, box), half, half, disp_a, disp_b, angle)
-        rgba = np.zeros((box, box, 4), dtype=np.uint8)
-        rgba[..., 0] = tint[0]
-        rgba[..., 1] = tint[1]
-        rgba[..., 2] = tint[2]
-        rgba[..., 3] = np.where(local_mask, alpha, 0).astype(np.uint8)
-        self._preview_photo = ImageTk.PhotoImage(Image.fromarray(rgba, mode="RGBA"))
-        self.canvas.create_image(cx - half, cy - half, image=self._preview_photo, anchor="nw", tags="shape_preview")
-        tint_hex = "#%02x%02x%02x" % tint
-        self.canvas.create_polygon(pts, outline=tint_hex, fill="", width=1, tags="shape_preview")
-
-    def _update_click_line_preview(self, cx: float, cy: float) -> None:
-        self.canvas.delete("line_preview")
-        self._line_preview_photo = None
-        if self.image is None or self._line_anchor is None:
-            return
+    def _paint_line_preview(self, painter: QPainter, cx: float, cy: float) -> None:
         x0, y0 = self._line_anchor
         x1, y1 = self.canvas_to_img(cx, cy)
         ex0, ey0, ex1, ey1 = self._extend_for_style(x0, y0, x1, y1)
         sx0, sy0 = self.img_to_canvas(ex0, ey0)
         sx1, sy1 = self.img_to_canvas(ex1, ey1)
-
-        # A translucent filled band shows the actual width the trail will be
-        # masked at, not just a dashed centerline - same treatment as the
-        # ellipse hover preview (fixed opacity, a small local raster built
-        # with the same line_mask geometry the real stamp uses).
-        disp_width = max(self.thickness.get() * self.zoom, 1.0)
-        half_w = disp_width / 2.0 + 1
-        xlo = max(int(min(sx0, sx1) - half_w), 0)
-        xhi = min(int(max(sx0, sx1) + half_w) + 1, self.canvas_w)
-        ylo = max(int(min(sy0, sy1) - half_w), 0)
-        yhi = min(int(max(sy0, sy1) + half_w) + 1, self.canvas_h)
-        if xhi > xlo and yhi > ylo:
-            tint = mask_tint_for(self.colormap.get(), self._active_lut())
-            alpha = round(0.5 * 255)
-            local_mask = line_mask((yhi - ylo, xhi - xlo), sx0 - xlo, sy0 - ylo, sx1 - xlo, sy1 - ylo, disp_width)
-            rgba = np.zeros((yhi - ylo, xhi - xlo, 4), dtype=np.uint8)
-            rgba[..., 0] = tint[0]
-            rgba[..., 1] = tint[1]
-            rgba[..., 2] = tint[2]
-            rgba[..., 3] = np.where(local_mask, alpha, 0).astype(np.uint8)
-            self._line_preview_photo = ImageTk.PhotoImage(Image.fromarray(rgba, mode="RGBA"))
-            self.canvas.create_image(xlo, ylo, image=self._line_preview_photo, anchor="nw", tags="line_preview")
+        disp_width = max(self.thickness * self.zoom, 1.0)
+        tint = self._mask_tint()
+        color = QColor(*tint)
+        color.setAlpha(round(0.5 * 255))
+        pen = QPen(color, disp_width)
+        # line_mask's actual mask math clips the perpendicular band strictly
+        # to the segment's own length (a true flat-cut rectangle, not a
+        # rounded capsule) - FlatCap matches that exactly.
+        pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+        painter.setPen(pen)
+        painter.drawLine(QPointF(sx0, sy0), QPointF(sx1, sy1))
 
     def _extend_for_style(self, x0: float, y0: float, x1: float, y1: float) -> tuple[float, float, float, float]:
         if self.image is None:
             return x0, y0, x1, y1
         shape = self.image.data.shape
-        style = self.line_style.get()
-        if style == "arrow":
+        if self.line_style == "arrow":
             return extend_ray_to_border(shape, x0, y0, x1, y1)
-        if style == "line":
+        if self.line_style == "line":
             return extend_line_to_borders(shape, x0, y0, x1, y1)
         return x0, y0, x1, y1
 
-    def _on_button(self, event: tk.Event, erase: bool) -> None:
+    def _current_round_params(self) -> tuple[float, float, float]:
+        r = self.radius
+        b = r * (1 - self.ellipticity / 100.0)
+        return r, b, self.angle
+
+    def _refresh_active_preview(self) -> None:
+        if hasattr(self, "canvas"):
+            self.canvas.update()
+
+    def _update_shape_preview_state(self) -> None:
+        self._refresh_active_preview()
+
+    def _cancel_pending_line(self) -> None:
+        self._line_anchor = None
+        self._refresh_active_preview()
+
+    # ---------------------------------------------------------------- input
+
+    def _on_motion(self, cx: float, cy: float) -> None:
+        self._cursor_canvas_pos = (cx, cy)
+        ix, iy = self.canvas_to_img(cx, cy)
+        self._cursor_img_pos = (ix, iy)
+        self.magnifier.update()
+        ix_i, iy_i = int(round(ix)), int(round(iy))
+        self.readout["x"].setText(str(ix_i))
+        self.readout["y"].setText(str(iy_i))
+
+        image = self.image
+        if image is not None and 0 <= iy_i < image.data.shape[0] and 0 <= ix_i < image.data.shape[1]:
+            self.readout["value"].setText(self._fmt(float(image.data[iy_i, ix_i])))
+        else:
+            self.readout["value"].setText("")
+
+        if image is not None and image.wcs is not None:
+            try:
+                wcs_ix, wcs_iy = (iy, ix) if image.rotated else (ix, iy)
+                if self.entry.is_binned:
+                    factor = self.entry.bin_factor
+                    wcs_ix, wcs_iy = wcs_ix * factor, wcs_iy * factor
+                sky = image.wcs.pixel_to_world(wcs_ix, wcs_iy)
+                self.readout["RA"].setText(sky.ra.to_string(unit="hourangle", sep=":", precision=2))
+                self.readout["DEC"].setText(sky.dec.to_string(sep=":", precision=1, alwayssign=True))
+            except Exception:
+                self.readout["RA"].setText("")
+                self.readout["DEC"].setText("")
+        else:
+            self.readout["RA"].setText("")
+            self.readout["DEC"].setText("")
+
+        self._refresh_active_preview()
+
+    def _on_button(self, cx: float, cy: float, erase: bool) -> None:
         if self.image is None:
             return
-        tool = self.tool.get()
-        if tool == "ellipse":
+        if self.tool == "ellipse":
             self._push_undo()
-            self._stamp_round(event.x, event.y, erase)
-        elif tool == "line":
+            self._stamp_round(cx, cy, erase)
+        elif self.tool == "line":
             if self._line_anchor is None:
                 self._push_undo()
-                self._line_anchor = self.canvas_to_img(event.x, event.y)
+                self._line_anchor = self.canvas_to_img(cx, cy)
                 self._line_anchor_erase = erase
             else:
-                self._finalize_click_line(event.x, event.y)
+                self._finalize_click_line(cx, cy)
 
-    def _on_drag(self, event: tk.Event, erase: bool) -> None:
-        tool = self.tool.get()
-        if tool == "ellipse" and self.image is not None:
-            self._stamp_round(event.x, event.y, erase)
-            self._update_shape_preview(event.x, event.y)
-
+    def _on_drag(self, cx: float, cy: float, erase: bool) -> None:
+        if self.tool == "ellipse" and self.image is not None:
+            self._stamp_round(cx, cy, erase)
 
     def _finalize_click_line(self, cx: float, cy: float) -> None:
         if self.image is None or self._line_anchor is None:
@@ -1952,12 +1780,10 @@ class MaskFitsApp:
         x0, y0 = self._line_anchor
         x1, y1 = self.canvas_to_img(cx, cy)
         ex0, ey0, ex1, ey1 = self._extend_for_style(x0, y0, x1, y1)
-        stamp = line_mask(self.image.data.shape, ex0, ey0, ex1, ey1, self.thickness.get())
+        stamp = line_mask(self.image.data.shape, ex0, ey0, ex1, ey1, self.thickness)
         self.image.mask = (self.image.mask & ~stamp) if self._line_anchor_erase else (self.image.mask | stamp)
         self._mark_mask_dirty()
         self._line_anchor = None
-        self._line_preview_photo = None
-        self.canvas.delete("line_preview")
         self.render()
 
     def _stamp_round(self, cx: float, cy: float, erase: bool) -> None:
@@ -1971,18 +1797,15 @@ class MaskFitsApp:
         self._mark_mask_dirty()
         self.render()
 
-    def _on_pan_start(self, event: tk.Event) -> None:
-        self._pan_drag = (event.x, event.y, self.view_cx, self.view_cy)
+    def _on_pan_start(self, cx: float, cy: float) -> None:
+        self._pan_drag = (cx, cy, self.view_cx, self.view_cy)
 
-    def _on_pan_drag(self, event: tk.Event) -> None:
+    def _on_pan_drag(self, cx: float, cy: float) -> None:
         if self._pan_drag is None:
             return
         sx, sy, ocx, ocy = self._pan_drag
-        # y is inverted (see img_to_canvas) so a downward drag - increasing
-        # event.y - must INcrease view_cy to keep the same image point under
-        # the cursor, the opposite sign from the x component.
-        self.view_cx = ocx - (event.x - sx) / self.zoom
-        self.view_cy = ocy + (event.y - sy) / self.zoom
+        self.view_cx = ocx - (cx - sx) / self.zoom
+        self.view_cy = ocy + (cy - sy) / self.zoom
         self.render()
 
     def reset_zoom(self) -> None:
@@ -1993,10 +1816,6 @@ class MaskFitsApp:
             self.fit_zoom = self._compute_fit_zoom()
         self._update_zoom_label()
         self.render()
-
-    def _on_wheel(self, event: tk.Event) -> None:
-        factor = ZOOM_STEP if event.delta > 0 else 1 / ZOOM_STEP
-        self._zoom_at(event.x, event.y, factor)
 
     def _zoom_at(self, cx: float, cy: float, factor: float) -> None:
         if self.image is None:
@@ -2011,24 +1830,65 @@ class MaskFitsApp:
         self.view_cy += iy - new_cy
         self._update_zoom_label()
         self.render()
-        # The hover-preview shape is sized in canvas pixels (radius/thickness
-        # * zoom), so it goes stale the instant zoom changes - redraw it
-        # immediately at the same canvas position rather than waiting for the
-        # next mouse move to happen to refresh it.
         self._refresh_active_preview()
 
+    # ----------------------------------------------------------- shortcuts
 
-MODE_FLAGS = {"s": "line", "e": "ellipse"}
+    def _guarded(self, func):
+        """Wraps a hotkey action so it's a no-op while a text entry has
+        focus - QShortcut fires regardless of focus by default, but a plain
+        letter hotkey (s, r, e, w, c, i, b, u, y, 1-4, ...) firing while
+        the user is typing a number into a sigma/bin/cut/slider entry would
+        both insert nothing useful there AND trigger the hotkey unexpectedly,
+        the same failure mode the old Tkinter version's global-click-to-
+        defocus existed to avoid."""
+
+        def wrapped() -> None:
+            if isinstance(QApplication.focusWidget(), QLineEdit):
+                return
+            func()
+
+        return wrapped
+
+    def _build_shortcuts(self) -> None:
+        def add(seq: str, func, guarded: bool = True) -> None:
+            sc = QShortcut(QKeySequence(seq), self)
+            sc.activated.connect(self._guarded(func) if guarded else func)
+
+        add("Ctrl+Z", self.undo)
+        add("U", self.undo)
+        add("Ctrl+Shift+Z", self.redo)
+        add("Y", self.redo)
+        add("Left", self.prev_image)
+        add("Right", self.next_image)
+        add("R", self.reset_mask)
+        add("E", lambda: self._adjust_shape_size(1))
+        add("W", lambda: self._adjust_shape_size(-1))
+        add("C", self._cycle_colormap)
+        add("I", lambda: self._invert_action.trigger())
+        add("S", self._toggle_smoothing)
+        add("B", self._toggle_binning)
+        add("Ctrl+R", self.reset_zoom)
+        add("1", lambda: self._hotkey_digit(1))
+        add("2", lambda: self._hotkey_digit(2))
+        add("3", lambda: self._hotkey_digit(3))
+        add("4", lambda: self._hotkey_digit(4))
+        add("Escape", self._cancel_pending_line, guarded=False)
 
 
 def run_gui(paths: list[str], zoom: Optional[float] = None, mode: Optional[str] = None) -> int:
-    root = tk.Tk()
-    app = MaskFitsApp(root, paths)
+    _set_windows_app_id()
+    app = QApplication.instance() or QApplication(sys.argv)
+    app.setWindowIcon(_app_icon())
+
+    window = MaskFitsApp(paths)
     if mode is not None:
-        app.tool.set(MODE_FLAGS[mode])
+        window.set_tool(MODE_FLAGS[mode])
     if zoom is not None:
-        app.zoom_mult = max(min(zoom, ZOOM_MULT_MAX), ZOOM_MULT_MIN)
-        app._update_zoom_label()
-        app.render()
-    root.mainloop()
-    return 0
+        window.zoom_mult = max(min(zoom, ZOOM_MULT_MAX), ZOOM_MULT_MIN)
+        window._update_zoom_label()
+        window.render()
+    window.show()
+    window.raise_()
+    window.activateWindow()
+    return app.exec()
