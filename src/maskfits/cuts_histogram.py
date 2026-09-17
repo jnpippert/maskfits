@@ -164,9 +164,6 @@ class _HistogramCanvas(QWidget):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         owner = self._owner
-        if not owner.enabled:
-            self._drag = None
-            return
         disp_lo, disp_hi = owner.compute_disp_range()
         x_lo = self._value_to_x(owner.vmin, disp_lo, disp_hi)
         x_hi = self._value_to_x(owner.vmax, disp_lo, disp_hi)
@@ -222,10 +219,6 @@ class CutsHistogram(QWidget):
         self.vmin = lowcut
         self.vmax = highcut
         self.show_full_range = False
-        # Locked while a fixed-cuts colormap (IsoPy) is active - see
-        # set_enabled. The "full" range-view toggle stays usable either way,
-        # since it's just a display option, not an edit to the cuts.
-        self.enabled = True
         self.sample = np.array([0.0, 1.0])
         self.data_min = 0.0
         self.data_max = 1.0
@@ -330,16 +323,6 @@ class CutsHistogram(QWidget):
         self.show_full_range = checked
         self.canvas.ensure_bars(*self.compute_disp_range(), force=True)
         self.canvas.update()
-
-    def set_enabled(self, enabled: bool) -> None:
-        """Locks/unlocks editing the cut levels - dragging the handles and
-        the lowcut/highcut entry boxes - for a colormap (IsoPy) whose cuts
-        are fixed by its own formula rather than user-chosen. Viewing (the
-        "full" range toggle, and the histogram itself) stays available
-        either way."""
-        self.enabled = enabled
-        self._lo_entry.setEnabled(enabled)
-        self._hi_entry.setEnabled(enabled)
 
     def set_cuts(self, lowcut: float, highcut: float, from_entry: Optional[str] = None) -> None:
         self.vmin, self.vmax = lowcut, highcut

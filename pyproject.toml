@@ -5,10 +5,24 @@ build-backend = "hatchling.build"
 [project]
 name = "maskfits"
 version = "1.0.0"
-description = "A command-line tool for editing FITS file headers and data"
+description = "A PySide6 GUI for masking pixels in FITS astronomical images."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Jan-Niklas Pippert", email = "pippertjanniklas@googlemail.com" },
+]
+keywords = ["fits", "astronomy", "masking", "photometry", "gui"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Astronomy",
+]
 dependencies = [
     "astropy>=6.0",
     "numpy>=1.24",
@@ -16,6 +30,11 @@ dependencies = [
     "PySide6>=6.11.0",
     "scipy>=1.10",
 ]
+
+[project.urls]
+Homepage = "https://github.com/jnpippert/maskfits"
+Repository = "https://github.com/jnpippert/maskfits"
+Issues = "https://github.com/jnpippert/maskfits/issues"
 
 [project.optional-dependencies]
 # Lets the macOS Dock icon be set at runtime (see maskfits.gui._apply_icon).

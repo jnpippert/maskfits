@@ -1,11 +1,13 @@
 """The popup shown for an update_check.py result - both the manual Help ->
-Check for Updates... action and the silent startup major-version check
-render through show_update_dialog(), so the two look identical.
+Check New Repo Version... action (git) and the silent startup major-version
+check (PyPI) render through show_update_dialog(), so the two look identical.
 
 When an update actually is available, the dialog adds a read-only,
-monospace `git clone <url>` line plus a "copy" button (QApplication's
-clipboard) - a one-click way to get the exact command for a fresh clone,
-rather than making the user retype it from the message text.
+monospace one-line command plus a "copy" button (QApplication's clipboard) -
+whatever the caller passes as `command` (a `git clone <url>` for the repo
+check, `pip install --upgrade maskfits` for the PyPI check) - a one-click way
+to get the exact command rather than making the user retype it from the
+message text.
 """
 
 from __future__ import annotations
@@ -30,7 +32,7 @@ CODE_WIDTH_MAX = 640
 
 
 def show_update_dialog(parent: Optional[QWidget], title: str, message: str, *,
-                        available: bool, clone_url: Optional[str]) -> None:
+                        available: bool, command: Optional[str]) -> None:
     dialog = QDialog(parent)
     dialog.setWindowTitle(title)
     dialog.setModal(True)
@@ -45,9 +47,8 @@ def show_update_dialog(parent: Optional[QWidget], title: str, message: str, *,
     layout.addWidget(label)
 
     # Only worth showing for an actual update - "up to date"/error messages
-    # have nothing to copy-paste a clone command for.
-    if available and clone_url:
-        command = f"git clone {clone_url}"
+    # have nothing to copy-paste a command for.
+    if available and command:
         layout.addSpacing(12)
         row = QHBoxLayout()
 

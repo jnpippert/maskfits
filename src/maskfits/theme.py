@@ -53,11 +53,16 @@ FONT_FAMILY = "Segoe UI" if sys.platform == "win32" else "Helvetica"
 FONT_SIZE = 11
 FONT_SIZE_SMALL = 10
 
+# Accent hover/active/text below are derived the same way a user's own
+# custom accent override is (see derive_accent_shades/contrasting_text_color
+# further down) - dark mode brightens on hover and darkens further on press,
+# light mode darkens for both; #adb18d is light enough that black text reads
+# better on it than white.
 DARK = Theme(
     mode="dark",
     app_bg="#141415", panel_bg="#1d1d1f", panel_border="#2f2f32",
     text="#eae7e2", text_dim="#96938d",
-    accent="#851212", accent_hover="#a3201f", accent_active="#5c0d0d", accent_text="#ffffff",
+    accent="#adb18d", accent_hover="#bcbfa2", accent_active="#8e9365", accent_text="#000000",
     danger="#c1554a", danger_hover="#d16e63",
     green="#22c55e", warning="#e8a33d", blue="#3b82f6",
     track="#3a3a3d", button_bg="#28282b", button_hover="#333336", canvas_bg="#0a0a0b",
@@ -67,10 +72,7 @@ LIGHT = Theme(
     mode="light",
     app_bg="#eeeeec", panel_bg="#ffffff", panel_border="#d8d8d5",
     text="#1c1c1e", text_dim="#68686c",
-    # Same crimson identity as dark mode, but hover/active move darker rather
-    # than lighter - on a white panel, a solid fill gets more contrast (and
-    # visible hover feedback) by darkening, not brightening.
-    accent="#851212", accent_hover="#6b0e0e", accent_active="#4a0a0a", accent_text="#ffffff",
+    accent="#adb18d", accent_hover="#9da176", accent_active="#80845a", accent_text="#000000",
     danger="#b2453b", danger_hover="#c1554a",
     green="#178a43", warning="#c9781f", blue="#2563eb",
     track="#d3d3d0", button_bg="#e7e7e4", button_hover="#dadad7", canvas_bg="#ffffff",

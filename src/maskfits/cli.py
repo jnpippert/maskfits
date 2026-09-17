@@ -57,6 +57,44 @@ def build_parser() -> argparse.ArgumentParser:
 
 SUBCOMMANDS = {"show", "get", "set"}
 
+# Friendly CLI names for -c/--colormap -> the actual internal colormap name
+# (maskfits.colormaps.COLORMAP_NAMES) - kept as a plain literal table here,
+# rather than importing colormaps.py, so the show/get/set subcommands (and
+# --help) never pay for its import (colormaps.py pulls in maskfits.theme,
+# which pulls in PySide6) just to parse arguments.
+COLORMAP_CLI_CHOICES = {
+    "grey": "Grayscale",
+    "gray": "Grayscale",
+    "viridis": "Viridis",
+    "inferno": "Inferno",
+    "midas": "Midas Rainbow",
+    "isopy": "IsoPy",
+}
+
+# Friendly CLI names for --scale -> the internal scale_function name
+# (linear/log/asinh stretch applied on top of the cut levels).
+SCALE_CLI_CHOICES = {"lin": "linear", "log": "log", "asinh": "asinh"}
+
+
+def _parse_cuts(value: str) -> str:
+    """--cuts accepts 'zscale', 'minmax', or a percentile like 99.5 - mapped
+    to the internal stretch string ('zscale'/'minmax'/'pct<value>') that
+    Entry.apply_stretch already understands. Any percentile value works,
+    not just the GUI's five preset buttons - percentile_cuts() itself
+    doesn't care which one it's given."""
+    normalized = value.strip().lower()
+    if normalized in ("zscale", "minmax"):
+        return normalized
+    try:
+        percent = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid cuts value {value!r} - use 'zscale', 'minmax', or a percentile like 99.5"
+        ) from None
+    if not 0 < percent <= 100:
+        raise argparse.ArgumentTypeError(f"invalid cuts percentile {value!r} - must be between 0 and 100")
+    return f"pct{percent}"
+
 
 def build_gui_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="maskfits", description="Open the maskfits mask-editor GUI")
@@ -65,6 +103,18 @@ def build_gui_parser() -> argparse.ArgumentParser:
                          help="initial zoom multiplier relative to fit-to-window (e.g. 2 for 2x)")
     parser.add_argument("-m", "--mode", choices=["s", "e"], default=None,
                          help="initial mask mode: s=satellite, e=ellipse")
+    parser.add_argument("--vmin", type=float, default=None,
+                         help="initial lower cut level - overrides the value --cuts would otherwise pick")
+    parser.add_argument("--vmax", type=float, default=None,
+                         help="initial upper cut level - overrides the value --cuts would otherwise pick")
+    parser.add_argument("--scale", choices=sorted(SCALE_CLI_CHOICES), default=None,
+                         help="initial display stretch function")
+    parser.add_argument("--cuts", type=_parse_cuts, default=None,
+                         help="initial cut-levels algorithm: zscale, minmax, or a percentile like 99.5")
+    parser.add_argument("-c", "--colormap", choices=sorted(COLORMAP_CLI_CHOICES), default=None,
+                         help="initial colormap")
+    parser.add_argument("-b", "--binning", type=int, default=None, help="initial bin factor (NxN)")
+    parser.add_argument("-s", "--smooth", type=int, default=None, help="initial Gaussian smoothing sigma")
     return parser
 
 
@@ -77,18 +127,38 @@ def main(argv: list[str] | None = None) -> int:
         return args.func(args)
 
     if argv and argv[0] in {"-h", "--help"}:
-        print("usage: maskfits [-z ZOOM] [-m {s,e}] [IMAGE ...]  open the mask-editor GUI")
+        print("usage: maskfits [-z ZOOM] [-m {s,e}] [--vmin V] [--vmax V] [--scale {lin,log,asinh}]")
+        print("                [--cuts CUTS] [-c COLORMAP] [-b N] [-s SIGMA] [IMAGE ...]")
         print("       maskfits {show,get,set} ...               header inspection/editing on the command line")
         print()
-        print("  -z, --zoom ZOOM   initial zoom multiplier relative to fit-to-window (e.g. 2 for 2x)")
-        print("  -m, --mode {s,e}  initial mask mode: s=satellite, e=ellipse")
+        print("  -z, --zoom ZOOM      initial zoom multiplier relative to fit-to-window (e.g. 2 for 2x)")
+        print("  -m, --mode {s,e}     initial mask mode: s=satellite, e=ellipse")
+        print("  --vmin VMIN          initial lower cut level (overrides --cuts)")
+        print("  --vmax VMAX          initial upper cut level (overrides --cuts)")
+        print("  --scale {lin,log,asinh}  initial display stretch function")
+        print("  --cuts CUTS          initial cut levels: zscale, minmax, or a percentile like 99.5")
+        print(f"  -c, --colormap {{{','.join(sorted(COLORMAP_CLI_CHOICES))}}}")
+        print("                       initial colormap")
+        print("  -b, --binning N      initial bin factor (NxN)")
+        print("  -s, --smooth SIGMA   initial Gaussian smoothing sigma")
         return 0
 
     gui_args = build_gui_parser().parse_args(argv)
 
     from maskfits.gui import run_gui
 
-    return run_gui(gui_args.files, zoom=gui_args.zoom, mode=gui_args.mode)
+    return run_gui(
+        gui_args.files,
+        zoom=gui_args.zoom,
+        mode=gui_args.mode,
+        vmin=gui_args.vmin,
+        vmax=gui_args.vmax,
+        scale=SCALE_CLI_CHOICES.get(gui_args.scale) if gui_args.scale else None,
+        cuts=gui_args.cuts,
+        colormap=COLORMAP_CLI_CHOICES.get(gui_args.colormap) if gui_args.colormap else None,
+        binning=gui_args.binning,
+        smooth=gui_args.smooth,
+    )
 
 
 if __name__ == "__main__":

@@ -584,7 +584,7 @@ class MaskFitsApp(QMainWindow):
         help_menu = menubar.addMenu("Help")
         about_action = help_menu.addAction("About", self._show_help)
         settings_action = help_menu.addAction("Settings...", self._open_settings)
-        update_action = help_menu.addAction("Check for Updates...", self._check_for_updates)
+        update_action = help_menu.addAction("Check New Repo Version...", self._check_repo_version)
         # On macOS, Qt auto-detects action text like "About"/"Settings..."
         # and silently relocates it out of whatever menu it was added to
         # into the application's own menu (top-left, next to the app name)
@@ -641,30 +641,38 @@ class MaskFitsApp(QMainWindow):
         self._update_zoom_label()
         self.render()
 
-    def _check_for_updates(self) -> None:
-        """Compares the local git clone against its remote (git fetch +
-        rev-list - see update_check.py) and reports the result. Only
-        meaningful for a dev/editable install run from an actual git clone;
-        anything else (offline, no git, a packaged install with no .git)
-        just gets a clear message instead of crashing."""
+    def _check_repo_version(self) -> None:
+        """Compares the local git clone against its GitHub remote (git
+        fetch + rev-list - see update_check.check_for_updates) and reports
+        the result - for contributors/devs working from a checkout, not the
+        general "is my install up to date" question (see
+        start_background_update_check, which checks PyPI instead). Only
+        meaningful for an actual git clone; anything else (offline, no git,
+        a plain `pip install maskfits` with no .git) just gets a clear
+        message instead of crashing."""
         self.setCursor(Qt.CursorShape.WaitCursor)
         QApplication.processEvents()
         try:
             available, message = check_for_updates()
         finally:
             self.unsetCursor()
-        title = "maskfits - Update Available" if available else "maskfits"
-        show_update_dialog(self, title, message, available=available, clone_url=get_clone_url())
+        title = "maskfits - New Commits Available" if available else "maskfits"
+        clone_url = get_clone_url()
+        command = f"git clone {clone_url}" if clone_url else None
+        show_update_dialog(self, title, message, available=available, command=command)
 
     def start_background_update_check(self) -> None:
-        """Silently checks for updates once on startup (see run_gui) and
-        only pops a dialog if one is actually available - never for "up to
-        date", offline, not-a-git-clone, or any other non-update outcome,
-        so a normal launch stays silent. Runs check_for_updates() (a
-        blocking `git fetch`) on a daemon thread so a slow or absent
-        network connection can never delay startup or freeze the window;
-        UpdateCheckWorker.finished is a Qt signal, safe to emit from any
-        thread - Qt auto-queues its delivery back onto this (GUI) thread."""
+        """Silently checks PyPI for a newer release once on startup (see
+        run_gui) and only pops a dialog for an actual major-version bump -
+        never for "up to date", offline, or any other non-update outcome,
+        so a normal launch stays silent. Works the same way regardless of
+        how maskfits was installed (pip or a git clone), unlike the manual
+        "Check New Repo Version..." action above, which is git-specific.
+        Runs check_for_major_pip_update() (a blocking network call) on a
+        daemon thread so a slow or absent network connection can never
+        delay startup or freeze the window; UpdateCheckWorker.finished is a
+        Qt signal, safe to emit from any thread - Qt auto-queues its
+        delivery back onto this (GUI) thread."""
         worker = UpdateCheckWorker()
         worker.finished.connect(self._on_background_update_check)
         self._update_check_worker = worker  # keep alive until it finishes
@@ -674,7 +682,7 @@ class MaskFitsApp(QMainWindow):
         self._update_check_worker = None
         if available:
             show_update_dialog(self, "maskfits - Update Available", message, available=True,
-                                clone_url=get_clone_url())
+                                command="pip install --upgrade maskfits")
 
     def _show_help(self) -> None:
         QMessageBox.information(
@@ -1152,28 +1160,32 @@ class MaskFitsApp(QMainWindow):
             self.cuts_histogram.set_data(self.image.data, self.entry.lowcut, self.entry.highcut)
 
     def _sync_isopy_cuts(self) -> None:
-        """Applies (or un-applies) IsoPy's fixed cuts to the current entry.
+        """Applies (or un-applies) IsoPy's fixed starting cuts to the
+        current entry.
 
         Called both when the colormap itself changes and when navigating
         between images while IsoPy stays active (each entry has its own
-        header/WCS-derived IsoPy cuts) - either way, the entry's own
-        pre-IsoPy lowcut/highcut are cached the first time IsoPy overwrites
-        them, and restored as soon as IsoPy is no longer the active
-        colormap, so switching back to e.g. ZScale brings back what the
-        user actually had before, not IsoPy's values.
+        header/WCS-derived IsoPy cuts). Only seeds lowcut/highcut from
+        IsoPy's own formula the FIRST time an entry enters IsoPy (guarded by
+        _pre_isopy_lowcut being None, the same flag that remembers what to
+        restore) - after that, the user's own histogram edits (the cuts
+        histogram stays fully interactive in IsoPy too, unlike before) are
+        left alone across navigation/re-syncs, rather than being silently
+        reset back to the formula's values on every call. Leaving IsoPy
+        restores what the user had before entering it, not IsoPy's values -
+        and the next time IsoPy is entered, its formula is re-seeded fresh.
         """
         entry = self.entry
         is_isopy = self.colormap == ISOPY_NAME
         if is_isopy and self.image is not None:
             if entry._pre_isopy_lowcut is None:
                 entry._pre_isopy_lowcut, entry._pre_isopy_highcut = entry.lowcut, entry.highcut
-            vmin, vmax, _ = entry.isopy_cuts_and_lut()
-            entry.lowcut, entry.highcut = vmin, vmax
+                vmin, vmax, _ = entry.isopy_cuts_and_lut()
+                entry.lowcut, entry.highcut = vmin, vmax
         elif entry._pre_isopy_lowcut is not None:
             entry.lowcut, entry.highcut = entry._pre_isopy_lowcut, entry._pre_isopy_highcut
             entry._pre_isopy_lowcut = None
             entry._pre_isopy_highcut = None
-        self.cuts_histogram.set_enabled(not is_isopy)
 
     def set_colormap(self, name: str) -> None:
         if name == self.colormap:
@@ -2070,7 +2082,10 @@ class MaskFitsApp(QMainWindow):
         add("Escape", self._cancel_pending_line, guarded=False)
 
 
-def run_gui(paths: list[str], zoom: Optional[float] = None, mode: Optional[str] = None) -> int:
+def run_gui(paths: list[str], zoom: Optional[float] = None, mode: Optional[str] = None, *,
+            vmin: Optional[float] = None, vmax: Optional[float] = None, scale: Optional[str] = None,
+            cuts: Optional[str] = None, colormap: Optional[str] = None, binning: Optional[int] = None,
+            smooth: Optional[int] = None) -> int:
     _set_windows_app_id()
     app = QApplication.instance() or QApplication(sys.argv)
     # The native per-platform style (macOS in particular) draws QSlider's
@@ -2085,12 +2100,56 @@ def run_gui(paths: list[str], zoom: Optional[float] = None, mode: Optional[str] 
         app.setStyle(fusion_style)
     app.setWindowIcon(_app_icon())
 
-    window = MaskFitsApp(paths)
+    # Every CLI flag but -z/-m used to be patched onto the window after
+    # construction, which only worked by accident for zoom/mode (their
+    # startup application happens to run late enough in __init__ to survive
+    # being overwritten again afterward) - colormap/scale/stretch/bin/smooth
+    # are all applied INSIDE __init__ instead, so overriding them that late
+    # would just be undone or silently ignored. Merging every CLI override
+    # into one Settings object up front, before constructing MaskFitsApp,
+    # lets all of them flow through the same Settings-driven startup path -
+    # this never touches the persisted config (save_settings is never
+    # called here), so it's session-only, same as -z/-m already were.
+    settings = load_settings()
     if mode is not None:
-        window.set_tool(MODE_FLAGS[mode])
+        settings.mode = MODE_FLAGS[mode]
     if zoom is not None:
-        window.zoom_mult = max(min(zoom, ZOOM_MULT_MAX), ZOOM_MULT_MIN)
-        window._update_zoom_label()
+        settings.zoom = zoom
+    if scale is not None:
+        settings.scale = scale
+    if cuts is not None:
+        settings.stretch = cuts
+    if colormap is not None:
+        settings.colormap = colormap
+    if binning is not None:
+        settings.bin_enabled = True
+        settings.bin_factor = binning
+    if smooth is not None:
+        settings.smooth_enabled = True
+        settings.smooth_sigma = float(smooth)
+
+    window = MaskFitsApp(paths, settings=settings)
+    # --cuts (self.stretch) is correctly applied once during construction
+    # for a non-IsoPy colormap - but when IsoPy is the STARTING colormap,
+    # _sync_isopy_cuts() runs right after in that same initial load and
+    # unconditionally overwrites lowcut/highcut with its own fixed formula
+    # (the seed it applies the first time an entry enters IsoPy), silently
+    # discarding whatever --cuts just computed. Re-applying --cuts here,
+    # after construction, makes it win regardless of colormap - the same
+    # "explicit CLI override always wins" fix vmin/vmax already needed for
+    # the same reason (see their own comment below).
+    if cuts is not None:
+        window.entry.apply_stretch(cuts)
+    # vmin/vmax have no Settings field (they're per-entry, not a session
+    # default) - applied directly to the just-loaded entry instead, after
+    # whatever --cuts/the stretch algorithm already computed, so they
+    # correctly override just the one(s) actually given.
+    if vmin is not None:
+        window.entry.lowcut = vmin
+    if vmax is not None:
+        window.entry.highcut = vmax
+    if cuts is not None or vmin is not None or vmax is not None:
+        window._update_cuts_display()
         window.render()
     window.show()
     window.raise_()

@@ -1,28 +1,38 @@
-"""Help -> Check for Updates (any commit) and a silent startup check (major
-version bumps only - see UpdateCheckWorker): both compare the local git
-clone's current commit against its remote's tip via `git fetch` + `git
-rev-list`, without touching the working tree (fetch only updates
-remote-tracking refs like refs/remotes/origin/main, never checked-out
-files).
+"""Two independent update checks, for two different audiences:
 
-Only meaningful for an editable/dev install run from an actual git clone
-(true for this project's normal install - `pip install -e .` against the
-cloned repo) - a regular packaged install has no .git directory to compare
-against, so this cleanly reports that instead of guessing.
+- check_for_updates(): Help -> Check New Repo Version... - compares the
+  local git clone's current commit against its remote's tip via `git fetch`
+  + `git rev-list`, without touching the working tree. Only meaningful for
+  an editable/dev install run from an actual git clone (a regular `pip
+  install maskfits` has no .git directory to compare against, so this
+  cleanly reports that instead of guessing) - this is the "is the repo
+  itself ahead of what I have checked out" check, for contributors/devs.
+
+- check_for_major_pip_update() (see UpdateCheckWorker): the silent startup
+  check, run for every install regardless of how it was installed - compares
+  this install's own __version__ against the latest version published on
+  PyPI, only reporting available=True for an actual major-version bump
+  (e.g. 1.x -> 2.0.0), so routine minor/patch releases stay quiet. This is
+  "is there a newer stable release", the one relevant to every end user.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from pathlib import Path
 from typing import Optional
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 from PySide6.QtCore import QObject, Signal
 
 from maskfits import __version__ as LOCAL_VERSION
 
 TIMEOUT_S = 15
+PYPI_PACKAGE_NAME = "maskfits"
+PYPI_JSON_URL = f"https://pypi.org/pypi/{PYPI_PACKAGE_NAME}/json"
 
 
 def _repo_root() -> Optional[Path]:
@@ -109,26 +119,14 @@ def _major_version(version_str: str) -> Optional[int]:
     return int(match.group(1)) if match else None
 
 
-def _remote_pyproject_version(root: Path, branch: str) -> Optional[str]:
-    """Reads pyproject.toml's `version` as it stands at origin/<branch>'s
-    tip - via `git show`, which reads a blob straight out of the object
-    database (already downloaded by the _fetch_remote_state fetch) without
-    checking anything out into the working tree."""
-    try:
-        content = _run(["git", "show", f"origin/{branch}:pyproject.toml"], root)
-    except subprocess.CalledProcessError:
-        return None
-    match = re.search(r'(?m)^\s*version\s*=\s*"([^"]+)"', content)
-    return match.group(1) if match else None
-
-
 def check_for_updates() -> tuple[bool, str]:
     """Returns (update_available, message) for ANY new commit on the
-    remote - used by the manual Help -> Check for Updates... action, which
-    the user explicitly asked for, so it should report everything, not just
-    major bumps (see check_for_major_update for the quieter startup check).
-    Never raises; any failure (offline, GitHub unreachable/down, no git, not
-    a clone, ...) comes back as a message instead."""
+    remote - used by the manual Help -> Check New Repo Version... action,
+    which reports every commit, not just major bumps (see
+    check_for_major_pip_update for the quieter startup check, which looks at
+    PyPI releases instead of raw commits). Never raises; any failure
+    (offline, GitHub unreachable/down, no git, not a clone, ...) comes back
+    as a message instead."""
     root = _repo_root()
     if root is None:
         return False, "Not running from a git clone - nothing to check."
@@ -155,40 +153,49 @@ def check_for_updates() -> tuple[bool, str]:
     return True, f"origin/{branch} has diverged from your local {branch}.\n\nRun `git pull` in the repo to update."
 
 
-def check_for_major_update() -> tuple[bool, str]:
-    """Returns (update_available, message), but only True for an actual
-    major-version bump (e.g. 1.x.y -> 2.0.0 - reads the remote's
-    pyproject.toml at its tip commit, compared against this install's own
-    __version__). Used for the silent startup check (see UpdateCheckWorker),
-    which should stay quiet for routine minor/patch releases and only ever
-    interrupt the user for a major one. Never raises."""
-    root = _repo_root()
-    if root is None:
-        return False, "Not running from a git clone - nothing to check."
-
+def _latest_pypi_version() -> Optional[str]:
+    """The latest version string published on PyPI for this package, or
+    None on any failure (offline, PyPI unreachable/down, unexpected
+    response, ...) - never raises."""
+    request = Request(PYPI_JSON_URL, headers={"User-Agent": f"{PYPI_PACKAGE_NAME}-update-check"})
     try:
-        branch, local_sha, remote_sha = _fetch_remote_state(root)
-    except _CheckFailure as exc:
-        return False, str(exc)
+        with urlopen(request, timeout=TIMEOUT_S) as response:
+            data = json.load(response)
+        return data["info"]["version"]
+    except (URLError, OSError, TimeoutError, ValueError, KeyError):
+        return None
 
-    if remote_sha == local_sha:
-        return False, f"You're up to date with origin/{branch}."
 
-    remote_version = _remote_pyproject_version(root, branch)
+def check_for_major_pip_update() -> tuple[bool, str]:
+    """Returns (update_available, message), but only True for an actual
+    major-version bump (e.g. 1.x.y -> 2.0.0) on PyPI, compared against this
+    install's own __version__. Used for the silent startup check (see
+    UpdateCheckWorker), which should stay quiet for routine minor/patch
+    releases and only ever interrupt the user for a major one. Works
+    regardless of how maskfits was installed (pip or a git clone), unlike
+    check_for_updates, which needs an actual git clone to compare against.
+    Never raises."""
+    latest = _latest_pypi_version()
+    if latest is None:
+        return False, "Could not check PyPI for updates - no internet connection, or PyPI isn't reachable right now."
+
+    if latest == LOCAL_VERSION:
+        return False, f"You're up to date (v{LOCAL_VERSION})."
+
     local_major = _major_version(LOCAL_VERSION)
-    remote_major = _major_version(remote_version) if remote_version else None
+    remote_major = _major_version(latest)
     if local_major is None or remote_major is None or remote_major <= local_major:
         return False, "No major version update available."
 
     return True, (
-        f"maskfits v{remote_version} is available (you're on v{LOCAL_VERSION}).\n\n"
-        "This is a major version update, which may include breaking changes - "
-        "consider re-cloning the repository rather than a plain `git pull`."
+        f"maskfits v{latest} is available on PyPI (you're on v{LOCAL_VERSION}).\n\n"
+        "This is a major version update, which may include breaking changes.\n\n"
+        "Run `pip install --upgrade maskfits` to update."
     )
 
 
 class UpdateCheckWorker(QObject):
-    """Runs check_for_major_update() off the GUI thread and signals the
+    """Runs check_for_major_pip_update() off the GUI thread and signals the
     result back - see MaskFitsApp's silent startup check (run_gui() starts
     this on a plain daemon thread, not a QThread: emitting a Qt signal is
     safe from any thread, Qt auto-queues delivery onto the receiver's own
@@ -198,5 +205,5 @@ class UpdateCheckWorker(QObject):
     finished = Signal(bool, str)
 
     def run(self) -> None:
-        available, message = check_for_major_update()
+        available, message = check_for_major_pip_update()
         self.finished.emit(available, message)

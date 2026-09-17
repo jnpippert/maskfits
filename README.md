@@ -1,20 +1,27 @@
 # maskfits
 
-A command-line tool for masking FITS images.
+A PySide6 GUI for masking pixels in FITS astronomical images.
 
 ## Install
 
-Clone the repo, then (recommended: inside a virtual environment) install it:
+```bash
+pip install maskfits
+```
+
+This puts the `maskfits` command on your PATH.
+
+### From source
+
+To work on maskfits itself, clone the repo and install it editable
+(recommended: inside a virtual environment) instead:
 
 ```bash
 git clone https://github.com/jnpippert/maskfits.git
 cd maskfits
 python3 -m venv .venv # optional
-source .venv/bin/activate # optional 
+source .venv/bin/activate # optional
 pip install -e .
 ```
-
-This puts the `maskfits` command on your PATH.
 
 ## Usage
 

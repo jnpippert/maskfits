@@ -157,7 +157,7 @@ def test_unrelated_git_error_skips_the_network_headline(monkeypatch):
     assert "some unrelated git error" in message
 
 
-# ----------------------------------------------------------- major version
+# ------------------------------------------------------- major version (pip)
 
 
 @pytest.mark.parametrize(
@@ -168,122 +168,88 @@ def test_major_version_parsing(version_str, expected):
     assert update_check._major_version(version_str) == expected
 
 
-def _fake_run_for_major_check(local_sha, remote_sha, remote_toml):
-    def fake_run(args, cwd):
-        if args[:3] == ["git", "rev-parse", "--abbrev-ref"]:
-            return "main"
-        if args == ["git", "rev-parse", "HEAD"]:
-            return local_sha
-        if args[:2] == ["git", "fetch"]:
-            return ""
-        if args == ["git", "rev-parse", "origin/main"]:
-            return remote_sha
-        if args == ["git", "show", "origin/main:pyproject.toml"]:
-            return remote_toml
-        raise AssertionError(f"unexpected git call: {args}")
-
-    return fake_run
-
-
-def test_major_update_silent_for_a_minor_bump(monkeypatch):
-    monkeypatch.setattr(update_check, "_repo_root", lambda: Path("/fake/repo"))
+def test_major_pip_update_silent_for_a_minor_bump(monkeypatch):
     monkeypatch.setattr(update_check, "LOCAL_VERSION", "1.0.0")
-    monkeypatch.setattr(
-        update_check, "_run",
-        _fake_run_for_major_check("abc123", "def456", '[project]\nversion = "1.1.0"\n'),
-    )
-    available, message = update_check.check_for_major_update()
+    monkeypatch.setattr(update_check, "_latest_pypi_version", lambda: "1.1.0")
+    available, message = update_check.check_for_major_pip_update()
     assert available is False
     assert "no major" in message.lower()
 
 
-def test_major_update_silent_for_a_patch_bump(monkeypatch):
-    monkeypatch.setattr(update_check, "_repo_root", lambda: Path("/fake/repo"))
+def test_major_pip_update_silent_for_a_patch_bump(monkeypatch):
     monkeypatch.setattr(update_check, "LOCAL_VERSION", "1.2.2")
-    monkeypatch.setattr(
-        update_check, "_run",
-        _fake_run_for_major_check("abc123", "def456", '[project]\nversion = "1.2.3"\n'),
-    )
-    available, _message = update_check.check_for_major_update()
+    monkeypatch.setattr(update_check, "_latest_pypi_version", lambda: "1.2.3")
+    available, _message = update_check.check_for_major_pip_update()
     assert available is False
 
 
-def test_major_update_reports_true_for_a_major_bump(monkeypatch):
-    monkeypatch.setattr(update_check, "_repo_root", lambda: Path("/fake/repo"))
+def test_major_pip_update_reports_true_for_a_major_bump(monkeypatch):
     monkeypatch.setattr(update_check, "LOCAL_VERSION", "1.0.0")
-    monkeypatch.setattr(
-        update_check, "_run",
-        _fake_run_for_major_check("abc123", "def456", '[project]\nversion = "2.0.0"\n'),
-    )
-    available, message = update_check.check_for_major_update()
+    monkeypatch.setattr(update_check, "_latest_pypi_version", lambda: "2.0.0")
+    available, message = update_check.check_for_major_pip_update()
     assert available is True
     assert "v2.0.0" in message
     assert "v1.0.0" in message
-    assert "re-cloning" in message
+    assert "pip install --upgrade maskfits" in message
 
 
-def test_major_update_silent_when_remote_major_is_lower(monkeypatch):
-    # Local is somehow ahead of the remote's own version bookkeeping -
-    # should never happen in practice, but must not falsely report an
-    # update either way.
-    monkeypatch.setattr(update_check, "_repo_root", lambda: Path("/fake/repo"))
+def test_major_pip_update_silent_when_remote_major_is_lower(monkeypatch):
+    # Local is somehow ahead of what PyPI has published - should never
+    # happen in practice, but must not falsely report an update either way.
     monkeypatch.setattr(update_check, "LOCAL_VERSION", "3.0.0")
-    monkeypatch.setattr(
-        update_check, "_run",
-        _fake_run_for_major_check("abc123", "def456", '[project]\nversion = "2.0.0"\n'),
-    )
-    available, _message = update_check.check_for_major_update()
+    monkeypatch.setattr(update_check, "_latest_pypi_version", lambda: "2.0.0")
+    available, _message = update_check.check_for_major_pip_update()
     assert available is False
 
 
-def test_major_update_silent_when_remote_pyproject_unreadable(monkeypatch):
-    monkeypatch.setattr(update_check, "_repo_root", lambda: Path("/fake/repo"))
+def test_major_pip_update_up_to_date(monkeypatch):
     monkeypatch.setattr(update_check, "LOCAL_VERSION", "1.0.0")
-
-    def fake_run(args, cwd):
-        if args[:3] == ["git", "rev-parse", "--abbrev-ref"]:
-            return "main"
-        if args == ["git", "rev-parse", "HEAD"]:
-            return "abc123"
-        if args[:2] == ["git", "fetch"]:
-            return ""
-        if args == ["git", "rev-parse", "origin/main"]:
-            return "def456"
-        if args == ["git", "show", "origin/main:pyproject.toml"]:
-            raise subprocess.CalledProcessError(128, args, stderr="fatal: path does not exist")
-        raise AssertionError(f"unexpected git call: {args}")
-
-    monkeypatch.setattr(update_check, "_run", fake_run)
-    available, _message = update_check.check_for_major_update()
+    monkeypatch.setattr(update_check, "_latest_pypi_version", lambda: "1.0.0")
+    available, message = update_check.check_for_major_pip_update()
     assert available is False
+    assert "up to date" in message.lower()
 
 
-def test_major_update_up_to_date_short_circuits_before_reading_pyproject(monkeypatch):
-    monkeypatch.setattr(update_check, "_repo_root", lambda: Path("/fake/repo"))
-
-    def fake_run(args, cwd):
-        if args[:3] == ["git", "rev-parse", "--abbrev-ref"]:
-            return "main"
-        if args == ["git", "rev-parse", "HEAD"]:
-            return "abc123"
-        if args[:2] == ["git", "fetch"]:
-            return ""
-        if args == ["git", "rev-parse", "origin/main"]:
-            return "abc123"
-        raise AssertionError(f"unexpected git call: {args} - should never reach pyproject.toml")
-
-    monkeypatch.setattr(update_check, "_run", fake_run)
-    available, message = update_check.check_for_major_update()
+def test_major_pip_update_silent_when_pypi_unreachable(monkeypatch):
+    monkeypatch.setattr(update_check, "_latest_pypi_version", lambda: None)
+    available, message = update_check.check_for_major_pip_update()
     assert available is False
-    assert "up to date" in message
+    assert "pypi" in message.lower()
 
 
-def test_remote_pyproject_version_parses_the_version_line():
-    toml = 'other = 1\n\n[project]\nname = "maskfits"\nversion = "3.4.5"\ndescription = "x"\n'
+def test_latest_pypi_version_parses_the_response(monkeypatch):
+    import io
+    import json
 
-    def fake_run(args, cwd):
-        return toml
+    payload = json.dumps({"info": {"version": "3.4.5"}}).encode()
 
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(update_check, "_run", fake_run)
-        assert update_check._remote_pyproject_version(Path("/fake/repo"), "main") == "3.4.5"
+    def fake_urlopen(request, timeout):
+        return io.BytesIO(payload)
+
+    monkeypatch.setattr(update_check, "urlopen", fake_urlopen)
+    assert update_check._latest_pypi_version() == "3.4.5"
+
+
+def test_latest_pypi_version_returns_none_on_network_error(monkeypatch):
+    def fake_urlopen(request, timeout):
+        raise update_check.URLError("no internet")
+
+    monkeypatch.setattr(update_check, "urlopen", fake_urlopen)
+    assert update_check._latest_pypi_version() is None
+
+
+def test_latest_pypi_version_returns_none_on_malformed_response(monkeypatch):
+    import io
+
+    def fake_urlopen(request, timeout):
+        return io.BytesIO(b"not json")
+
+    monkeypatch.setattr(update_check, "urlopen", fake_urlopen)
+    assert update_check._latest_pypi_version() is None
+
+
+def test_latest_pypi_version_against_the_real_pypi_does_not_raise():
+    # Exercises the real network call - whatever the answer is (a version
+    # string, or None if offline/PyPI is unreachable), it must never raise.
+    result = update_check._latest_pypi_version()
+    assert result is None or isinstance(result, str)

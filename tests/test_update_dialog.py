@@ -34,14 +34,14 @@ def _show_without_blocking(qapp, monkeypatch, **kwargs):
 def test_no_code_row_when_not_available(qapp, monkeypatch):
     dialog = _show_without_blocking(
         qapp, monkeypatch, message="You're up to date.", available=False,
-        clone_url="https://github.com/jnpippert/maskfits.git",
+        command="git clone https://github.com/jnpippert/maskfits.git",
     )
     assert dialog.findChildren(QLineEdit) == []
 
 
-def test_no_code_row_without_a_clone_url(qapp, monkeypatch):
+def test_no_code_row_without_a_command(qapp, monkeypatch):
     dialog = _show_without_blocking(
-        qapp, monkeypatch, message="Update available.", available=True, clone_url=None,
+        qapp, monkeypatch, message="Update available.", available=True, command=None,
     )
     assert dialog.findChildren(QLineEdit) == []
 
@@ -49,7 +49,7 @@ def test_no_code_row_without_a_clone_url(qapp, monkeypatch):
 def test_code_row_shows_the_full_clone_command(qapp, monkeypatch):
     dialog = _show_without_blocking(
         qapp, monkeypatch, message="Update available.", available=True,
-        clone_url="https://github.com/jnpippert/maskfits.git",
+        command="git clone https://github.com/jnpippert/maskfits.git",
     )
     entries = dialog.findChildren(QLineEdit)
     assert len(entries) == 1
@@ -57,10 +57,20 @@ def test_code_row_shows_the_full_clone_command(qapp, monkeypatch):
     assert entries[0].isReadOnly()
 
 
-def test_code_field_widens_for_a_long_url(qapp, monkeypatch):
+def test_code_row_shows_a_pip_upgrade_command(qapp, monkeypatch):
+    dialog = _show_without_blocking(
+        qapp, monkeypatch, message="Update available.", available=True,
+        command="pip install --upgrade maskfits",
+    )
+    entries = dialog.findChildren(QLineEdit)
+    assert len(entries) == 1
+    assert entries[0].text() == "pip install --upgrade maskfits"
+
+
+def test_code_field_widens_for_a_long_command(qapp, monkeypatch):
     long_url = "https://github.com/" + "x" * 100 + "/maskfits.git"
     dialog = _show_without_blocking(
-        qapp, monkeypatch, message="Update available.", available=True, clone_url=long_url,
+        qapp, monkeypatch, message="Update available.", available=True, command=f"git clone {long_url}",
     )
     entry = dialog.findChildren(QLineEdit)[0]
     assert entry.minimumWidth() > CODE_WIDTH_MIN
@@ -69,7 +79,7 @@ def test_code_field_widens_for_a_long_url(qapp, monkeypatch):
 def test_copy_button_puts_command_on_clipboard(qapp, monkeypatch):
     dialog = _show_without_blocking(
         qapp, monkeypatch, message="Update available.", available=True,
-        clone_url="https://github.com/jnpippert/maskfits.git",
+        command="git clone https://github.com/jnpippert/maskfits.git",
     )
     copy_btn = next(b for b in dialog.findChildren(RoundButton) if b.text() == "copy")
     copy_btn.click()
