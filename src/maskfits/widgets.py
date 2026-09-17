@@ -2,19 +2,22 @@
 
 Unlike the old Tkinter version (which had to hand-draw every rounded shape on
 a Canvas, since Tk has no real widget styling), most of these are thin
-QWidget/QPushButton/QSlider subclasses whose actual look comes from the QSS
-in theme.build_qss() - selected either by Qt's built-in widget-class
-selectors (QPushButton, QSlider, ...) or by these classes' own Python class
-names (RoundedPanel). `ResizeGrip` is the one exception that still needs a
-real paintEvent, since no native widget matches its drag-affordance look.
+QWidget/QPushButton subclasses whose actual look comes from the QSS in
+theme.build_qss() - selected either by Qt's built-in widget-class selectors
+(QPushButton, ...) or by these classes' own Python class names
+(RoundedPanel). `ResizeGrip` and `RoundSlider` are the exceptions that need a
+real paintEvent: no native widget matches ResizeGrip's drag-affordance look,
+and QSlider's native complex-control painting (even under Fusion, even with
+every sub-control QSS-styled) leaves residual decoration a stylesheet has no
+documented hook to fully suppress - see RoundSlider's own docstring.
 """
 
 from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QEnterEvent, QMouseEvent, QPainter, QPainterPath
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QEnterEvent, QMouseEvent, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -22,7 +25,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -135,82 +137,128 @@ class SegmentedControl(QWidget):
 
 
 class RoundSlider(QWidget):
-    """A horizontal slider over an arbitrary float (or int) range.
+    """A horizontal slider over an arbitrary float (or int) range, fully
+    custom-painted rather than a styled QSlider.
 
-    QSlider is integer-only, so a float range is represented internally as
-    an integer 0..STEPS and mapped to/from the real [lo, hi] range - callers
-    only ever see real float values via `value()`/`setValue()`/`valueChanged`.
-    `sliderPressed`/`sliderReleased` are forwarded from the underlying
-    QSlider for the "cheap update while dragging, expensive work only on
-    release" pattern used by the cuts histogram and mask-alpha slider.
+    QSlider under Fusion (needed in the first place for the app-wide QSS to
+    have any effect on it at all - see run_gui's app.setStyle) still paints
+    residual native decoration around its QSS-styled groove - a visibly
+    different-toned band - that WA_StyledBackground/WA_NoSystemBackground
+    and a fully-overridden stylesheet don't fully suppress; it comes from
+    the style's own drawComplexControl step, not a background-erase this
+    project's tools have any documented QSS hook to turn off. Painting the
+    track/fill/handle directly sidesteps that ambiguity entirely - what's
+    drawn here is the whole visual, nothing native left to leak through.
+
+    `sliderPressed`/`sliderReleased` mirror the "cheap update while
+    dragging, expensive work only on release" pattern used by the cuts
+    histogram and the mask-alpha slider.
     """
 
     valueChanged = Signal(float)
-    _STEPS = 1000
+    sliderPressed = Signal()
+    sliderReleased = Signal()
+
+    _RADIUS = 7  # handle radius, px - also sets the track's own corner/inset
 
     def __init__(self, lo: float, hi: float, value: float, *, integer: bool = False,
                  parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._lo, self._hi, self._integer = lo, hi, integer
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        self._slider = QSlider(Qt.Orientation.Horizontal, self)
-        self._slider.setCursor(Qt.CursorShape.PointingHandCursor)
-        # QSlider is a "complex control" Qt paints via QStyle::drawComplexControl
-        # - without WA_StyledBackground, it still erases its own bounding box
-        # with the palette's Window color before drawing groove/handle/etc,
-        # regardless of the QSS `background: transparent` rule for it. That
-        # erase is exactly app_bg, visibly darker than whatever panel (panel_bg)
-        # the slider sits on - this makes Qt actually respect the transparency.
-        self._slider.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        if integer:
-            self._slider.setMinimum(int(round(lo)))
-            self._slider.setMaximum(int(round(hi)))
-        else:
-            self._slider.setMinimum(0)
-            self._slider.setMaximum(self._STEPS)
-        layout.addWidget(self._slider)
-        self.setValue(value)
-        self._slider.valueChanged.connect(self._on_raw_changed)
-        self.sliderPressed = self._slider.sliderPressed
-        self.sliderReleased = self._slider.sliderReleased
+        self._value = self._clamp(value)
+        self._dragging = False
+        self.setFixedHeight(2 * self._RADIUS + 6)
+        self.setMinimumWidth(60)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        theme_manager().theme_changed.connect(lambda _t: self.update())
 
-    def _raw_to_value(self, raw: int) -> float:
-        if self._integer:
-            return float(raw)
-        frac = raw / self._STEPS
-        return self._lo + frac * (self._hi - self._lo)
+    def _clamp(self, value: float) -> float:
+        value = max(self._lo, min(value, self._hi))
+        return float(int(round(value))) if self._integer else value
 
-    def _value_to_raw(self, value: float) -> int:
-        if self._integer:
-            return int(round(value))
+    def _frac(self) -> float:
         span = self._hi - self._lo
-        frac = (value - self._lo) / span if span else 0.0
-        frac = min(max(frac, 0.0), 1.0)
-        return int(round(frac * self._STEPS))
-
-    def _on_raw_changed(self, raw: int) -> None:
-        self.valueChanged.emit(self._raw_to_value(raw))
+        return (self._value - self._lo) / span if span else 0.0
 
     def value(self) -> float:
-        return self._raw_to_value(self._slider.value())
+        return self._value
 
     def setValue(self, value: float) -> None:  # noqa: N802 - matches Qt naming convention
-        value = max(self._lo, min(value, self._hi))
-        raw = self._value_to_raw(value)
-        if raw != self._slider.value():
-            self._slider.setValue(raw)
-        else:
-            # setValue with an unchanged raw step wouldn't otherwise emit -
-            # callers (e.g. a linked spin-box) still expect the float value
-            # to be current on return, so this just ensures state agreement,
-            # no signal needed since nothing actually moved.
-            pass
+        value = self._clamp(value)
+        if value != self._value:
+            self._value = value
+            self.update()
+            self.valueChanged.emit(self._value)
 
     def setEnabled(self, enabled: bool) -> None:  # noqa: N802
-        self._slider.setEnabled(enabled)
         super().setEnabled(enabled)
+        self.update()
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return QSize(120, self.height())
+
+    # -------------------------------------------------------------- layout
+
+    def _track_rect(self) -> QRectF:
+        r = self._RADIUS
+        h = 6
+        y = (self.height() - h) / 2
+        return QRectF(r, y, max(self.width() - 2 * r, 1), h)
+
+    def _handle_center_x(self, track: QRectF) -> float:
+        return track.left() + track.width() * min(max(self._frac(), 0.0), 1.0)
+
+    def _x_to_value(self, x: float) -> float:
+        track = self._track_rect()
+        frac = (x - track.left()) / max(track.width(), 1)
+        frac = min(max(frac, 0.0), 1.0)
+        return self._lo + frac * (self._hi - self._lo)
+
+    # -------------------------------------------------------------- paint
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        theme = current_theme()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        track = self._track_rect()
+        radius = track.height() / 2
+        enabled = self.isEnabled()
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(theme.panel_border if not enabled else theme.track))
+        painter.drawRoundedRect(track, radius, radius)
+
+        cx = self._handle_center_x(track)
+        fill_w = cx - track.left()
+        if fill_w > 0:
+            fill_color = QColor(theme.text_dim if not enabled else theme.accent)
+            painter.setBrush(fill_color)
+            painter.drawRoundedRect(QRectF(track.left(), track.top(), fill_w, track.height()), radius, radius)
+
+        cy = track.center().y()
+        painter.setPen(QPen(QColor(theme.text_dim if not enabled else theme.accent), 2))
+        painter.setBrush(QColor(theme.text))
+        painter.drawEllipse(QPointF(cx, cy), self._RADIUS, self._RADIUS)
+
+    # -------------------------------------------------------------- input
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if not self.isEnabled() or event.button() != Qt.MouseButton.LeftButton:
+            return
+        self._dragging = True
+        self.sliderPressed.emit()
+        self.setValue(self._x_to_value(event.position().x()))
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if not self._dragging:
+            return
+        self.setValue(self._x_to_value(event.position().x()))
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if not self._dragging or event.button() != Qt.MouseButton.LeftButton:
+            return
+        self._dragging = False
+        self.sliderReleased.emit()
 
 
 class ThemeToggle(QPushButton):

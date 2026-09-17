@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QSizePolicy,
+    QStyleFactory,
     QVBoxLayout,
     QWidget,
 )
@@ -439,6 +440,16 @@ class MaskFitsApp(QMainWindow):
         self.radius = 40.0
         self.thickness = 15
         self.line_style = "segment"
+        # Whichever of these the active tool currently has built (see
+        # _rebuild_tool_options) - lets _sync_tool_option_widgets() update a
+        # slider's displayed value in place after a programmatic change,
+        # without tearing down/rebuilding the whole tool-options panel just
+        # for that (see its own docstring for why that rebuild is unsafe to
+        # use as a generic refresh).
+        self._radius_slider: Optional[RoundSlider] = None
+        self._ellipticity_slider: Optional[RoundSlider] = None
+        self._angle_slider: Optional[RoundSlider] = None
+        self._thickness_slider: Optional[RoundSlider] = None
 
         self.fit_zoom = 1.0
         self.zoom_mult = 1.0
@@ -743,6 +754,11 @@ class MaskFitsApp(QMainWindow):
             row = QHBoxLayout()
             row.addWidget(self._dim_label(f"{left_key}:"))
             left_lbl = QLabel("")
+            # Fixed width + center alignment, so "x"/"y"'s varying digit
+            # count doesn't shift "RA:"/"DEC:" sideways between the two rows
+            # - they stay anchored under each other instead of drifting.
+            left_lbl.setFixedWidth(36)
+            left_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             row.addWidget(left_lbl)
             row.addSpacing(10)
             row.addWidget(self._dim_label(f"{right_key}:"))
@@ -848,6 +864,14 @@ class MaskFitsApp(QMainWindow):
         return slider
 
     def _rebuild_tool_options(self) -> None:
+        """Tears down and rebuilds the tool-options panel for whichever tool
+        is now active - ONLY call this for an actual tool switch (ellipse
+        <-> satellite). It unconditionally cancels a pending satellite-mode
+        start point, appropriate when the tool itself is changing but not
+        when only a slider's value needs refreshing after a programmatic
+        change - see _sync_tool_option_widgets(), which updates the existing
+        sliders in place instead, specifically to avoid that side effect.
+        """
         while self.tool_options_layout.count():
             item = self.tool_options_layout.takeAt(0)
             widget = item.widget()
@@ -856,17 +880,22 @@ class MaskFitsApp(QMainWindow):
             elif item.layout() is not None:
                 self._clear_layout(item.layout())
         self._cancel_pending_line()
+        self._radius_slider = self._ellipticity_slider = self._angle_slider = self._thickness_slider = None
 
         if self.tool == "ellipse":
-            self._build_slider_row(self.tool_options_layout, "radius", self.radius, RADIUS_MIN, MAX_SHAPE_SIZE,
-                                    suffix=" px", on_change=self._on_radius_changed)
-            self._build_slider_row(self.tool_options_layout, "ellipticity", self.ellipticity, 0, 90,
-                                    suffix="%", integer=True, on_change=self._on_ellipticity_changed)
-            self._build_slider_row(self.tool_options_layout, "angle", self.angle, -180, 180,
-                                    suffix="°", integer=True, on_change=self._on_angle_changed)
+            self._radius_slider = self._build_slider_row(
+                self.tool_options_layout, "radius", self.radius, RADIUS_MIN, MAX_SHAPE_SIZE,
+                suffix=" px", on_change=self._on_radius_changed)
+            self._ellipticity_slider = self._build_slider_row(
+                self.tool_options_layout, "ellipticity", self.ellipticity, 0, 90,
+                suffix="%", integer=True, on_change=self._on_ellipticity_changed)
+            self._angle_slider = self._build_slider_row(
+                self.tool_options_layout, "angle", self.angle, -180, 180,
+                suffix="°", integer=True, on_change=self._on_angle_changed)
         else:
-            self._build_slider_row(self.tool_options_layout, "thickness", self.thickness, 1, MAX_SHAPE_SIZE,
-                                    suffix=" px", integer=True, on_change=self._on_thickness_changed)
+            self._thickness_slider = self._build_slider_row(
+                self.tool_options_layout, "thickness", self.thickness, 1, MAX_SHAPE_SIZE,
+                suffix=" px", integer=True, on_change=self._on_thickness_changed)
             style_box = QWidget()
             style_layout = QVBoxLayout(style_box)
             style_layout.setContentsMargins(0, 8, 0, 4)
@@ -1341,11 +1370,19 @@ class MaskFitsApp(QMainWindow):
         self.render()
 
     def _sync_tool_option_widgets(self) -> None:
-        """Refresh the tool-option sliders/entries after a programmatic value
-        change (e.g. a bin-factor rescale) that didn't go through their own
-        widgets - cheapest correct way is just rebuilding the row, since the
-        rows are already torn down/rebuilt on every tool switch anyway."""
-        self._rebuild_tool_options()
+        """Refreshes the tool-option sliders/entries after a programmatic
+        value change (a bin-factor rescale, or the E/W hotkey) that didn't
+        go through their own widgets - updates whichever slider is currently
+        built in place, rather than routing through _rebuild_tool_options().
+        That rebuild unconditionally cancels a pending satellite-mode start
+        point (appropriate for an actual tool switch, its real purpose) -
+        reusing it here for a same-tool value refresh would wipe that start
+        point and its preview even though the tool itself never changed."""
+        if self.tool == "ellipse":
+            if self._radius_slider is not None:
+                self._radius_slider.setValue(self.radius)
+        elif self._thickness_slider is not None:
+            self._thickness_slider.setValue(self.thickness)
 
     def _full_res_mask(self, entry: Entry) -> np.ndarray:
         if entry.is_binned:
@@ -1597,7 +1634,18 @@ class MaskFitsApp(QMainWindow):
         # handing it to Qt, which always draws its own row 0 at the top.
         rgb = np.ascontiguousarray(rgb[::-1])
 
-        qimg = QImage(rgb.data, crop_w, crop_h, 3 * crop_w, QImage.Format.Format_RGB888)
+        # rgb's actual shape is the STRIDED/downsampled crop (data[y0:y1:
+        # step_y, x0:x1:step_x] above), which is smaller than crop_h/crop_w
+        # (the full-resolution source span) whenever step_x/step_y > 1 - true
+        # for any real-sized image displayed below 1:1 zoom, i.e. almost
+        # always. QImage takes width/height/bytesPerLine as the CALLER's
+        # claim about its buffer, with no way to cross-check them against
+        # rgb's actual size - passing crop_w/crop_h there told Qt the buffer
+        # was far bigger than it really is, so it read past the end of
+        # rgb's memory (a native out-of-bounds read - not a Python
+        # exception, a segfault). Use the array's own real dimensions.
+        sampled_h, sampled_w = rgb.shape[0], rgb.shape[1]
+        qimg = QImage(rgb.data, sampled_w, sampled_h, 3 * sampled_w, QImage.Format.Format_RGB888)
         pixmap = QPixmap.fromImage(qimg)
         resample = (Qt.TransformationMode.FastTransformation if self.zoom >= 1
                     else Qt.TransformationMode.SmoothTransformation)
@@ -1879,6 +1927,16 @@ class MaskFitsApp(QMainWindow):
 def run_gui(paths: list[str], zoom: Optional[float] = None, mode: Optional[str] = None) -> int:
     _set_windows_app_id()
     app = QApplication.instance() or QApplication(sys.argv)
+    # The native per-platform style (macOS in particular) draws QSlider's
+    # groove/sub-page/add-page/handle itself as a "complex control" and
+    # ignores most of the QSS geometry rules for them (border-radius,
+    # background) regardless of what's in build_qss() - Fusion is the one
+    # bundled Qt style that actually honors that stylesheet, which is what
+    # makes the slider track render as a rounded pill and the handle as a
+    # true circle instead of native's plain rectangle/native-shaped thumb.
+    fusion_style = QStyleFactory.create("Fusion")
+    if fusion_style is not None:
+        app.setStyle(fusion_style)
     app.setWindowIcon(_app_icon())
 
     window = MaskFitsApp(paths)

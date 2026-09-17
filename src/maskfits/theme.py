@@ -174,7 +174,7 @@ def build_qss(theme: Theme) -> str:
     widget at a time before this rule was inverted to fix the whole class
     of it at once. */
     QWidget {{
-        background: transparent;
+        background-color: transparent;
         color: {t.text};
         font-family: "{FONT_FAMILY}";
         font-size: {FONT_SIZE}pt;
@@ -207,18 +207,18 @@ def build_qss(theme: Theme) -> str:
     each of them its own app_bg rectangle, visibly darker than the panel_bg
     panel they sit inside of. */
     #flowLayout, #flowRow, #toolbarChunk {{
-        background: transparent;
+        background-color: transparent;
     }}
 
     QScrollArea {{
         border: none;
-        background: transparent;
+        background-color: transparent;
     }}
     QScrollArea > QWidget > QWidget {{
-        background: transparent;
+        background-color: transparent;
     }}
     QScrollBar:vertical {{
-        background: transparent;
+        background-color: transparent;
         width: 10px;
         margin: 0;
     }}
@@ -234,13 +234,13 @@ def build_qss(theme: Theme) -> str:
         height: 0;
     }}
     QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
-        background: transparent;
+        background-color: transparent;
     }}
 
     /* ------------------------------------------------------------- labels */
 
     QLabel {{
-        background: transparent;
+        background-color: transparent;
     }}
     QLabel[dim="true"] {{
         color: {t.text_dim};
@@ -283,7 +283,7 @@ def build_qss(theme: Theme) -> str:
         background-color: {t.danger_hover};
     }}
     QPushButton[flat="true"] {{
-        background: transparent;
+        background-color: transparent;
         padding: 2px;
     }}
     QPushButton[flat="true"]:hover {{
@@ -327,7 +327,7 @@ def build_qss(theme: Theme) -> str:
     }}
 
     QCheckBox {{
-        background: transparent;
+        background-color: transparent;
         spacing: 6px;
     }}
     QCheckBox::indicator {{
@@ -342,49 +342,9 @@ def build_qss(theme: Theme) -> str:
         border: 1px solid {t.accent};
     }}
 
-    /* ------------------------------------------------------------ slider */
-
-    RoundSlider, QSlider {{
-        background: transparent;
-    }}
-    QSlider::groove:horizontal {{
-        height: 6px;
-        background: {t.track};
-        border-radius: 3px;
-    }}
-    QSlider::sub-page:horizontal {{
-        background: {t.accent};
-        border-radius: 3px;
-    }}
-    QSlider::add-page:horizontal {{
-        /* The unfilled portion right of the handle - without an explicit
-        rule here, Qt falls back to the native platform style for it (a
-        tall light-gray bar on Windows) even though groove/sub-page are
-        styled, since partially-styled QSliders don't fully suppress native
-        rendering per sub-control. */
-        background: {t.track};
-        border-radius: 3px;
-    }}
-    QSlider::handle:horizontal {{
-        background: {t.text};
-        border: 2px solid {t.accent};
-        width: 14px;
-        height: 14px;
-        margin: -5px 0;
-        border-radius: 7px;
-    }}
-    QSlider:disabled::groove:horizontal {{
-        background: {t.panel_border};
-    }}
-    QSlider:disabled::sub-page:horizontal {{
-        background: {t.text_dim};
-    }}
-    QSlider:disabled::add-page:horizontal {{
-        background: {t.panel_border};
-    }}
-    QSlider:disabled::handle:horizontal {{
-        border-color: {t.text_dim};
-    }}
+    /* RoundSlider is fully custom-painted (see widgets.py) - no QSS needed
+    here at all; QSlider's own native complex-control rendering couldn't be
+    fully suppressed via stylesheet, which is exactly why it isn't used. */
 
     /* --------------------------------------------------------- menu bar */
 
@@ -395,7 +355,7 @@ def build_qss(theme: Theme) -> str:
         padding: 2px;
     }}
     QMenuBar::item {{
-        background: transparent;
+        background-color: transparent;
         padding: 4px 10px;
         border-radius: 6px;
     }}
