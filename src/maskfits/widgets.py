@@ -421,11 +421,19 @@ class HexColorPicker(QWidget):
 
     def _pick(self) -> None:
         initial = QColor(self._value or current_theme().accent)
-        # Parent to the top-level window (SettingsWindow/ThemeEditorWindow),
-        # not just this HexColorPicker child widget - passing a non-toplevel
-        # parent left Qt/Cocoa with the wrong idea of which window opened
-        # the (modal) color panel, so closing it re-activated the main
-        # maskfits window and left the actual parent dialog behind it.
-        color = QColorDialog.getColor(initial, self.window(), "Pick a color")
+        # Two things needed fixing here, not just one:
+        # 1. Parent to the top-level window (SettingsWindow/ThemeEditorWindow),
+        #    not just this HexColorPicker child widget - a non-toplevel parent
+        #    left Qt/Cocoa unsure which window opened the (modal) dialog.
+        # 2. DontUseNativeDialog - macOS's native color picker is backed by
+        #    NSColorPanel, a single OS-level shared panel Qt reuses across
+        #    calls rather than creating fresh each time. Its internal
+        #    window-activation bookkeeping falls out of sync after repeated
+        #    open/close cycles in one session (fine the first few times,
+        #    then the main window steals focus back on OK) - Qt's own
+        #    cross-platform dialog is a plain, single-owned QDialog with no
+        #    such shared-panel state to accumulate.
+        color = QColorDialog.getColor(initial, self.window(), "Pick a color",
+                                       QColorDialog.ColorDialogOption.DontUseNativeDialog)
         if color.isValid():
             self._entry.setText(color.name())
