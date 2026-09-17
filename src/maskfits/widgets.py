@@ -14,14 +14,17 @@ documented hook to fully suppress - see RoundSlider's own docstring.
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QEnterEvent, QMouseEvent, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QColorDialog,
     QFrame,
     QHBoxLayout,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -30,6 +33,8 @@ from PySide6.QtWidgets import (
 )
 
 from maskfits.theme import current_theme, theme_manager
+
+_HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
 class RoundedPanel(QFrame):
@@ -345,3 +350,77 @@ class ResizeGrip(QWidget):
         path = QPainterPath()
         path.addRoundedRect(QRectF(cx - bar_w / 2, cy - bar_h / 2, bar_w, bar_h), bar_w / 2, bar_w / 2)
         painter.fillPath(path, color)
+
+
+class HexColorPicker(QWidget):
+    """A "#rrggbb" text entry plus a clickable color swatch (opens
+    QColorDialog) - used for the accent-color override and, with
+    `allow_empty=False`, every field of a custom theme (see
+    theme_editor_window.py).
+
+    Only ever emits colorChanged for a *valid* 6-digit hex string (or "" when
+    allow_empty and the field is cleared) - an in-progress edit like "#ab"
+    just doesn't emit yet, rather than emitting garbage.
+    """
+
+    colorChanged = Signal(str)
+
+    def __init__(self, initial: Optional[str], *, allow_empty: bool = False, placeholder: str = "",
+                 parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._allow_empty = allow_empty
+        self._value: Optional[str] = initial or None
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        self._entry = QLineEdit(initial or "")
+        self._entry.setFixedWidth(84)
+        if placeholder:
+            self._entry.setPlaceholderText(placeholder)
+        self._entry.textChanged.connect(self._on_text_changed)
+        layout.addWidget(self._entry)
+
+        self._swatch = QPushButton()
+        self._swatch.setFixedSize(22, 22)
+        self._swatch.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._swatch.clicked.connect(self._pick)
+        layout.addWidget(self._swatch)
+
+        theme_manager().theme_changed.connect(lambda _t: self._update_swatch())
+        self._update_swatch()
+
+    def value(self) -> Optional[str]:
+        return self._value
+
+    def setValue(self, hex_color: Optional[str]) -> None:  # noqa: N802 - matches Qt naming convention
+        self._entry.setText(hex_color or "")
+
+    def _on_text_changed(self, text: str) -> None:
+        text = text.strip()
+        if not text:
+            if self._allow_empty:
+                self._value = None
+                self._update_swatch()
+                self.colorChanged.emit("")
+            return
+        if not _HEX_RE.match(text):
+            return
+        self._value = text
+        self._update_swatch()
+        self.colorChanged.emit(text)
+
+    def _update_swatch(self) -> None:
+        theme = current_theme()
+        color = self._value or theme.accent
+        self._swatch.setStyleSheet(
+            f"QPushButton {{ background-color: {color}; border: 1px solid {theme.panel_border}; "
+            f"border-radius: 5px; }}"
+        )
+
+    def _pick(self) -> None:
+        initial = QColor(self._value or current_theme().accent)
+        color = QColorDialog.getColor(initial, self, "Pick a color")
+        if color.isValid():
+            self._entry.setText(color.name())

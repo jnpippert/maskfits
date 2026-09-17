@@ -12,8 +12,9 @@ at construction) can repaint itself.
 
 from __future__ import annotations
 
+import colorsys
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional
 
 from PySide6.QtCore import QObject, Signal
@@ -31,6 +32,12 @@ class Theme:
     accent: str
     accent_hover: str
     accent_active: str
+    # Text color for solid accent fills (buttons, menu selection, ...) -
+    # white for the default crimson accent in both themes, but a *custom*
+    # accent (see apply_accent) may be light enough that white text on it
+    # would be illegible, so this is a per-Theme field rather than the fixed
+    # constant it used to be.
+    accent_text: str
     danger: str
     danger_hover: str
     green: str
@@ -42,11 +49,6 @@ class Theme:
     canvas_bg: str
 
 
-# Crimson (accent/danger) fills are dark enough in both themes that text on
-# top of them always needs to stay white, regardless of which theme's `text`
-# color is otherwise in effect - so this is a fixed constant, not a Theme field.
-ACCENT_TEXT = "#ffffff"
-
 FONT_FAMILY = "Segoe UI" if sys.platform == "win32" else "Helvetica"
 FONT_SIZE = 11
 FONT_SIZE_SMALL = 10
@@ -55,7 +57,7 @@ DARK = Theme(
     mode="dark",
     app_bg="#141415", panel_bg="#1d1d1f", panel_border="#2f2f32",
     text="#eae7e2", text_dim="#96938d",
-    accent="#851212", accent_hover="#a3201f", accent_active="#5c0d0d",
+    accent="#851212", accent_hover="#a3201f", accent_active="#5c0d0d", accent_text="#ffffff",
     danger="#c1554a", danger_hover="#d16e63",
     green="#22c55e", warning="#e8a33d", blue="#3b82f6",
     track="#3a3a3d", button_bg="#28282b", button_hover="#333336", canvas_bg="#0a0a0b",
@@ -68,7 +70,7 @@ LIGHT = Theme(
     # Same crimson identity as dark mode, but hover/active move darker rather
     # than lighter - on a white panel, a solid fill gets more contrast (and
     # visible hover feedback) by darkening, not brightening.
-    accent="#851212", accent_hover="#6b0e0e", accent_active="#4a0a0a",
+    accent="#851212", accent_hover="#6b0e0e", accent_active="#4a0a0a", accent_text="#ffffff",
     danger="#b2453b", danger_hover="#c1554a",
     green="#178a43", warning="#c9781f", blue="#2563eb",
     track="#d3d3d0", button_bg="#e7e7e4", button_hover="#dadad7", canvas_bg="#ffffff",
@@ -80,32 +82,161 @@ def hex_to_rgb(color: str) -> tuple[int, int, int]:
     return int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
 
 
+def detect_os_light_mode() -> bool:
+    """Best-effort read of the OS-wide light/dark preference, used to pick the
+    app's initial theme (Settings.theme == "system") so it opens matching the
+    desktop instead of always defaulting to dark. Falls back to dark (returns
+    False) wherever this can't be determined - an unrecognized platform, or
+    the lookup failing for any reason (missing registry key, sandboxed
+    `defaults`, etc.)."""
+    try:
+        if sys.platform == "win32":
+            import winreg
+
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+            )
+            value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+            return bool(value)
+        if sys.platform == "darwin":
+            import subprocess
+
+            result = subprocess.run(
+                ["defaults", "read", "-g", "AppleInterfaceStyle"],
+                capture_output=True, text=True, timeout=1,
+            )
+            return result.returncode != 0
+    except Exception:
+        pass
+    return False
+
+
+def _clamp01(x: float) -> float:
+    return max(0.0, min(x, 1.0))
+
+
+def lighten(color: str, amount: float) -> str:
+    """Moves `color` toward white by `amount` (0-1) in HSL lightness."""
+    r, g, b = hex_to_rgb(color)
+    h, l, s = colorsys.rgb_to_hls(r / 255, g / 255, b / 255)
+    r2, g2, b2 = colorsys.hls_to_rgb(h, _clamp01(l + amount * (1 - l)), s)
+    return f"#{round(r2 * 255):02x}{round(g2 * 255):02x}{round(b2 * 255):02x}"
+
+
+def darken(color: str, amount: float) -> str:
+    """Moves `color` toward black by `amount` (0-1) in HSL lightness."""
+    r, g, b = hex_to_rgb(color)
+    h, l, s = colorsys.rgb_to_hls(r / 255, g / 255, b / 255)
+    r2, g2, b2 = colorsys.hls_to_rgb(h, _clamp01(l * (1 - amount)), s)
+    return f"#{round(r2 * 255):02x}{round(g2 * 255):02x}{round(b2 * 255):02x}"
+
+
+def contrasting_text_color(color: str) -> str:
+    """Picks black or white, whichever reads better on a solid `color` fill
+    (simple relative-luminance threshold - good enough for picking a legible
+    label color, not full WCAG contrast-ratio math)."""
+    r, g, b = hex_to_rgb(color)
+    luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    return "#000000" if luma > 150 else "#ffffff"
+
+
+def derive_accent_shades(color: str, mode: str) -> tuple[str, str]:
+    """(hover, active) shades for a custom accent color, matching the
+    relationship the built-in crimson accent has to its own hover/active in
+    each theme: dark mode brightens on hover and darkens further on press;
+    light mode darkens for both (brightening a solid fill on a white panel
+    loses contrast instead of gaining it)."""
+    if mode == "light":
+        return darken(color, 0.12), darken(color, 0.30)
+    return lighten(color, 0.18), darken(color, 0.22)
+
+
+def apply_accent(theme: Theme, accent: Optional[str]) -> Theme:
+    """Returns `theme` with its accent/accent_hover/accent_active/accent_text
+    replaced by a user-chosen accent color, or `theme` unchanged if `accent`
+    is None (no override - use the built-in crimson)."""
+    if not accent:
+        return theme
+    hover, active = derive_accent_shades(accent, theme.mode)
+    return replace(theme, accent=accent, accent_hover=hover, accent_active=active,
+                    accent_text=contrasting_text_color(accent))
+
+
 class ThemeManager(QObject):
     """App-wide singleton owning the currently active Theme.
 
     Access the active theme via `current_theme()`; switch it via
-    `theme_manager().set_mode(...)`, which re-applies the stylesheet/palette
-    to the running QApplication and emits `theme_changed` for anything that
-    needs to react (custom-painted widgets, the Windows dark-titlebar hook).
+    `theme_manager().set_mode(...)` (built-in dark/light, optionally with
+    `set_accent(...)` layered on top) or `set_custom(...)` (a fully
+    user-defined Theme - see maskfits.custom_themes). Either re-applies the
+    stylesheet/palette to the running QApplication and emits theme_changed
+    for anything that needs to react (custom-painted widgets, the Windows
+    dark-titlebar hook). Deliberately knows nothing about *how* a custom
+    Theme is built or persisted (see maskfits.custom_themes) - it just holds
+    whichever Theme instance it's given.
     """
 
     theme_changed = Signal(Theme)
 
     def __init__(self) -> None:
         super().__init__()
+        self._mode = "dark"
+        self._accent: Optional[str] = None
+        self._custom: Optional[Theme] = None
         self._theme = DARK
 
     @property
     def theme(self) -> Theme:
         return self._theme
 
+    @property
+    def mode(self) -> str:
+        """The last built-in mode selected via set_mode - kept even while a
+        custom theme (set_custom) is active, so switching back to a built-in
+        (or reverting a preview) doesn't need the caller to remember it."""
+        return self._mode
+
+    @property
+    def accent(self) -> Optional[str]:
+        return self._accent
+
+    @property
+    def custom(self) -> Optional[Theme]:
+        return self._custom
+
     def set_mode(self, mode: str) -> None:
-        """Applies the theme's QSS/QPalette to the running QApplication and
-        emits theme_changed - deliberately NOT short-circuited when the mode
-        is unchanged, since this is also how the very first theme gets
-        applied at startup (there's no prior "different" state to compare
-        against then), and re-applying identical QSS is cheap."""
-        theme = LIGHT if mode == "light" else DARK
+        """Selects a built-in theme ('dark'/'light') and clears any custom
+        theme (set_custom) override - deliberately NOT short-circuited when
+        the mode is unchanged, since this is also how the very first theme
+        gets applied at startup (there's no prior "different" state to
+        compare against then), and re-applying identical QSS is cheap."""
+        self._mode = mode
+        self._custom = None
+        self._apply()
+
+    def set_accent(self, accent: Optional[str]) -> None:
+        """Overrides the current built-in theme's accent color (see
+        apply_accent); None reverts to the built-in crimson. No-op while a
+        custom theme is active - it already bakes its own accent in, see
+        set_custom - but is remembered and reapplied as soon as set_mode
+        switches back to a built-in theme."""
+        self._accent = accent
+        self._apply()
+
+    def set_custom(self, theme: Theme) -> None:
+        """Activates a fully custom Theme (see
+        custom_themes.build_custom_theme), overriding set_mode/set_accent
+        until the next set_mode call."""
+        self._custom = theme
+        self._apply()
+
+    def _apply(self) -> None:
+        if self._custom is not None:
+            theme = self._custom
+        else:
+            base = LIGHT if self._mode == "light" else DARK
+            theme = apply_accent(base, self._accent)
         self._theme = theme
         from PySide6.QtWidgets import QApplication
 
@@ -143,7 +274,7 @@ def build_palette(theme: Theme) -> QPalette:
     p.setColor(QPalette.ColorRole.Button, QColor(theme.button_bg))
     p.setColor(QPalette.ColorRole.ButtonText, QColor(theme.text))
     p.setColor(QPalette.ColorRole.Highlight, QColor(theme.accent))
-    p.setColor(QPalette.ColorRole.HighlightedText, QColor(ACCENT_TEXT))
+    p.setColor(QPalette.ColorRole.HighlightedText, QColor(theme.accent_text))
     p.setColor(QPalette.ColorRole.ToolTipBase, QColor(theme.panel_bg))
     p.setColor(QPalette.ColorRole.ToolTipText, QColor(theme.text))
     p.setColor(QPalette.ColorRole.PlaceholderText, QColor(theme.text_dim))
@@ -179,7 +310,7 @@ def build_qss(theme: Theme) -> str:
         font-family: "{FONT_FAMILY}";
         font-size: {FONT_SIZE}pt;
         selection-background-color: {t.accent};
-        selection-color: {ACCENT_TEXT};
+        selection-color: {t.accent_text};
     }}
 
     QMainWindow, QDialog {{
@@ -245,6 +376,13 @@ def build_qss(theme: Theme) -> str:
     QLabel[dim="true"] {{
         color: {t.text_dim};
     }}
+    /* Overrides [dim="true"] below it (same specificity, later wins) - the
+    status label stays dim="true" always and toggles this on top of it for a
+    quick visual "this succeeded" cue (e.g. after a mask export) without the
+    user having to read the message. */
+    QLabel[state="success"] {{
+        color: {t.green};
+    }}
 
     /* ------------------------------------------------------------ buttons */
 
@@ -263,21 +401,21 @@ def build_qss(theme: Theme) -> str:
     }}
     QPushButton:checked {{
         background-color: {t.accent};
-        color: {ACCENT_TEXT};
+        color: {t.accent_text};
     }}
     QPushButton:checked:hover {{
         background-color: {t.accent_hover};
     }}
     QPushButton[accent="true"] {{
         background-color: {t.accent};
-        color: {ACCENT_TEXT};
+        color: {t.accent_text};
     }}
     QPushButton[accent="true"]:hover {{
         background-color: {t.accent_hover};
     }}
     QPushButton[danger="true"] {{
         background-color: {t.danger};
-        color: {ACCENT_TEXT};
+        color: {t.accent_text};
     }}
     QPushButton[danger="true"]:hover {{
         background-color: {t.danger_hover};
@@ -299,7 +437,7 @@ def build_qss(theme: Theme) -> str:
         border-radius: 6px;
         padding: 3px 6px;
         selection-background-color: {t.accent};
-        selection-color: {ACCENT_TEXT};
+        selection-color: {t.accent_text};
     }}
     QLineEdit:focus {{
         border: 1px solid {t.accent};
@@ -323,7 +461,7 @@ def build_qss(theme: Theme) -> str:
         color: {t.text};
         border: 1px solid {t.panel_border};
         selection-background-color: {t.accent};
-        selection-color: {ACCENT_TEXT};
+        selection-color: {t.accent_text};
     }}
 
     QCheckBox {{
@@ -364,7 +502,7 @@ def build_qss(theme: Theme) -> str:
     }}
     QMenuBar::item:pressed {{
         background-color: {t.accent};
-        color: {ACCENT_TEXT};
+        color: {t.accent_text};
     }}
 
     QMenu {{
@@ -379,7 +517,7 @@ def build_qss(theme: Theme) -> str:
     }}
     QMenu::item:selected {{
         background-color: {t.accent};
-        color: {ACCENT_TEXT};
+        color: {t.accent_text};
     }}
     QMenu::item:disabled {{
         color: {t.text_dim};

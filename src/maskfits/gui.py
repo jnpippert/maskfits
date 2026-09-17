@@ -50,6 +50,7 @@ from maskfits.colormaps import (
     build_isopy_lut,
     mask_tint_for,
 )
+from maskfits.custom_themes import build_custom_theme, get_custom_theme
 from maskfits.cuts_histogram import CutsHistogram
 from maskfits.imagedata import (
     PERCENTILE_PRESETS,
@@ -72,7 +73,9 @@ from maskfits.masking import (
     extend_ray_to_border,
     line_mask,
 )
-from maskfits.theme import current_theme, theme_manager
+from maskfits.settings import Settings, load_settings
+from maskfits.settings_window import SettingsWindow
+from maskfits.theme import current_theme, detect_os_light_mode, theme_manager
 from maskfits.widgets import ResizeGrip, RoundButton, RoundedPanel, RoundSlider, SegmentedControl, ThemeToggle
 
 MAG_SIZE = 31
@@ -138,35 +141,6 @@ def _set_windows_app_id() -> None:
 def _app_icon() -> QIcon:
     path = ICON_ICO_PATH if (sys.platform == "win32" and os.path.exists(ICON_ICO_PATH)) else ICON_PATH
     return QIcon(path) if os.path.exists(path) else QIcon()
-
-
-def _detect_os_light_mode() -> bool:
-    """Best-effort read of the OS-wide light/dark preference, used to pick the
-    app's initial theme so it opens matching the desktop instead of always
-    defaulting to dark. Falls back to dark (returns False) wherever this can't
-    be determined - an unrecognized platform, or the lookup failing for any
-    reason (missing registry key, sandboxed `defaults`, etc.)."""
-    try:
-        if sys.platform == "win32":
-            import winreg
-
-            key = winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
-            )
-            value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
-            return bool(value)
-        if sys.platform == "darwin":
-            import subprocess
-
-            result = subprocess.run(
-                ["defaults", "read", "-g", "AppleInterfaceStyle"],
-                capture_output=True, text=True, timeout=1,
-            )
-            return result.returncode != 0
-    except Exception:
-        pass
-    return False
 
 
 def _set_windows_titlebar_dark(widget: QWidget, dark: bool) -> None:
@@ -416,30 +390,37 @@ MODE_FLAGS = {"s": "line", "e": "ellipse"}
 
 
 class MaskFitsApp(QMainWindow):
-    def __init__(self, paths: list[str]):
+    def __init__(self, paths: list[str], settings: Optional[Settings] = None):
         super().__init__()
         self.setWindowTitle("maskfits")
         self.resize(1400, 980)
         self.setWindowIcon(_app_icon())
 
-        self.light_mode = _detect_os_light_mode()
-        theme_manager().set_mode("light" if self.light_mode else "dark")
+        self.settings = settings if settings is not None else load_settings()
+
+        self._apply_theme_setting(self.settings.theme, self.settings.accent_color)
         theme_manager().theme_changed.connect(self._on_theme_changed)
 
         self.entries: list[Entry] = [Entry(p) for p in paths] or [Entry(None)]
         self.index = 0
 
-        self.stretch = "zscale"
-        self.scale_function = "linear"
-        self.colormap = "Grayscale"
+        self.stretch = self.settings.stretch
+        self.scale_function = self.settings.scale
+        self.colormap = self.settings.colormap
         self.invert_colormap = False
         self.mask_alpha = 100
-        self.tool = "ellipse"
+        self.tool = self.settings.mode
         self.ellipticity = 0
         self.angle = 0
         self.radius = 40.0
         self.thickness = 15
         self.line_style = "segment"
+        # Session defaults from Settings (Help -> Settings): applied to each
+        # entry the first time it's displayed with no binning/smoothing of
+        # its own yet - see load_current(). None means "off by default".
+        self.export_dir_mode = self.settings.export_dir
+        self._default_bin_factor = self.settings.bin_factor if self.settings.bin_enabled else None
+        self._default_smooth_sigma = self.settings.smooth_sigma if self.settings.smooth_enabled else None
         # Whichever of these the active tool currently has built (see
         # _rebuild_tool_options) - lets _sync_tool_option_widgets() update a
         # slider's displayed value in place after a programmatic change,
@@ -452,6 +433,9 @@ class MaskFitsApp(QMainWindow):
         self._thickness_slider: Optional[RoundSlider] = None
 
         self.fit_zoom = 1.0
+        # Reset to 1.0 by reset_zoom() during load_current() below, then set
+        # to the real Settings-driven default afterward - see the end of
+        # this __init__.
         self.zoom_mult = 1.0
         self.view_cx = 0.0
         self.view_cy = 0.0
@@ -475,6 +459,7 @@ class MaskFitsApp(QMainWindow):
         # image + manual mask, but not written into the real mask until the
         # user confirms in AutoMaskWindow.
         self._auto_mask_window: Optional[AutoMaskWindow] = None
+        self._settings_window: Optional[SettingsWindow] = None
         self._auto_mask_entry: Optional[Entry] = None
         self._auto_mask_preview: Optional[np.ndarray] = None
 
@@ -482,6 +467,13 @@ class MaskFitsApp(QMainWindow):
         self._build_shortcuts()
         self._rebuild_tool_options()
         self.load_current(reset_view=True)
+        # load_current(reset_view=True) just ran reset_zoom(), which always
+        # sets zoom_mult back to 1.0 - so the Settings-driven default zoom
+        # (like a CLI -z override in run_gui) has to be (re-)applied after
+        # it, not before.
+        self.zoom_mult = max(min(self.settings.zoom, ZOOM_MULT_MAX), ZOOM_MULT_MIN)
+        self._update_zoom_label()
+        self.render()
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
@@ -490,9 +482,29 @@ class MaskFitsApp(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         if self._auto_mask_window is not None:
             self._auto_mask_window.close()
+        if self._settings_window is not None:
+            self._settings_window.close()
         super().closeEvent(event)
 
     # ---------------------------------------------------------------- theme
+
+    def _apply_theme_setting(self, theme_key: str, accent: Optional[str]) -> None:
+        """Resolves a Settings.theme value ("system"/"dark"/"light", or a
+        custom theme's name - see maskfits.custom_themes) to an actual Theme
+        and applies it. Used at startup and whenever Settings are saved with
+        a different theme (see _apply_settings_live). Sets self.light_mode
+        BEFORE touching theme_manager() - its theme_changed signal fires
+        synchronously and _on_theme_changed reads self.light_mode, so it
+        must already be correct by the time that happens."""
+        custom_colors = None if theme_key in ("system", "dark", "light") else get_custom_theme(theme_key)
+        if custom_colors is not None:
+            theme_obj = build_custom_theme(custom_colors)
+            self.light_mode = theme_obj.mode == "light"
+            theme_manager().set_custom(theme_obj)
+        else:
+            self.light_mode = detect_os_light_mode() if theme_key == "system" else (theme_key == "light")
+            theme_manager().set_mode("light" if self.light_mode else "dark")
+            theme_manager().set_accent(accent)
 
     def _toggle_theme(self) -> None:
         self.light_mode = not self.light_mode
@@ -566,12 +578,62 @@ class MaskFitsApp(QMainWindow):
         color_menu.addAction(self._invert_action)
 
         help_menu = menubar.addMenu("Help")
-        help_menu.addAction("About", self._show_help)
+        about_action = help_menu.addAction("About", self._show_help)
+        settings_action = help_menu.addAction("Settings...", self._open_settings)
+        # On macOS, Qt auto-detects action text like "About"/"Settings..."
+        # and silently relocates it out of whatever menu it was added to
+        # into the application's own menu (top-left, next to the app name)
+        # instead of leaving it under Help. NoRole pins both of these to
+        # stay exactly where they're placed, on every platform.
+        about_action.setMenuRole(QAction.MenuRole.NoRole)
+        settings_action.setMenuRole(QAction.MenuRole.NoRole)
+        if sys.platform == "darwin":
+            # ...but macOS users do expect Settings in the native app-menu
+            # spot too (Cmd+,) - a second action, explicitly given
+            # PreferencesRole, gets pulled out of Help into that spot by Qt,
+            # so it's reachable from both places rather than picking one.
+            mac_settings_action = QAction("Settings...", self)
+            mac_settings_action.triggered.connect(self._open_settings)
+            mac_settings_action.setMenuRole(QAction.MenuRole.PreferencesRole)
+            mac_settings_action.setShortcut(QKeySequence("Ctrl+,"))
+            help_menu.addAction(mac_settings_action)
         help_menu.addSeparator()
         for keys, description in HOTKEY_ENTRIES:
             action = QAction(f"{keys}    {description}", self)
             action.setEnabled(False)
             help_menu.addAction(action)
+
+    def _open_settings(self) -> None:
+        if self._settings_window is not None:
+            self._settings_window.raise_()
+            self._settings_window.activateWindow()
+            return
+        dialog = SettingsWindow(self.settings, self)
+        dialog.settings_saved.connect(self._apply_settings_live)
+        dialog.finished.connect(self._clear_settings_window)
+        self._settings_window = dialog
+        dialog.show()
+
+    def _clear_settings_window(self, _result=None) -> None:
+        self._settings_window = None
+
+    def _apply_settings_live(self, settings: Settings) -> None:
+        """Settings were just saved (persisted to disk by the dialog itself)
+        - also apply the live-appliable ones to the currently running
+        session, so Save visibly does something instead of only affecting
+        the next launch. The theme itself was already live-previewed by the
+        dialog as the user edited it; Save just means "keep what's showing"."""
+        self.settings = settings
+        self.export_dir_mode = settings.export_dir
+        self._default_bin_factor = settings.bin_factor if settings.bin_enabled else None
+        self._default_smooth_sigma = settings.smooth_sigma if settings.smooth_enabled else None
+        self.set_colormap(settings.colormap)
+        self.set_stretch(settings.stretch)
+        self.set_scale_function(settings.scale)
+        self.set_tool(settings.mode)
+        self.zoom_mult = max(min(settings.zoom, ZOOM_MULT_MAX), ZOOM_MULT_MIN)
+        self._update_zoom_label()
+        self.render()
 
     def _show_help(self) -> None:
         QMessageBox.information(
@@ -647,6 +709,7 @@ class MaskFitsApp(QMainWindow):
         status_layout.setContentsMargins(14, 8, 14, 8)
         self.status = QLabel("new file")
         self.status.setProperty("dim", True)
+        self.status.setProperty("state", "")
         status_layout.addWidget(self.status, 1)
         copyright_label = QLabel("© Jan-Niklas Pippert 2026")
         copyright_label.setProperty("dim", True)
@@ -963,6 +1026,23 @@ class MaskFitsApp(QMainWindow):
         """Effective image-to-canvas pixel scale: fit-to-window baseline times the user multiplier."""
         return self.fit_zoom * self.zoom_mult
 
+    def _apply_session_defaults(self, entry: Entry) -> None:
+        """Applies the Settings-driven default bin factor / smooth sigma
+        (Help -> Settings) to a freshly-loaded entry - only when it isn't
+        already binned/smoothed, so this never fights a value the user set
+        explicitly. Runs every time load_current() lands on an entry, which
+        - given _release_mask() already resets is_binned/is_smoothed when
+        navigating away from an entry - means "every time you're newly
+        looking at this entry's data", not just the very first time."""
+        if entry.image is None:
+            return
+        if self._default_bin_factor is not None and not entry.is_binned:
+            self.bin_factor_entry.setText(str(self._default_bin_factor))
+            self._toggle_binning()
+        if self._default_smooth_sigma is not None and not entry.is_smoothed:
+            self.smooth_sigma_entry.setText(self._fmt(self._default_smooth_sigma))
+            self._toggle_smoothing()
+
     def load_current(self, reset_view: bool = False) -> None:
         entry = self.entry
         try:
@@ -974,6 +1054,8 @@ class MaskFitsApp(QMainWindow):
         if entry.image is not None and reset_view:
             self.reset_zoom()
 
+        self._apply_session_defaults(entry)
+
         self.filename_label.setText(os.path.basename(entry.path) if entry.path else "noname")
         self._update_extension_picker()
         self.counter_label.setText(f"{self.index + 1}/{len(self.entries)}")
@@ -981,7 +1063,7 @@ class MaskFitsApp(QMainWindow):
         self._update_cuts_display()
         self._update_smooth_button()
         self._update_bin_button()
-        self.status.setText(f"loaded {entry.path}" if entry.path else "new file")
+        self._set_status(f"loaded {entry.path}" if entry.path else "new file")
 
         self.render()
 
@@ -1004,6 +1086,21 @@ class MaskFitsApp(QMainWindow):
         ext = self.ext_combo.itemData(index)
         if ext is not None:
             self.switch_extension(ext)
+
+    def _set_status(self, text: str, *, success: bool = False) -> None:
+        """Set the bottom status bar text, optionally tinted green (theme's
+        `green` token) as a quick "this succeeded" visual cue - e.g. after a
+        mask export - so the user doesn't have to read the message to know
+        it worked. Always routes through here (never self.status.setText
+        directly) so the green tint never lingers on an unrelated later
+        message."""
+        self.status.setText(text)
+        state = "success" if success else ""
+        if self.status.property("state") != state:
+            self.status.setProperty("state", state)
+            style = self.status.style()
+            style.unpolish(self.status)
+            style.polish(self.status)
 
     @staticmethod
     def _fmt(value: float) -> str:
@@ -1155,7 +1252,7 @@ class MaskFitsApp(QMainWindow):
         self.image.mask[:] = False
         self._mark_mask_dirty()
         self.render()
-        self.status.setText("mask cleared")
+        self._set_status("mask cleared")
 
     # ------------------------------------------------------------- smoothing
 
@@ -1237,7 +1334,7 @@ class MaskFitsApp(QMainWindow):
             self._update_smooth_button()
             self._update_cuts_display()
             self.render()
-            self.status.setText("smoothing removed")
+            self._set_status("smoothing removed")
             return
         sigma = self._read_sigma()
         if sigma <= 0:
@@ -1250,7 +1347,7 @@ class MaskFitsApp(QMainWindow):
         self._update_smooth_button()
         self._update_cuts_display()
         self.render()
-        self.status.setText(f"smoothed (sigma={self._fmt(sigma)})")
+        self._set_status(f"smoothed (sigma={self._fmt(sigma)})")
 
     def _apply_sigma_entry(self) -> None:
         entry = self.entry
@@ -1263,13 +1360,13 @@ class MaskFitsApp(QMainWindow):
             self._update_smooth_button()
             self._update_cuts_display()
             self.render()
-            self.status.setText("smoothing removed")
+            self._set_status("smoothing removed")
             return
         entry.smooth_sigma = sigma
         entry.image.data = self._current_display_data(entry)
         self._update_cuts_display()
         self.render()
-        self.status.setText(f"smoothed (sigma={self._fmt(sigma)})")
+        self._set_status(f"smoothed (sigma={self._fmt(sigma)})")
 
     # -------------------------------------------------------------- binning
 
@@ -1307,7 +1404,7 @@ class MaskFitsApp(QMainWindow):
             self._update_bin_button()
             self._update_cuts_display()
             self._rescale_view_for_bin_change(old_factor)
-            self.status.setText("binning removed")
+            self._set_status("binning removed")
             return
         factor = self._read_bin_factor()
         if factor <= 1:
@@ -1325,7 +1422,7 @@ class MaskFitsApp(QMainWindow):
         self._update_bin_button()
         self._update_cuts_display()
         self._rescale_view_for_bin_change(1.0 / factor)
-        self.status.setText(f"binned {factor}x{factor}")
+        self._set_status(f"binned {factor}x{factor}")
 
     def _apply_bin_entry(self) -> None:
         entry = self.entry
@@ -1344,7 +1441,7 @@ class MaskFitsApp(QMainWindow):
             self._update_bin_button()
             self._update_cuts_display()
             self._rescale_view_for_bin_change(old_factor)
-            self.status.setText("binning removed")
+            self._set_status("binning removed")
             return
         full_res_mask = self._unbin_mask_cached(entry)
         entry.mask_backup = full_res_mask
@@ -1356,7 +1453,7 @@ class MaskFitsApp(QMainWindow):
         self._redo = None
         self._update_cuts_display()
         self._rescale_view_for_bin_change(old_factor / factor)
-        self.status.setText(f"binned {factor}x{factor}")
+        self._set_status(f"binned {factor}x{factor}")
 
     def _rescale_view_for_bin_change(self, k: float) -> None:
         self.view_cx *= k
@@ -1444,14 +1541,22 @@ class MaskFitsApp(QMainWindow):
         exported = (~mask).astype("uint8")
         return fits.PrimaryHDU(data=exported, header=header)
 
+    def _export_dir(self, entry: Entry) -> str:
+        """The folder export_mask/export_mask_as default to, per the
+        "export directory" Setting: the file's own folder (default), or the
+        directory maskfits was launched from."""
+        if self.export_dir_mode == "cwd":
+            return os.getcwd()
+        return os.path.dirname(entry.path)
+
     def export_mask(self) -> None:
         entry = self.entry
         if entry.image is None or entry.path is None:
             QMessageBox.warning(self, "maskfits", "No image loaded to export a mask for.")
             return
-        out_path = os.path.join(os.path.dirname(entry.path), f"mask_{self._mask_stem(entry.path)}.fits")
+        out_path = os.path.join(self._export_dir(entry), f"mask_{self._mask_stem(entry.path)}.fits")
         self._build_mask_hdu(entry).writeto(out_path, overwrite=True)
-        self.status.setText(f"exported mask to {out_path}")
+        self._set_status(f"exported mask to {out_path}", success=True)
 
     def export_mask_as(self) -> None:
         entry = self.entry
@@ -1460,13 +1565,13 @@ class MaskFitsApp(QMainWindow):
             return
         default_name = f"mask_{self._mask_stem(entry.path)}.fits"
         out_path, _filter = QFileDialog.getSaveFileName(
-            self, "Save Mask As", os.path.join(os.getcwd(), default_name),
+            self, "Save Mask As", os.path.join(self._export_dir(entry), default_name),
             "FITS files (*.fits *.fit *.fts);;All files (*.*)",
         )
         if not out_path:
             return
         self._build_mask_hdu(entry).writeto(out_path, overwrite=True)
-        self.status.setText(f"exported mask to {out_path}")
+        self._set_status(f"exported mask to {out_path}", success=True)
 
     # ---------------------------------------------------------- auto mask
 
@@ -1491,13 +1596,13 @@ class MaskFitsApp(QMainWindow):
                 self._push_undo()
             entry.image.mask = entry.image.mask | preview
             self._mark_mask_dirty(entry)
-            self.status.setText(f"auto mask applied: {int(preview.sum()):,} px")
+            self._set_status(f"auto mask applied: {int(preview.sum()):,} px")
         else:
-            self.status.setText("auto mask discarded: image changed while the window was open")
+            self._set_status("auto mask discarded: image changed while the window was open")
         self._clear_auto_mask_preview()
 
     def discard_auto_mask(self, _entry: Entry) -> None:
-        self.status.setText("auto mask discarded")
+        self._set_status("auto mask discarded")
         self._clear_auto_mask_preview()
 
     def _clear_auto_mask_preview(self) -> None:
