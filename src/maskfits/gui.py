@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from typing import Optional
 
 import numpy as np
@@ -76,6 +77,8 @@ from maskfits.masking import (
 from maskfits.settings import Settings, load_settings
 from maskfits.settings_window import SettingsWindow
 from maskfits.theme import current_theme, detect_os_light_mode, theme_manager
+from maskfits.update_check import UpdateCheckWorker, check_for_updates, get_clone_url
+from maskfits.update_dialog import show_update_dialog
 from maskfits.widgets import ResizeGrip, RoundButton, RoundedPanel, RoundSlider, SegmentedControl, ThemeToggle
 
 MAG_SIZE = 31
@@ -460,6 +463,7 @@ class MaskFitsApp(QMainWindow):
         # user confirms in AutoMaskWindow.
         self._auto_mask_window: Optional[AutoMaskWindow] = None
         self._settings_window: Optional[SettingsWindow] = None
+        self._update_check_worker: Optional[UpdateCheckWorker] = None
         self._auto_mask_entry: Optional[Entry] = None
         self._auto_mask_preview: Optional[np.ndarray] = None
 
@@ -580,13 +584,15 @@ class MaskFitsApp(QMainWindow):
         help_menu = menubar.addMenu("Help")
         about_action = help_menu.addAction("About", self._show_help)
         settings_action = help_menu.addAction("Settings...", self._open_settings)
+        update_action = help_menu.addAction("Check for Updates...", self._check_for_updates)
         # On macOS, Qt auto-detects action text like "About"/"Settings..."
         # and silently relocates it out of whatever menu it was added to
         # into the application's own menu (top-left, next to the app name)
-        # instead of leaving it under Help. NoRole pins both of these to
+        # instead of leaving it under Help. NoRole pins all three to
         # stay exactly where they're placed, on every platform.
         about_action.setMenuRole(QAction.MenuRole.NoRole)
         settings_action.setMenuRole(QAction.MenuRole.NoRole)
+        update_action.setMenuRole(QAction.MenuRole.NoRole)
         if sys.platform == "darwin":
             # ...but macOS users do expect Settings in the native app-menu
             # spot too (Cmd+,) - a second action, explicitly given
@@ -634,6 +640,41 @@ class MaskFitsApp(QMainWindow):
         self.zoom_mult = max(min(settings.zoom, ZOOM_MULT_MAX), ZOOM_MULT_MIN)
         self._update_zoom_label()
         self.render()
+
+    def _check_for_updates(self) -> None:
+        """Compares the local git clone against its remote (git fetch +
+        rev-list - see update_check.py) and reports the result. Only
+        meaningful for a dev/editable install run from an actual git clone;
+        anything else (offline, no git, a packaged install with no .git)
+        just gets a clear message instead of crashing."""
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        QApplication.processEvents()
+        try:
+            available, message = check_for_updates()
+        finally:
+            self.unsetCursor()
+        title = "maskfits - Update Available" if available else "maskfits"
+        show_update_dialog(self, title, message, available=available, clone_url=get_clone_url())
+
+    def start_background_update_check(self) -> None:
+        """Silently checks for updates once on startup (see run_gui) and
+        only pops a dialog if one is actually available - never for "up to
+        date", offline, not-a-git-clone, or any other non-update outcome,
+        so a normal launch stays silent. Runs check_for_updates() (a
+        blocking `git fetch`) on a daemon thread so a slow or absent
+        network connection can never delay startup or freeze the window;
+        UpdateCheckWorker.finished is a Qt signal, safe to emit from any
+        thread - Qt auto-queues its delivery back onto this (GUI) thread."""
+        worker = UpdateCheckWorker()
+        worker.finished.connect(self._on_background_update_check)
+        self._update_check_worker = worker  # keep alive until it finishes
+        threading.Thread(target=worker.run, daemon=True).start()
+
+    def _on_background_update_check(self, available: bool, message: str) -> None:
+        self._update_check_worker = None
+        if available:
+            show_update_dialog(self, "maskfits - Update Available", message, available=True,
+                                clone_url=get_clone_url())
 
     def _show_help(self) -> None:
         QMessageBox.information(
@@ -2054,4 +2095,5 @@ def run_gui(paths: list[str], zoom: Optional[float] = None, mode: Optional[str] 
     window.show()
     window.raise_()
     window.activateWindow()
+    window.start_background_update_check()
     return app.exec()
