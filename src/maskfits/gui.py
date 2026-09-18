@@ -379,11 +379,30 @@ MODE_FLAGS = {"s": "line", "e": "ellipse"}
 
 
 class MaskFitsApp(QMainWindow):
+    def _size_to_screen(self, preferred_w: int, preferred_h: int) -> None:
+        """Open windowed at `preferred_w`x`preferred_h`, but never larger
+        than the screen's available space (e.g. a Full HD 1920x1080 display
+        can't fit a window sized for a MacBook Pro's much taller default) -
+        shrunk to fit with a margin and centered, rather than just clamped
+        to the raw screen size which would touch the edges/taskbar."""
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            self.resize(preferred_w, preferred_h)
+            return
+        available = screen.availableGeometry()
+        margin = 60
+        width = min(preferred_w, max(available.width() - margin, 640))
+        height = min(preferred_h, max(available.height() - margin, 480))
+        self.resize(width, height)
+        x = available.x() + (available.width() - width) // 2
+        y = available.y() + (available.height() - height) // 2
+        self.move(x, y)
+
     def __init__(self, paths: list[str], settings: Optional[Settings] = None, *,
                  extension: Optional[int] = None):
         super().__init__()
         self.setWindowTitle("maskfits")
-        self.resize(1400, 980)
+        self._size_to_screen(1400, 980)
         self.setWindowIcon(_app_icon())
 
         self.settings = settings if settings is not None else load_settings()
