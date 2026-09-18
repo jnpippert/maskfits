@@ -57,7 +57,7 @@ def test_build_shortcuts_creates_one_qshortcut_per_default_key(qapp):
 
 
 def test_build_shortcuts_honors_settings_overrides_at_startup(qapp):
-    win = MaskFitsApp([], settings=Settings(shortcuts={"clear_mask": ["X"]}))
+    win = MaskFitsApp([], settings=Settings(shortcuts={"reset_mask": ["X"]}))
     keys = _shortcut_key_strings(win)
     assert "X" in keys
     assert "R" not in keys
@@ -67,7 +67,7 @@ def test_rebuild_shortcuts_replaces_old_qshortcut_objects(qapp):
     win = MaskFitsApp([], settings=Settings())
     assert "R" in _shortcut_key_strings(win)
 
-    win.settings.shortcuts = {"clear_mask": ["X"]}
+    win.settings.shortcuts = {"reset_mask": ["X"]}
     win._rebuild_shortcuts()
 
     keys = _shortcut_key_strings(win)
@@ -97,16 +97,16 @@ def test_full_rebind_chain_updates_live_shortcuts(qapp):
     settings_dlg._edit_shortcuts()
     shortcuts_dlg = settings_dlg._shortcuts_window
 
-    cap = shortcuts_dlg._captures["clear_mask"][0]
+    cap = shortcuts_dlg._captures["reset_mask"][0]
     assert cap.value() == "R"
     _rebind(cap, Qt.Key.Key_X)
     assert cap.value() == "X"
 
     shortcuts_dlg._save()
-    assert settings_dlg.shortcuts == {"clear_mask": ["X"]}
+    assert settings_dlg.shortcuts == {"reset_mask": ["X"]}
 
     settings_dlg._save()
-    assert win.settings.shortcuts == {"clear_mask": ["X"]}
+    assert win.settings.shortcuts == {"reset_mask": ["X"]}
 
     keys = _shortcut_key_strings(win)
     assert "X" in keys

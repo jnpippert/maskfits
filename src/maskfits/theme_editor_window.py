@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QVBoxLayout, QWidget
 
 from maskfits.custom_themes import (
@@ -219,3 +219,10 @@ class ThemeEditorWindow(QDialog):
         if not self._saved:
             self._revert_preview()
         super().closeEvent(event)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() == Qt.Key.Key_Escape:
+            # QDialog's default Escape-closes behavior isn't wanted here -
+            # Cancel/Save are one click away either way. Use Cancel to close.
+            return
+        super().keyPressEvent(event)

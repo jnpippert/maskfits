@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from maskfits.shortcuts import SHORTCUT_ACTIONS, SHORTCUT_ACTIONS_BY_ID, effective_keys, find_conflict
@@ -136,3 +136,13 @@ class ShortcutsWindow(QDialog):
                 cleaned[action_id] = keys
         self.shortcuts_saved.emit(cleaned)
         self.accept()
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() == Qt.Key.Key_Escape:
+            # QDialog's default Escape-closes behavior would fight the
+            # ShortcutCapture widgets' own Escape handling (a quick tap
+            # binds "Esc" itself; a ~1s hold cancels listening) - either one
+            # closing this whole window as a side effect would be a real
+            # problem, not just a surprise. Use Cancel to close.
+            return
+        super().keyPressEvent(event)

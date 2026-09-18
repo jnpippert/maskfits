@@ -14,11 +14,17 @@ def cmd_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_header(args: argparse.Namespace) -> int:
+    with fits.open(args.file) as hdul:
+        print(repr(hdul[args.extension].header))
+    return 0
+
+
 def cmd_get(args: argparse.Namespace) -> int:
     with fits.open(args.file) as hdul:
-        header = hdul[args.hdu].header
+        header = hdul[args.extension].header
         if args.keyword not in header:
-            print(f"Keyword {args.keyword!r} not found in HDU {args.hdu}", file=sys.stderr)
+            print(f"Keyword {args.keyword!r} not found in HDU {args.extension}", file=sys.stderr)
             return 1
         print(header[args.keyword])
     return 0
@@ -26,7 +32,7 @@ def cmd_get(args: argparse.Namespace) -> int:
 
 def cmd_set(args: argparse.Namespace) -> int:
     with fits.open(args.file, mode="update") as hdul:
-        hdul[args.hdu].header[args.keyword] = args.value
+        hdul[args.extension].header[args.keyword] = args.value
     return 0
 
 
@@ -39,23 +45,33 @@ def build_parser() -> argparse.ArgumentParser:
     show.add_argument("--header", type=int, default=None, help="Print header for the given HDU index")
     show.set_defaults(func=cmd_show)
 
+    header = subparsers.add_parser("header", help="Show the FITS header for one extension")
+    header.add_argument("file", help="Path to the FITS file")
+    header.add_argument("-x", "--extension", type=int, default=0,
+                         help="HDU extension index (default: 0)")
+    header.set_defaults(func=cmd_header)
+
     get = subparsers.add_parser("get", help="Get a header keyword value")
     get.add_argument("file", help="Path to the FITS file")
     get.add_argument("keyword", help="Header keyword to read")
-    get.add_argument("--hdu", type=int, default=0, help="HDU index (default: 0)")
+    # --hdu is kept as an alias for backwards compatibility - -x/--extension
+    # is the name used everywhere else (the GUI's own -x flag, and header).
+    get.add_argument("-x", "--extension", "--hdu", type=int, default=0,
+                      help="HDU extension index (default: 0)")
     get.set_defaults(func=cmd_get)
 
     set_ = subparsers.add_parser("set", help="Set a header keyword value")
     set_.add_argument("file", help="Path to the FITS file")
     set_.add_argument("keyword", help="Header keyword to set")
     set_.add_argument("value", help="New value for the keyword")
-    set_.add_argument("--hdu", type=int, default=0, help="HDU index (default: 0)")
+    set_.add_argument("-x", "--extension", "--hdu", type=int, default=0,
+                       help="HDU extension index (default: 0)")
     set_.set_defaults(func=cmd_set)
 
     return parser
 
 
-SUBCOMMANDS = {"show", "get", "set"}
+SUBCOMMANDS = {"show", "header", "get", "set"}
 
 # Friendly CLI names for -c/--colormap -> the actual internal colormap name
 # (maskfits.colormaps.COLORMAP_NAMES) - kept as a plain literal table here,
@@ -115,6 +131,9 @@ def build_gui_parser() -> argparse.ArgumentParser:
                          help="initial colormap")
     parser.add_argument("-b", "--binning", type=int, default=None, help="initial bin factor (NxN)")
     parser.add_argument("-s", "--smooth", type=int, default=None, help="initial Gaussian smoothing sigma")
+    parser.add_argument("-x", "--extension", type=int, default=None,
+                         help="initial FITS extension/HDU to load (default: 0) - has no effect on a "
+                              "file that doesn't have that extension, it just opens its own first one")
     return parser
 
 
@@ -127,12 +146,13 @@ def main(argv: list[str] | None = None) -> int:
         return args.func(args)
 
     if argv and argv[0] in {"-h", "--help"}:
-        print("usage: maskfits [-z ZOOM] [-m {s,e}] [--vmin V] [--vmax V] [--scale {lin,log,asinh}]")
+        print("usage: maskfits [-z ZOOM] [-m {s,e}] [-x N] [--vmin V] [--vmax V] [--scale {lin,log,asinh}]")
         print("                [--cuts CUTS] [-c COLORMAP] [-b N] [-s SIGMA] [IMAGE ...]")
-        print("       maskfits {show,get,set} ...               header inspection/editing on the command line")
+        print("       maskfits {show,header,get,set} ...       header inspection/editing on the command line")
         print()
         print("  -z, --zoom ZOOM      initial zoom multiplier relative to fit-to-window (e.g. 2 for 2x)")
         print("  -m, --mode {s,e}     initial mask mode: s=satellite, e=ellipse")
+        print("  -x, --extension N    initial FITS extension/HDU to load (default: 0)")
         print("  --vmin VMIN          initial lower cut level (overrides --cuts)")
         print("  --vmax VMAX          initial upper cut level (overrides --cuts)")
         print("  --scale {lin,log,asinh}  initial display stretch function")
@@ -158,6 +178,7 @@ def main(argv: list[str] | None = None) -> int:
         colormap=COLORMAP_CLI_CHOICES.get(gui_args.colormap) if gui_args.colormap else None,
         binning=gui_args.binning,
         smooth=gui_args.smooth,
+        extension=gui_args.extension,
     )
 
 

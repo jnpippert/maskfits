@@ -61,11 +61,11 @@ def test_sanitize_overrides_keeps_valid_entries():
 
 
 def test_find_conflict_detects_a_shared_key():
-    # "clear_mask" defaults to "R" - binding "undo"'s only key to "R" too
-    # should be flagged as conflicting with clear_mask's label.
+    # "reset_mask" defaults to "R" - binding "undo"'s only key to "R" too
+    # should be flagged as conflicting with reset_mask's label.
     overrides = {"undo": ["R"]}
     conflict = find_conflict("undo", "R", overrides)
-    assert conflict == SHORTCUT_ACTIONS_BY_ID["clear_mask"].label
+    assert conflict == SHORTCUT_ACTIONS_BY_ID["reset_mask"].label
 
 
 def test_find_conflict_none_when_key_is_unique():

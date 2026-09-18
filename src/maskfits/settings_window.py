@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -476,3 +476,13 @@ class SettingsWindow(QDialog):
         if not self._saved:
             self._revert_preview()
         super().closeEvent(event)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() == Qt.Key.Key_Escape:
+            # QDialog's default Escape-closes behavior is a poor fit here -
+            # Cancel/close is one click away either way, and it was closing
+            # this window as a side effect of holding Escape to cancel a
+            # shortcut capture in the child ShortcutsWindow (Escape bubbles
+            # up when nothing below consumes it). Use Cancel to close.
+            return
+        super().keyPressEvent(event)

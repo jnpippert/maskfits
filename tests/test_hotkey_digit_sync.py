@@ -139,15 +139,15 @@ def test_switching_tools_hides_the_old_tool_options_immediately(qapp, win):
     from the layout but does not hide the widget, and deleteLater()'s
     actual deletion is a deferred event with no guarantee of running before
     the next paint. Switching tools back and forth could leave the old
-    tool's labels ("radius (px):", "ellipticity (%):", ...) visibly
-    overlapping the new tool's ("thickness (px):", "style", ...) until the
+    tool's labels ("Radius (px):", "Ellipticity (%):", ...) visibly
+    overlapping the new tool's ("Thickness (px):", "Style", ...) until the
     deferred delete eventually caught up."""
     from PySide6.QtWidgets import QLabel
 
     win.set_tool("line")
     qapp.processEvents()
     labels = {lbl.text(): lbl.isVisible() for lbl in win.tool_options_layout.parentWidget().findChildren(QLabel)}
-    assert labels.get("thickness (px):") is True
-    assert labels.get("radius (px):") in (False, None)
-    assert labels.get("ellipticity (%):") in (False, None)
-    assert labels.get("angle (°):") in (False, None)
+    assert labels.get("Thickness (px):") is True
+    assert labels.get("Radius (px):") in (False, None)
+    assert labels.get("Ellipticity (%):") in (False, None)
+    assert labels.get("Angle (°):") in (False, None)

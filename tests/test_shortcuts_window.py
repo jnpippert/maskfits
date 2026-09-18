@@ -25,39 +25,39 @@ def _rebind(cap, key):
 
 def test_builds_a_capture_per_default_key(qapp):
     win = ShortcutsWindow({})
-    # "undo" has two defaults (Ctrl+Z, U); "clear_mask" has one (R).
+    # "undo" has two defaults (Ctrl+Z, U); "reset_mask" has one (R).
     assert len(win._captures["undo"]) == 2
-    assert len(win._captures["clear_mask"]) == 1
+    assert len(win._captures["reset_mask"]) == 1
     assert win._captures["undo"][0].value() == "Ctrl+Z"
     assert win._captures["undo"][1].value() == "U"
-    assert win._captures["clear_mask"][0].value() == "R"
+    assert win._captures["reset_mask"][0].value() == "R"
 
 
 def test_existing_overrides_are_shown(qapp):
-    win = ShortcutsWindow({"clear_mask": ["X"]})
-    assert win._captures["clear_mask"][0].value() == "X"
+    win = ShortcutsWindow({"reset_mask": ["X"]})
+    assert win._captures["reset_mask"][0].value() == "X"
 
 
 def test_rebinding_updates_overrides_and_save_emits_cleaned_dict(qapp, monkeypatch):
     win = ShortcutsWindow({})
-    _rebind(win._captures["clear_mask"][0], Qt.Key.Key_X)
-    assert win.overrides["clear_mask"] == ["X"]
+    _rebind(win._captures["reset_mask"][0], Qt.Key.Key_X)
+    assert win.overrides["reset_mask"] == ["X"]
 
     received = []
     win.shortcuts_saved.connect(received.append)
     monkeypatch.setattr(win, "accept", lambda: None)
     win._save()
 
-    assert received == [{"clear_mask": ["X"]}]
+    assert received == [{"reset_mask": ["X"]}]
 
 
 def test_save_drops_overrides_that_match_defaults(qapp, monkeypatch):
     """Rebinding back to the same key as the default shouldn't be persisted
     as an override - keeps the stored set to genuine rebindings only (see
     shortcuts.py's own reasoning for why that matters)."""
-    win = ShortcutsWindow({"clear_mask": ["X"]})
-    _rebind(win._captures["clear_mask"][0], Qt.Key.Key_R)  # back to the default
-    assert win.overrides["clear_mask"] == ["R"]
+    win = ShortcutsWindow({"reset_mask": ["X"]})
+    _rebind(win._captures["reset_mask"][0], Qt.Key.Key_R)  # back to the default
+    assert win.overrides["reset_mask"] == ["R"]
 
     received = []
     win.shortcuts_saved.connect(received.append)
@@ -68,29 +68,29 @@ def test_save_drops_overrides_that_match_defaults(qapp, monkeypatch):
 
 
 def test_reset_all_clears_overrides_and_resets_displayed_values(qapp):
-    win = ShortcutsWindow({"clear_mask": ["X"], "undo": ["Q"]})
+    win = ShortcutsWindow({"reset_mask": ["X"], "undo": ["Q"]})
     win._reset_all()
     assert win.overrides == {}
-    assert win._captures["clear_mask"][0].value() == "R"
+    assert win._captures["reset_mask"][0].value() == "R"
     assert win._captures["undo"][0].value() == "Ctrl+Z"
     assert win._captures["undo"][1].value() == "U"
 
 
 def test_conflict_warning_shown_for_a_duplicate_key(qapp):
     win = ShortcutsWindow({})
-    _rebind(win._captures["undo"][0], Qt.Key.Key_R)  # R is clear_mask's default
-    assert SHORTCUT_ACTIONS_BY_ID["clear_mask"].label in win._conflict_label.text()
+    _rebind(win._captures["undo"][0], Qt.Key.Key_R)  # R is reset_mask's default
+    assert SHORTCUT_ACTIONS_BY_ID["reset_mask"].label in win._conflict_label.text()
 
 
 def test_no_conflict_warning_for_a_unique_key(qapp):
     win = ShortcutsWindow({})
-    _rebind(win._captures["clear_mask"][0], Qt.Key.Key_F9)
+    _rebind(win._captures["reset_mask"][0], Qt.Key.Key_F9)
     assert win._conflict_label.text() == ""
 
 
 def test_cancel_does_not_emit_saved(qapp, monkeypatch):
     win = ShortcutsWindow({})
-    _rebind(win._captures["clear_mask"][0], Qt.Key.Key_X)
+    _rebind(win._captures["reset_mask"][0], Qt.Key.Key_X)
     received = []
     win.shortcuts_saved.connect(received.append)
     monkeypatch.setattr(win, "reject", lambda: None)

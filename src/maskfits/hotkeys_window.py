@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from maskfits.shortcuts import SHORTCUT_ACTIONS, effective_keys
@@ -97,3 +98,10 @@ class HotkeysWindow(QDialog):
         row.addWidget(desc_lbl, 1)
         layout.addSpacing(5)
         layout.addLayout(row)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() == Qt.Key.Key_Escape:
+            # QDialog's default Escape-closes behavior isn't wanted here,
+            # consistent with the other popups in this app - use Close.
+            return
+        super().keyPressEvent(event)

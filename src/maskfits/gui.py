@@ -157,13 +157,16 @@ def _set_windows_titlebar_dark(widget: QWidget, dark: bool) -> None:
 class Entry:
     """A single loaded (or not-yet-loaded) FITS file slot."""
 
-    def __init__(self, path: Optional[str] = None):
+    def __init__(self, path: Optional[str] = None, ext: int = 0):
         self.path = path
         self.image: Optional[FitsImage] = None
-        # Which HDU to load - defaults to 0, but ensure_loaded falls back to
-        # the first HDU that actually has 2D image data if 0 doesn't (e.g.
-        # an empty primary HDU with the real data in extension 1+).
-        self.ext: int = 0
+        # Which HDU to load - defaults to 0 (or the CLI's -x/--extension,
+        # for whichever files were passed on the command line), but
+        # ensure_loaded falls back to the first HDU that actually has 2D
+        # image data if this one doesn't (e.g. an empty primary HDU with the
+        # real data in extension 1+, or a requested extension this
+        # particular file doesn't have at all).
+        self.ext: int = ext
         self.available_extensions: list[tuple[int, str]] = []
         self.lowcut = 0.0
         self.highcut = 1.0
@@ -376,7 +379,8 @@ MODE_FLAGS = {"s": "line", "e": "ellipse"}
 
 
 class MaskFitsApp(QMainWindow):
-    def __init__(self, paths: list[str], settings: Optional[Settings] = None):
+    def __init__(self, paths: list[str], settings: Optional[Settings] = None, *,
+                 extension: Optional[int] = None):
         super().__init__()
         self.setWindowTitle("maskfits")
         self.resize(1400, 980)
@@ -387,7 +391,14 @@ class MaskFitsApp(QMainWindow):
         self._apply_theme_setting(self.settings.theme, self.settings.accent_color)
         theme_manager().theme_changed.connect(self._on_theme_changed)
 
-        self.entries: list[Entry] = [Entry(p) for p in paths] or [Entry(None)]
+        # -x/--extension (CLI-only, like vmin/vmax - not a Settings field,
+        # since which HDU to open is a per-invocation detail, not a
+        # persistent preference). A file that doesn't have this extension
+        # falls back to its own first valid one instead of failing - see
+        # Entry.ensure_loaded - so this is a safe no-op for a single-
+        # extension file.
+        start_ext = extension if extension is not None else 0
+        self.entries: list[Entry] = [Entry(p, ext=start_ext) for p in paths] or [Entry(None)]
         self.index = 0
 
         self.stretch = self.settings.stretch
@@ -882,7 +893,7 @@ class MaskFitsApp(QMainWindow):
         self.cuts_histogram.cuts_applied.connect(self._on_histogram_apply)
         layout.addWidget(self.cuts_histogram)
 
-        alpha_label = QLabel(f"mask opacity: {self.mask_alpha}%")
+        alpha_label = QLabel(f"Mask opacity: {self.mask_alpha}%")
         alpha_label.setProperty("dim", True)
         self._alpha_label = alpha_label
         layout.addWidget(alpha_label)
@@ -991,22 +1002,22 @@ class MaskFitsApp(QMainWindow):
 
         if self.tool == "ellipse":
             self._radius_slider = self._build_slider_row(
-                self.tool_options_layout, "radius", self.radius, RADIUS_MIN, MAX_SHAPE_SIZE,
+                self.tool_options_layout, "Radius", self.radius, RADIUS_MIN, MAX_SHAPE_SIZE,
                 suffix=" px", on_change=self._on_radius_changed)
             self._ellipticity_slider = self._build_slider_row(
-                self.tool_options_layout, "ellipticity", self.ellipticity, 0, 90,
+                self.tool_options_layout, "Ellipticity", self.ellipticity, 0, 90,
                 suffix="%", integer=True, on_change=self._on_ellipticity_changed)
             self._angle_slider = self._build_slider_row(
-                self.tool_options_layout, "angle", self.angle, -180, 180,
+                self.tool_options_layout, "Angle", self.angle, -180, 180,
                 suffix="°", integer=True, on_change=self._on_angle_changed)
         else:
             self._thickness_slider = self._build_slider_row(
-                self.tool_options_layout, "thickness", self.thickness, 1, MAX_SHAPE_SIZE,
+                self.tool_options_layout, "Thickness", self.thickness, 1, MAX_SHAPE_SIZE,
                 suffix=" px", integer=True, on_change=self._on_thickness_changed)
             style_box = QWidget()
             style_layout = QVBoxLayout(style_box)
             style_layout.setContentsMargins(0, 8, 0, 4)
-            style_layout.addWidget(self._dim_label("style"))
+            style_layout.addWidget(self._dim_label("Style"))
             self._line_style_control = SegmentedControl(LINE_STYLES, self.line_style)
             self._line_style_control.valueChanged.connect(self._on_line_style_changed)
             style_layout.addWidget(self._line_style_control)
@@ -1043,7 +1054,7 @@ class MaskFitsApp(QMainWindow):
 
     def _on_alpha_changed(self, v: float) -> None:
         self.mask_alpha = int(v)
-        self._alpha_label.setText(f"mask opacity: {self.mask_alpha}%")
+        self._alpha_label.setText(f"Mask Opacity: {self.mask_alpha}%")
 
     def set_tool(self, value: str) -> None:
         if value == self.tool:
@@ -2072,7 +2083,7 @@ class MaskFitsApp(QMainWindow):
             "redo": (self.redo, True),
             "prev_image": (self.prev_image, True),
             "next_image": (self.next_image, True),
-            "clear_mask": (self.reset_mask, True),
+            "reset_mask": (self.reset_mask, True),
             "grow_shape": (lambda: self._adjust_shape_size(1), True),
             "shrink_shape": (lambda: self._adjust_shape_size(-1), True),
             "cycle_colormap": (self._cycle_colormap, True),
@@ -2106,7 +2117,7 @@ class MaskFitsApp(QMainWindow):
 def run_gui(paths: list[str], zoom: Optional[float] = None, mode: Optional[str] = None, *,
             vmin: Optional[float] = None, vmax: Optional[float] = None, scale: Optional[str] = None,
             cuts: Optional[str] = None, colormap: Optional[str] = None, binning: Optional[int] = None,
-            smooth: Optional[int] = None) -> int:
+            smooth: Optional[int] = None, extension: Optional[int] = None) -> int:
     _set_windows_app_id()
     app = QApplication.instance() or QApplication(sys.argv)
     # The native per-platform style (macOS in particular) draws QSlider's
@@ -2149,7 +2160,7 @@ def run_gui(paths: list[str], zoom: Optional[float] = None, mode: Optional[str] 
         settings.smooth_enabled = True
         settings.smooth_sigma = float(smooth)
 
-    window = MaskFitsApp(paths, settings=settings)
+    window = MaskFitsApp(paths, settings=settings, extension=extension)
     # --cuts (self.stretch) is correctly applied once during construction
     # for a non-IsoPy colormap - but when IsoPy is the STARTING colormap,
     # _sync_isopy_cuts() runs right after in that same initial load and

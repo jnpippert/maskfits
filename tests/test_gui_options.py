@@ -39,6 +39,57 @@ def _write_fits(path, size=64, mean=100.0, sigma=5.0):
     fits.PrimaryHDU(data).writeto(path, overwrite=True)
 
 
+def _write_multi_ext_fits(path):
+    """Both HDUs carry real 2D data (unlike an empty-primary-HDU multi-
+    extension file), so list_image_extensions()'s own "only HDUs with data"
+    filter doesn't override which one ends up active - isolating what
+    -x/--extension itself does from that separate, pre-existing fallback."""
+    rng = np.random.default_rng(0)
+    primary = fits.PrimaryHDU(rng.normal(100.0, 5.0, size=(32, 32)).astype(np.float32))
+    primary.header["OBJECT"] = "EXT0"
+    ext1 = fits.ImageHDU(rng.normal(100.0, 5.0, size=(32, 32)).astype(np.float32))
+    ext1.header["OBJECT"] = "EXT1"
+    fits.HDUList([primary, ext1]).writeto(path, overwrite=True)
+
+
+def test_extension_param_loads_the_requested_hdu(qapp, tmp_path):
+    path = tmp_path / "multi.fits"
+    _write_multi_ext_fits(path)
+
+    win = MaskFitsApp([str(path)], settings=Settings(), extension=1)
+    win.show()
+    qapp.processEvents()
+
+    assert win.entry.ext == 1
+    assert win.image.header.get("OBJECT") == "EXT1"
+
+
+def test_extension_param_defaults_to_zero_when_not_given(qapp, tmp_path):
+    path = tmp_path / "multi.fits"
+    _write_multi_ext_fits(path)
+
+    win = MaskFitsApp([str(path)], settings=Settings())
+    win.show()
+    qapp.processEvents()
+
+    assert win.entry.ext == 0
+    assert win.image.header.get("OBJECT") == "EXT0"
+
+
+def test_extension_param_has_no_impact_on_a_single_extension_file(qapp, tmp_path):
+    path = tmp_path / "single.fits"
+    _write_fits(path)
+
+    win = MaskFitsApp([str(path)], settings=Settings(), extension=5)
+    win.show()
+    qapp.processEvents()
+
+    # Entry.ensure_loaded() falls back to the file's own first valid
+    # extension when the requested one doesn't exist there.
+    assert win.entry.ext == 0
+    assert win.image is not None
+
+
 def test_settings_driven_startup_options_all_apply(qapp, tmp_path):
     path = tmp_path / "img.fits"
     _write_fits(path)

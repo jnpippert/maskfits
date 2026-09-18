@@ -67,7 +67,7 @@ def test_theme_accepts_a_registered_custom_theme_name(store):
 
 
 def test_shortcuts_round_trip(store):
-    overrides = {"undo": ["Ctrl+Z"], "clear_mask": ["X"]}
+    overrides = {"undo": ["Ctrl+Z"], "reset_mask": ["X"]}
     save_settings(Settings(shortcuts=overrides), store)
     assert load_settings(store).shortcuts == overrides
 

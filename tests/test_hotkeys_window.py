@@ -44,14 +44,14 @@ def test_shows_default_keys_when_no_overrides(qapp):
 def test_shows_rebound_key_instead_of_default(qapp):
     from maskfits.shortcuts import effective_keys
 
-    overrides = {"clear_mask": ["X"]}
+    overrides = {"reset_mask": ["X"]}
     win = HotkeysWindow(overrides)
     texts = _label_texts(win)
     # The window must render whatever effective_keys() itself resolves to
     # (the live source of truth) rather than any hardcoded default text.
-    assert " / ".join(effective_keys("clear_mask", overrides)) in texts
+    assert " / ".join(effective_keys("reset_mask", overrides)) in texts
     assert "X" in texts
-    assert "R" not in texts  # clear_mask's now-overridden default
+    assert "R" not in texts  # reset_mask's now-overridden default
 
 
 def test_is_non_modal(qapp):

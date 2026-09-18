@@ -28,7 +28,7 @@ SHORTCUT_ACTIONS: list[ShortcutAction] = [
     ShortcutAction("redo", "Redo", ("Ctrl+Shift+Z", "Y")),
     ShortcutAction("prev_image", "Previous image", ("Left",)),
     ShortcutAction("next_image", "Next image", ("Right",)),
-    ShortcutAction("clear_mask", "Clear the whole mask", ("R",)),
+    ShortcutAction("reset_mask", "Reset mask", ("R",)),
     ShortcutAction("grow_shape", "Grow shape size", ("E",)),
     ShortcutAction("shrink_shape", "Shrink shape size", ("W",)),
     ShortcutAction("cycle_colormap", "Cycle colormap", ("C",)),
