@@ -252,7 +252,7 @@ class CutsHistogram(QWidget):
         self._hi_entry.editingFinished.connect(self._on_hi_entry)
         entries.addWidget(self._hi_entry)
 
-        self._range_btn = RoundButton("full", checkable=True)
+        self._range_btn = RoundButton("Full", checkable=True)
         self._range_btn.toggled.connect(self._on_toggle_range_view)
         entries.addWidget(self._range_btn)
         entries.addStretch(1)

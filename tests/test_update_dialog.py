@@ -81,7 +81,7 @@ def test_copy_button_puts_command_on_clipboard(qapp, monkeypatch):
         qapp, monkeypatch, message="Update available.", available=True,
         command="git clone https://github.com/jnpippert/maskfits.git",
     )
-    copy_btn = next(b for b in dialog.findChildren(RoundButton) if b.text() == "copy")
+    copy_btn = next(b for b in dialog.findChildren(RoundButton) if b.text() == "Copy")
     copy_btn.click()
     assert QApplication.clipboard().text() == "git clone https://github.com/jnpippert/maskfits.git"
-    assert copy_btn.text() == "copied!"
+    assert copy_btn.text() == "Copied!"

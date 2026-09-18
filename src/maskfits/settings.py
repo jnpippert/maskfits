@@ -10,7 +10,8 @@ to load_settings/save_settings instead of the real user-wide one).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 from typing import Optional
 
 from PySide6.QtCore import QSettings
@@ -18,6 +19,7 @@ from PySide6.QtCore import QSettings
 from maskfits.colormaps import COLORMAP_NAMES
 from maskfits.custom_themes import list_custom_themes
 from maskfits.imagedata import PERCENTILE_PRESETS, STRETCH_NAMES
+from maskfits.shortcuts import sanitize_overrides
 
 ORG_NAME = "maskfits"
 APP_NAME = "maskfits"
@@ -46,6 +48,10 @@ class Settings:
     zoom: float = 1.0
     # Hex string ("#rrggbb") or None to use the built-in crimson accent.
     accent_color: Optional[str] = None
+    # Only actions the user has actually rebound, as {action_id: [key, ...]}
+    # - see maskfits.shortcuts. Anything not present here still uses that
+    # action's own default key(s).
+    shortcuts: dict[str, list[str]] = field(default_factory=dict)
 
 
 def _backing_store() -> QSettings:
@@ -83,7 +89,19 @@ def load_settings(store: Optional[QSettings] = None) -> Settings:
         export_dir=export_dir if export_dir in EXPORT_DIR_CHOICES else defaults.export_dir,
         zoom=s.value("zoom", defaults.zoom, type=float),
         accent_color=accent or None,
+        shortcuts=_load_shortcuts(s),
     )
+
+
+def _load_shortcuts(s: QSettings) -> dict[str, list[str]]:
+    raw = s.value("shortcuts_json", "", type=str)
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return {}
+    return sanitize_overrides(parsed)
 
 
 def save_settings(settings: Settings, store: Optional[QSettings] = None) -> None:
@@ -100,4 +118,5 @@ def save_settings(settings: Settings, store: Optional[QSettings] = None) -> None
     s.setValue("export_dir", settings.export_dir)
     s.setValue("zoom", settings.zoom)
     s.setValue("accent_color", settings.accent_color or "")
+    s.setValue("shortcuts_json", json.dumps(settings.shortcuts))
     s.sync()

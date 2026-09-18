@@ -17,8 +17,8 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QEnterEvent, QMouseEvent, QPainter, QPainterPath, QPen
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QEnterEvent, QKeyEvent, QKeySequence, QMouseEvent, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QButtonGroup,
     QColorDialog,
@@ -437,3 +437,97 @@ class HexColorPicker(QWidget):
                                        QColorDialog.ColorDialogOption.DontUseNativeDialog)
         if color.isValid():
             self._entry.setText(color.name())
+
+
+class ShortcutCapture(RoundButton):
+    """A button that records a new keyboard shortcut - click once to start
+    listening ("Press A Key..."), then press any key combo and it becomes
+    the new binding. A bare modifier alone (Shift/Ctrl/Alt/Meta) doesn't
+    count as a complete shortcut yet, so it just keeps listening.
+
+    Escape is a real, bindable key (the default binding for "cancel a
+    pending line click"), so a quick tap of it completes the capture with
+    "Esc" like any other key - only HOLDING Escape for ESCAPE_HOLD_MS cancels
+    listening and reverts to the previous value, the same "hold to cancel"
+    convention some other shortcut recorders use specifically so Escape
+    itself stays capturable."""
+
+    keySequenceChanged = Signal(str)
+
+    _MODIFIER_KEYS = (
+        Qt.Key.Key_Shift, Qt.Key.Key_Control, Qt.Key.Key_Alt, Qt.Key.Key_Meta,
+        Qt.Key.Key_AltGr, Qt.Key.Key_CapsLock, Qt.Key.Key_unknown,
+    )
+    ESCAPE_HOLD_MS = 1000
+
+    def __init__(self, value: str, parent: Optional[QWidget] = None):
+        super().__init__(value or "(None)", parent)
+        self._value = value
+        self._listening = False
+        self._escape_timer: Optional[QTimer] = None
+        self.clicked.connect(self._start_listening)
+
+    def value(self) -> str:
+        return self._value
+
+    def setValue(self, value: str) -> None:  # noqa: N802 - matches Qt naming convention
+        self._stop_listening(revert=False)
+        self._value = value
+        self.setText(value or "(None)")
+
+    def _start_listening(self) -> None:
+        self._listening = True
+        self.setText("Press A Key...")
+        self.setFocus()
+
+    def _stop_listening(self, *, revert: bool) -> None:
+        self._listening = False
+        if self._escape_timer is not None:
+            self._escape_timer.stop()
+            self._escape_timer = None
+        if revert:
+            self.setText(self._value or "(None)")
+
+    def _complete(self, seq: str) -> None:
+        self._stop_listening(revert=not seq)
+        if not seq:
+            return
+        self._value = seq
+        self.setText(seq)
+        self.keySequenceChanged.emit(seq)
+
+    def _on_escape_held(self) -> None:
+        self._escape_timer = None
+        self._stop_listening(revert=True)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        if not self._listening:
+            super().keyPressEvent(event)
+            return
+        key = event.key()
+        if key in self._MODIFIER_KEYS:
+            return
+        if key == Qt.Key.Key_Escape and event.modifiers() == Qt.KeyboardModifier.NoModifier:
+            if event.isAutoRepeat():
+                return  # the hold timer is already running - just keep waiting
+            if self._escape_timer is None:
+                self._escape_timer = QTimer(self)
+                self._escape_timer.setSingleShot(True)
+                self._escape_timer.timeout.connect(self._on_escape_held)
+                self._escape_timer.start(self.ESCAPE_HOLD_MS)
+            return
+        self._complete(QKeySequence(event.keyCombination()).toString())
+
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        if (self._listening and self._escape_timer is not None
+                and event.key() == Qt.Key.Key_Escape and not event.isAutoRepeat()):
+            # Released before the hold threshold - a quick tap binds Escape
+            # itself, same as any other key.
+            self._complete(QKeySequence(event.keyCombination()).toString())
+            return
+        super().keyReleaseEvent(event)
+
+    def focusOutEvent(self, event) -> None:  # noqa: N802
+        if self._listening:
+            self._stop_listening(revert=True)
+        super().focusOutEvent(event)

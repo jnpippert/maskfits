@@ -64,3 +64,25 @@ def test_theme_accepts_a_registered_custom_theme_name(store):
     save_custom_theme("MyTheme", {"mode": "dark", "app_bg": "#000000"}, store)
     save_settings(Settings(theme="MyTheme"), store)
     assert load_settings(store).theme == "MyTheme"
+
+
+def test_shortcuts_round_trip(store):
+    overrides = {"undo": ["Ctrl+Z"], "clear_mask": ["X"]}
+    save_settings(Settings(shortcuts=overrides), store)
+    assert load_settings(store).shortcuts == overrides
+
+
+def test_shortcuts_default_to_empty(store):
+    assert load_settings(store).shortcuts == {}
+
+
+def test_shortcuts_json_sanitizes_garbage_on_load(store):
+    store.setValue("shortcuts_json", '{"undo": ["Z"], "bogus_action": ["Q"], "redo": "not-a-list"}')
+    store.sync()
+    assert load_settings(store).shortcuts == {"undo": ["Z"]}
+
+
+def test_shortcuts_json_malformed_json_falls_back_to_empty(store):
+    store.setValue("shortcuts_json", "{not valid json")
+    store.sync()
+    assert load_settings(store).shortcuts == {}

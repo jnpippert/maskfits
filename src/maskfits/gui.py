@@ -53,6 +53,7 @@ from maskfits.colormaps import (
 )
 from maskfits.custom_themes import build_custom_theme, get_custom_theme
 from maskfits.cuts_histogram import CutsHistogram
+from maskfits.hotkeys_window import HotkeysWindow
 from maskfits.imagedata import (
     PERCENTILE_PRESETS,
     STRETCH_NAMES,
@@ -76,6 +77,7 @@ from maskfits.masking import (
 )
 from maskfits.settings import Settings, load_settings
 from maskfits.settings_window import SettingsWindow
+from maskfits.shortcuts import SHORTCUT_ACTIONS, effective_keys
 from maskfits.theme import current_theme, detect_os_light_mode, theme_manager
 from maskfits.update_check import UpdateCheckWorker, check_for_updates, get_clone_url
 from maskfits.update_dialog import show_update_dialog
@@ -101,25 +103,6 @@ LINE_STYLES = [
 ]
 
 SCALE_OPTIONS = [(name, name.capitalize()) for name in STRETCH_NAMES]
-
-HOTKEY_ENTRIES = [
-    ("Left-click / drag", "Paint mask"),
-    ("Right-click / drag", "Erase mask"),
-    ("Middle-click", "Cancel pending line, or redo (satellite mode only)"),
-    ("Ctrl + left-click drag", "Pan the view"),
-    ("Mouse wheel", "Zoom in / out"),
-    ("← / →", "Previous / next image"),
-    ("Ctrl+Z / U", "Undo last mask stroke"),
-    ("Ctrl+Shift+Z / Y", "Redo"),
-    ("R", "Clear the whole mask"),
-    ("Ctrl+R", "Reset zoom"),
-    ("E / W", "Grow / shrink shape size"),
-    ("C", "Cycle colormap"),
-    ("I", "Invert colormap"),
-    ("S", "Smooth image (Gaussian, current sigma)"),
-    ("B", "Bin image (NxN, current factor)"),
-    ("Esc", "Cancel a pending line click"),
-]
 
 ICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "icon.png")
 ICON_ICO_PATH = os.path.join(os.path.dirname(__file__), "assets", "icon.ico")
@@ -434,6 +417,7 @@ class MaskFitsApp(QMainWindow):
         self._ellipticity_slider: Optional[RoundSlider] = None
         self._angle_slider: Optional[RoundSlider] = None
         self._thickness_slider: Optional[RoundSlider] = None
+        self._line_style_control: Optional[SegmentedControl] = None
 
         self.fit_zoom = 1.0
         # Reset to 1.0 by reset_zoom() during load_current() below, then set
@@ -463,6 +447,7 @@ class MaskFitsApp(QMainWindow):
         # user confirms in AutoMaskWindow.
         self._auto_mask_window: Optional[AutoMaskWindow] = None
         self._settings_window: Optional[SettingsWindow] = None
+        self._hotkeys_window: Optional[HotkeysWindow] = None
         self._update_check_worker: Optional[UpdateCheckWorker] = None
         self._auto_mask_entry: Optional[Entry] = None
         self._auto_mask_preview: Optional[np.ndarray] = None
@@ -488,6 +473,8 @@ class MaskFitsApp(QMainWindow):
             self._auto_mask_window.close()
         if self._settings_window is not None:
             self._settings_window.close()
+        if self._hotkeys_window is not None:
+            self._hotkeys_window.close()
         super().closeEvent(event)
 
     # ---------------------------------------------------------------- theme
@@ -585,14 +572,16 @@ class MaskFitsApp(QMainWindow):
         about_action = help_menu.addAction("About", self._show_help)
         settings_action = help_menu.addAction("Settings...", self._open_settings)
         update_action = help_menu.addAction("Check New Repo Version...", self._check_repo_version)
+        hotkeys_action = help_menu.addAction("Hotkeys", self._show_hotkeys)
         # On macOS, Qt auto-detects action text like "About"/"Settings..."
         # and silently relocates it out of whatever menu it was added to
         # into the application's own menu (top-left, next to the app name)
-        # instead of leaving it under Help. NoRole pins all three to
+        # instead of leaving it under Help. NoRole pins all four to
         # stay exactly where they're placed, on every platform.
         about_action.setMenuRole(QAction.MenuRole.NoRole)
         settings_action.setMenuRole(QAction.MenuRole.NoRole)
         update_action.setMenuRole(QAction.MenuRole.NoRole)
+        hotkeys_action.setMenuRole(QAction.MenuRole.NoRole)
         if sys.platform == "darwin":
             # ...but macOS users do expect Settings in the native app-menu
             # spot too (Cmd+,) - a second action, explicitly given
@@ -603,11 +592,6 @@ class MaskFitsApp(QMainWindow):
             mac_settings_action.setMenuRole(QAction.MenuRole.PreferencesRole)
             mac_settings_action.setShortcut(QKeySequence("Ctrl+,"))
             help_menu.addAction(mac_settings_action)
-        help_menu.addSeparator()
-        for keys, description in HOTKEY_ENTRIES:
-            action = QAction(f"{keys}    {description}", self)
-            action.setEnabled(False)
-            help_menu.addAction(action)
 
     def _open_settings(self) -> None:
         if self._settings_window is not None:
@@ -639,7 +623,21 @@ class MaskFitsApp(QMainWindow):
         self.set_tool(settings.mode)
         self.zoom_mult = max(min(settings.zoom, ZOOM_MULT_MAX), ZOOM_MULT_MIN)
         self._update_zoom_label()
+        self._rebuild_shortcuts()
         self.render()
+
+    def _show_hotkeys(self) -> None:
+        if self._hotkeys_window is not None:
+            self._hotkeys_window.raise_()
+            self._hotkeys_window.activateWindow()
+            return
+        dialog = HotkeysWindow(self.settings.shortcuts, self)
+        dialog.finished.connect(self._clear_hotkeys_window)
+        self._hotkeys_window = dialog
+        dialog.show()
+
+    def _clear_hotkeys_window(self, _result=None) -> None:
+        self._hotkeys_window = None
 
     def _check_repo_version(self) -> None:
         """Compares the local git clone against its GitHub remote (git
@@ -685,33 +683,20 @@ class MaskFitsApp(QMainWindow):
                                 command="pip install --upgrade maskfits")
 
     def _show_help(self) -> None:
+        # The full hotkey list lives in Help -> Hotkeys instead (a live view
+        # against the current Settings-driven bindings, since keyboard
+        # shortcuts are rebindable - a hardcoded copy of them here would go
+        # stale the moment the user rebinds anything).
         QMessageBox.information(
             self, "maskfits",
-            "Left-click / drag: paint mask with the current tool\n"
-            "Right-click / drag: erase mask\n"
-            "Middle-click: cancel a pending line start point, or redo (satellite mode only)\n"
-            "Ctrl + left-click drag: pan the view\n"
-            "Mouse wheel: zoom in / out\n"
-            "Ctrl+Z or U: undo last mask stroke\n"
-            "Ctrl+Shift+Z or Y: redo\n"
-            "R: clear the whole mask\n"
-            "Ctrl+R: reset zoom\n"
-            "E / W: grow / shrink shape size\n"
-            "C: cycle colormap\n"
-            "I: invert colormap\n"
-            "S: smooth image (Gaussian, current sigma)\n"
-            "B: bin image (NxN, current factor)\n"
-            "1 / 2: lower / raise ellipticity (ellipse mode)\n"
-            "3 / 4: lower / raise angle (ellipse mode)\n"
-            "1 / 2 / 3: jump to Segment / Arrow / Line style (satellite mode)\n"
-            "Esc: cancel a pending line click\n\n"
             "Ellipse mode: stamp shapes sized by the radius, ellipticity, and angle sliders\n"
             "(ellipticity 0 is a circle)\n\n"
             "Satellite mode styles:\n"
             "  Segment - click a start point, click an end point\n"
             "  Arrow   - click start, click a second point; the trail extends\n"
             "            past it to the image border\n"
-            "  Line    - click two points; the trail extends to both borders",
+            "  Line    - click two points; the trail extends to both borders\n\n"
+            "See Help > Hotkeys for the full list of mouse and keyboard controls.",
         )
 
     # -------------------------------------------------------------- layout
@@ -798,11 +783,11 @@ class MaskFitsApp(QMainWindow):
 
         self.zoom_label = QLabel("1")
         self.zoom_label.setFixedWidth(36)
-        reset_zoom_btn = RoundButton("reset zoom")
+        reset_zoom_btn = RoundButton("Reset Zoom")
         reset_zoom_btn.clicked.connect(self.reset_zoom)
         layout.addWidget(self._chunk(self.zoom_label, reset_zoom_btn))
 
-        self.smooth_button = RoundButton("smooth", checkable=True)
+        self.smooth_button = RoundButton("Smooth", checkable=True)
         self.smooth_button.clicked.connect(self._toggle_smoothing)
         self.smooth_sigma_entry = QLineEdit("2")
         self.smooth_sigma_entry.setFixedWidth(44)
@@ -810,7 +795,7 @@ class MaskFitsApp(QMainWindow):
         self.smooth_sigma_entry.editingFinished.connect(self._apply_sigma_entry)
         layout.addWidget(self._chunk(self.smooth_button, self.smooth_sigma_entry))
 
-        self.bin_button = RoundButton("bin", checkable=True)
+        self.bin_button = RoundButton("Bin", checkable=True)
         self.bin_button.clicked.connect(self._toggle_binning)
         self.bin_factor_entry = QLineEdit("4")
         self.bin_factor_entry.setFixedWidth(44)
@@ -837,13 +822,13 @@ class MaskFitsApp(QMainWindow):
         self.ext_combo.currentIndexChanged.connect(self._on_ext_combo_changed)
         layout.addWidget(self._chunk(self.filename_label, self.ext_combo))
 
-        auto_mask_btn = RoundButton("auto mask")
+        auto_mask_btn = RoundButton("Auto Mask")
         auto_mask_btn.clicked.connect(self.open_auto_mask)
-        export_btn = RoundButton("export mask", accent=True)
+        export_btn = RoundButton("Export Mask", accent=True)
         export_btn.clicked.connect(self.export_mask)
-        reset_btn = RoundButton("reset mask")
+        reset_btn = RoundButton("Reset Mask")
         reset_btn.clicked.connect(self.reset_mask)
-        kill_btn = RoundButton("kill", danger=True)
+        kill_btn = RoundButton("Kill", danger=True)
         kill_btn.clicked.connect(self.kill_current)
         layout.addWidget(self._chunk(auto_mask_btn, export_btn, reset_btn, kill_btn))
 
@@ -988,11 +973,21 @@ class MaskFitsApp(QMainWindow):
             item = self.tool_options_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                # takeAt() only detaches it from the layout - it stays
+                # visible, at its last computed geometry, until deleteLater()
+                # actually runs (a real Qt event, not guaranteed to happen
+                # before the next paint). Left implicit, a switch back and
+                # forth between ellipse/satellite briefly overlapped the old
+                # tool's labels with the new one's - hide() makes it
+                # invisible immediately regardless of when the deferred
+                # delete itself gets processed.
+                widget.hide()
                 widget.deleteLater()
             elif item.layout() is not None:
                 self._clear_layout(item.layout())
         self._cancel_pending_line()
         self._radius_slider = self._ellipticity_slider = self._angle_slider = self._thickness_slider = None
+        self._line_style_control = None
 
         if self.tool == "ellipse":
             self._radius_slider = self._build_slider_row(
@@ -1012,9 +1007,9 @@ class MaskFitsApp(QMainWindow):
             style_layout = QVBoxLayout(style_box)
             style_layout.setContentsMargins(0, 8, 0, 4)
             style_layout.addWidget(self._dim_label("style"))
-            style_control = SegmentedControl(LINE_STYLES, self.line_style)
-            style_control.valueChanged.connect(self._on_line_style_changed)
-            style_layout.addWidget(style_control)
+            self._line_style_control = SegmentedControl(LINE_STYLES, self.line_style)
+            self._line_style_control.valueChanged.connect(self._on_line_style_changed)
+            style_layout.addWidget(self._line_style_control)
             self.tool_options_layout.addWidget(style_box)
 
     @staticmethod
@@ -1023,6 +1018,7 @@ class MaskFitsApp(QMainWindow):
             item = layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                widget.hide()
                 widget.deleteLater()
 
     def _on_radius_changed(self, v: float) -> None:
@@ -1373,7 +1369,7 @@ class MaskFitsApp(QMainWindow):
 
     def _update_smooth_button(self) -> None:
         smoothed = self.image is not None and self.entry.is_smoothed
-        self.smooth_button.setText("unsmooth" if smoothed else "smooth")
+        self.smooth_button.setText("Unsmooth" if smoothed else "Smooth")
         self.smooth_button.setChecked(smoothed)
 
     def _toggle_smoothing(self) -> None:
@@ -1437,7 +1433,7 @@ class MaskFitsApp(QMainWindow):
 
     def _update_bin_button(self) -> None:
         binned = self.image is not None and self.entry.is_binned
-        self.bin_button.setText("unbin" if binned else "bin")
+        self.bin_button.setText("Unbin" if binned else "Bin")
         self.bin_button.setChecked(binned)
 
     def _toggle_binning(self) -> None:
@@ -1521,18 +1517,26 @@ class MaskFitsApp(QMainWindow):
 
     def _sync_tool_option_widgets(self) -> None:
         """Refreshes the tool-option sliders/entries after a programmatic
-        value change (a bin-factor rescale, or the E/W hotkey) that didn't
-        go through their own widgets - updates whichever slider is currently
-        built in place, rather than routing through _rebuild_tool_options().
-        That rebuild unconditionally cancels a pending satellite-mode start
-        point (appropriate for an actual tool switch, its real purpose) -
-        reusing it here for a same-tool value refresh would wipe that start
-        point and its preview even though the tool itself never changed."""
+        value change (a bin-factor rescale, the E/W hotkey, or the 1/2/3/4
+        hotkeys) that didn't go through their own widgets - updates
+        whichever controls are currently built in place, rather than
+        routing through _rebuild_tool_options(). That rebuild unconditionally
+        cancels a pending satellite-mode start point (appropriate for an
+        actual tool switch, its real purpose) - reusing it here for a
+        same-tool value refresh would wipe that start point and its preview
+        even though the tool itself never changed."""
         if self.tool == "ellipse":
             if self._radius_slider is not None:
                 self._radius_slider.setValue(self.radius)
-        elif self._thickness_slider is not None:
-            self._thickness_slider.setValue(self.thickness)
+            if self._ellipticity_slider is not None:
+                self._ellipticity_slider.setValue(self.ellipticity)
+            if self._angle_slider is not None:
+                self._angle_slider.setValue(self.angle)
+        else:
+            if self._thickness_slider is not None:
+                self._thickness_slider.setValue(self.thickness)
+            if self._line_style_control is not None:
+                self._line_style_control.set_value(self.line_style)
 
     def _full_res_mask(self, entry: Entry) -> np.ndarray:
         if entry.is_binned:
@@ -1570,12 +1574,14 @@ class MaskFitsApp(QMainWindow):
             return
         self.ellipticity = max(0, min(self.ellipticity + direction * 2, 90))
         self._sync_tool_option_widgets()
+        self._refresh_active_preview()
 
     def _adjust_angle(self, direction: int) -> None:
         if self.tool != "ellipse":
             return
         self.angle = max(-180, min(self.angle + direction * 2, 180))
         self._sync_tool_option_widgets()
+        self._refresh_active_preview()
 
     # -------------------------------------------------------------- export
 
@@ -2057,29 +2063,44 @@ class MaskFitsApp(QMainWindow):
         return wrapped
 
     def _build_shortcuts(self) -> None:
-        def add(seq: str, func, guarded: bool = True) -> None:
-            sc = QShortcut(QKeySequence(seq), self)
-            sc.activated.connect(self._guarded(func) if guarded else func)
+        # (handler, guarded) per action id (see maskfits.shortcuts) - the
+        # metadata (label, default keys) lives there, independent of self,
+        # so both this and the Settings shortcut editor/Hotkeys popup can
+        # use it without needing a live MaskFitsApp instance.
+        handlers: dict[str, tuple[object, bool]] = {
+            "undo": (self.undo, True),
+            "redo": (self.redo, True),
+            "prev_image": (self.prev_image, True),
+            "next_image": (self.next_image, True),
+            "clear_mask": (self.reset_mask, True),
+            "grow_shape": (lambda: self._adjust_shape_size(1), True),
+            "shrink_shape": (lambda: self._adjust_shape_size(-1), True),
+            "cycle_colormap": (self._cycle_colormap, True),
+            "invert_colormap": (lambda: self._invert_action.trigger(), True),
+            "toggle_smooth": (self._toggle_smoothing, True),
+            "toggle_bin": (self._toggle_binning, True),
+            "reset_zoom": (self.reset_zoom, True),
+            "digit_1": (lambda: self._hotkey_digit(1), True),
+            "digit_2": (lambda: self._hotkey_digit(2), True),
+            "digit_3": (lambda: self._hotkey_digit(3), True),
+            "digit_4": (lambda: self._hotkey_digit(4), True),
+            "cancel_line": (self._cancel_pending_line, False),
+        }
+        self._shortcuts: list[QShortcut] = []
+        for action in SHORTCUT_ACTIONS:
+            func, guarded = handlers[action.id]
+            for seq in effective_keys(action.id, self.settings.shortcuts):
+                sc = QShortcut(QKeySequence(seq), self)
+                sc.activated.connect(self._guarded(func) if guarded else func)
+                self._shortcuts.append(sc)
 
-        add("Ctrl+Z", self.undo)
-        add("U", self.undo)
-        add("Ctrl+Shift+Z", self.redo)
-        add("Y", self.redo)
-        add("Left", self.prev_image)
-        add("Right", self.next_image)
-        add("R", self.reset_mask)
-        add("E", lambda: self._adjust_shape_size(1))
-        add("W", lambda: self._adjust_shape_size(-1))
-        add("C", self._cycle_colormap)
-        add("I", lambda: self._invert_action.trigger())
-        add("S", self._toggle_smoothing)
-        add("B", self._toggle_binning)
-        add("Ctrl+R", self.reset_zoom)
-        add("1", lambda: self._hotkey_digit(1))
-        add("2", lambda: self._hotkey_digit(2))
-        add("3", lambda: self._hotkey_digit(3))
-        add("4", lambda: self._hotkey_digit(4))
-        add("Escape", self._cancel_pending_line, guarded=False)
+    def _rebuild_shortcuts(self) -> None:
+        """Tears down and recreates every QShortcut from the current
+        self.settings.shortcuts - called after Settings are saved so a
+        rebinding takes effect immediately, no restart needed."""
+        for sc in self._shortcuts:
+            sc.deleteLater()
+        self._build_shortcuts()
 
 
 def run_gui(paths: list[str], zoom: Optional[float] = None, mode: Optional[str] = None, *,

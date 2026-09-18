@@ -37,6 +37,7 @@ from maskfits.settings import (
     Settings,
     save_settings,
 )
+from maskfits.shortcuts_window import ShortcutsWindow
 from maskfits.theme import detect_os_light_mode, theme_manager
 from maskfits.theme_editor_window import ThemeEditorWindow
 from maskfits.widgets import HexColorPicker, RoundButton, RoundSlider, SegmentedControl
@@ -78,6 +79,7 @@ class SettingsWindow(QDialog):
         self._snapshot_custom = theme_manager().custom
         self._saved = False
         self._theme_editor: Optional[ThemeEditorWindow] = None
+        self._shortcuts_window: Optional[ShortcutsWindow] = None
 
         self.theme = settings.theme
         self.mode = settings.mode
@@ -91,6 +93,7 @@ class SettingsWindow(QDialog):
         self.export_dir = settings.export_dir
         self.zoom = settings.zoom
         self.accent_color = settings.accent_color
+        self.shortcuts: dict[str, list[str]] = dict(settings.shortcuts)
 
         self._build()
         self._center_on_parent()
@@ -138,13 +141,14 @@ class SettingsWindow(QDialog):
                           self._on_smooth_sigma_changed, enabled_checkbox=True, checked=self.smooth_enabled,
                           on_toggled=self._on_smooth_enabled_changed)
         self._accent_row(layout)
+        self._shortcuts_row(layout)
 
         layout.addSpacing(10)
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
-        save_btn = RoundButton("save", accent=True)
+        save_btn = RoundButton("Save", accent=True)
         save_btn.clicked.connect(self._save)
-        cancel_btn = RoundButton("cancel")
+        cancel_btn = RoundButton("Cancel")
         cancel_btn.clicked.connect(self._cancel)
         btn_row.addWidget(cancel_btn)
         btn_row.addWidget(save_btn)
@@ -244,11 +248,11 @@ class SettingsWindow(QDialog):
         self._theme_combo.currentIndexChanged.connect(self._on_theme_combo_changed)
         row.addWidget(self._theme_combo)
 
-        self._new_theme_btn = RoundButton("new theme...")
+        self._new_theme_btn = RoundButton("New Theme...")
         self._new_theme_btn.clicked.connect(self._new_theme)
         row.addWidget(self._new_theme_btn)
 
-        self._edit_theme_btn = RoundButton("edit")
+        self._edit_theme_btn = RoundButton("Edit")
         self._edit_theme_btn.clicked.connect(self._edit_theme)
         row.addWidget(self._edit_theme_btn)
 
@@ -356,7 +360,7 @@ class SettingsWindow(QDialog):
         self._accent_picker.colorChanged.connect(self._on_accent_changed)
         row.addWidget(self._accent_picker)
 
-        reset_btn = RoundButton("reset")
+        reset_btn = RoundButton("Reset")
         reset_btn.clicked.connect(lambda: self._accent_picker.setValue(None))
         row.addWidget(reset_btn)
 
@@ -368,6 +372,32 @@ class SettingsWindow(QDialog):
     def _on_accent_changed(self, value: str) -> None:
         self.accent_color = value or None
         theme_manager().set_accent(self.accent_color)
+
+    # ----------------------------------------------------------- shortcuts
+
+    def _shortcuts_row(self, layout: QVBoxLayout) -> None:
+        row = self._row_label(layout, "keyboard shortcuts")
+        edit_btn = RoundButton("Edit Keyboard Shortcuts...")
+        edit_btn.clicked.connect(self._edit_shortcuts)
+        row.addWidget(edit_btn)
+        layout.addLayout(row)
+
+    def _edit_shortcuts(self) -> None:
+        if self._shortcuts_window is not None:
+            self._shortcuts_window.raise_()
+            self._shortcuts_window.activateWindow()
+            return
+        editor = ShortcutsWindow(self.shortcuts, self)
+        editor.shortcuts_saved.connect(self._on_shortcuts_saved)
+        editor.finished.connect(self._clear_shortcuts_window)
+        self._shortcuts_window = editor
+        editor.show()
+
+    def _clear_shortcuts_window(self, _result=None) -> None:
+        self._shortcuts_window = None
+
+    def _on_shortcuts_saved(self, overrides: dict) -> None:
+        self.shortcuts = overrides
 
     # ------------------------------------------------------------- setters
 
@@ -417,6 +447,7 @@ class SettingsWindow(QDialog):
             export_dir=self.export_dir if self.export_dir in EXPORT_DIR_CHOICES else "file_parent",
             zoom=self.zoom,
             accent_color=self.accent_color,
+            shortcuts=self.shortcuts,
         )
 
     def _save(self) -> None:
@@ -440,6 +471,8 @@ class SettingsWindow(QDialog):
     def closeEvent(self, event) -> None:  # noqa: N802
         if self._theme_editor is not None:
             self._theme_editor.close()
+        if self._shortcuts_window is not None:
+            self._shortcuts_window.close()
         if not self._saved:
             self._revert_preview()
         super().closeEvent(event)

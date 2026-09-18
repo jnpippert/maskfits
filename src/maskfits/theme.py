@@ -385,6 +385,9 @@ def build_qss(theme: Theme) -> str:
     QLabel[state="success"] {{
         color: {t.green};
     }}
+    QLabel[state="warning"] {{
+        color: {t.warning};
+    }}
 
     /* ------------------------------------------------------------ buttons */
 

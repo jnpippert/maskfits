@@ -64,12 +64,12 @@ def show_update_dialog(parent: Optional[QWidget], title: str, message: str, *,
         code_entry.setMinimumWidth(max(min(fits_width, CODE_WIDTH_MAX), CODE_WIDTH_MIN))
         row.addWidget(code_entry, 1)
 
-        copy_btn = RoundButton("copy")
+        copy_btn = RoundButton("Copy")
 
         def do_copy() -> None:
             QApplication.clipboard().setText(command)
-            copy_btn.setText("copied!")
-            QTimer.singleShot(1500, lambda: copy_btn.setText("copy"))
+            copy_btn.setText("Copied!")
+            QTimer.singleShot(1500, lambda: copy_btn.setText("Copy"))
 
         copy_btn.clicked.connect(do_copy)
         row.addWidget(copy_btn)
@@ -78,7 +78,7 @@ def show_update_dialog(parent: Optional[QWidget], title: str, message: str, *,
     layout.addSpacing(14)
     btn_row = QHBoxLayout()
     btn_row.addStretch(1)
-    ok_btn = RoundButton("ok", accent=True)
+    ok_btn = RoundButton("Ok", accent=True)
     ok_btn.clicked.connect(dialog.accept)
     btn_row.addWidget(ok_btn)
     layout.addLayout(btn_row)
