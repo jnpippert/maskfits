@@ -391,8 +391,20 @@ class MaskFitsApp(QMainWindow):
             return
         available = screen.availableGeometry()
         margin = 60
-        width = min(preferred_w, max(available.width() - margin, 640))
-        height = min(preferred_h, max(available.height() - margin, 480))
+        floor_w, floor_h = 640, 480
+        width = min(preferred_w, max(available.width() - margin, floor_w))
+        height = min(preferred_h, max(available.height() - margin, floor_h))
+        # Without an explicit minimum, QMainWindow refuses to shrink below
+        # whatever its layout naturally needs (sidebar + toolbar + panels),
+        # which can exceed a laptop's screen width. That's harmless on its
+        # own, but a window manager that later tries to maximize/resize the
+        # window to the real screen size and gets a bigger buffer back than
+        # it asked for can treat it as a protocol violation (observed as a
+        # Wayland "xdg_surface buffer does not match configured maximized
+        # state" fatal error under WSLg) - so cap the minimum explicitly to
+        # whatever we're willing to shrink to, rather than leave it to the
+        # layout's own (possibly larger) size hint.
+        self.setMinimumSize(floor_w, floor_h)
         self.resize(width, height)
         x = available.x() + (available.width() - width) // 2
         y = available.y() + (available.height() - height) // 2
@@ -2138,6 +2150,17 @@ def run_gui(paths: list[str], zoom: Optional[float] = None, mode: Optional[str] 
             cuts: Optional[str] = None, colormap: Optional[str] = None, binning: Optional[int] = None,
             smooth: Optional[int] = None, extension: Optional[int] = None) -> int:
     _set_windows_app_id()
+    if QApplication.instance() is None:
+        # Must be set before the QApplication exists. Without this, a
+        # fractional host display scale (e.g. Windows' 150% on a laptop,
+        # relayed through WSLg's Wayland compositor) can get rounded to the
+        # nearest integer factor and then re-applied on top of the
+        # compositor's own scaling, making the window appear far larger
+        # than the screen - PassThrough uses the exact reported factor
+        # instead of rounding it.
+        QApplication.setHighDpiScaleFactorRoundingPolicy(
+            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+        )
     app = QApplication.instance() or QApplication(sys.argv)
     # The native per-platform style (macOS in particular) draws QSlider's
     # groove/sub-page/add-page/handle itself as a "complex control" and
