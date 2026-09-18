@@ -26,6 +26,8 @@ pip install -e .
 ## Usage
 
 ```bash
-maskfits image1 image2 ...
+maskfits # starts the raw application
+maskfits image1 image2 ... imageN # loads N images on start
 maskfits -m s -z 2 # starts in satellite mode and 2x zoom
+maskfits --help # shows all available CLI arguments
 ```
