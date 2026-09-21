@@ -14,15 +14,27 @@ documented hook to fully suppress - see RoundSlider's own docstring.
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Optional
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QEnterEvent, QKeyEvent, QKeySequence, QMouseEvent, QPainter, QPainterPath, QPen
+from PySide6.QtGui import (
+    QColor,
+    QEnterEvent,
+    QIcon,
+    QKeyEvent,
+    QKeySequence,
+    QMouseEvent,
+    QPainter,
+    QPainterPath,
+    QPen,
+)
 from PySide6.QtWidgets import (
     QButtonGroup,
     QColorDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLineEdit,
     QPushButton,
@@ -266,24 +278,107 @@ class RoundSlider(QWidget):
         self.sliderReleased.emit()
 
 
+LOGO_PATH = os.path.join(os.path.dirname(__file__), "assets", "icon.png")
+
+# Emoji offered for a custom theme's toolbar icon (alongside the maskfits
+# logo, which is the default) - a spread of nature/weather/space/animal/
+# food/color picks that suit a themed palette (a tree for a forest theme...).
+THEME_EMOJI_CHOICES = [
+    "\U0001F332", "\U0001F333", "\U0001F334", "\U0001F335", "\U0001F33F", "\U0001F340", "\U0001F341", "\U0001F342",
+    "\U0001F338", "\U0001F33A", "\U0001F33B", "\U0001F339", "\U0001F30A", "\U0001F525", "\u2744\ufe0f", "\u26C4",
+    "\u2600\ufe0f", "\U0001F319", "\u2B50", "\U0001F308", "\u2601\ufe0f", "\u26A1", "\U0001F30B", "\U0001F3D4\ufe0f",
+    "\U0001F30C", "\U0001FA90", "\U0001F30D", "\U0001F680", "\U0001F47D", "\U0001F98A", "\U0001F431", "\U0001F436",
+    "\U0001F43C", "\U0001F989", "\U0001F419", "\U0001F98B", "\U0001F34A", "\U0001F34B", "\U0001F353", "\U0001F347",
+    "\U0001F36B", "\u2615", "\U0001F383", "\U0001F47B", "\U0001F384", "\U0001F48E", "\U0001F3A8", "\U0001F3AE",
+    "\U0001F5A4", "\U0001F49C", "\U0001F499", "\U0001F49A", "\U0001F49B", "\U0001F9E1", "\u2764\ufe0f",
+]
+
+
+def set_theme_icon(button: QPushButton, spec: str, logo_size: int = 24) -> None:
+    """Shows a theme icon on `button`: an emoji as its text, or - for the
+    empty spec, the default - the maskfits logo as a small icon."""
+    if spec:
+        button.setIcon(QIcon())
+        button.setText(spec)
+    else:
+        button.setText("")
+        button.setIcon(QIcon(LOGO_PATH))
+        button.setIconSize(QSize(logo_size, logo_size))
+
+
 class ThemeToggle(QPushButton):
-    """A sun/moon emoji button for switching between light and dark mode."""
+    """The toolbar button showing the current theme's icon (an emoji, or the
+    maskfits logo) - clicking it cycles to the next theme."""
 
-    SUN = "☀️"
-    MOON = "\U0001F319"
-
-    def __init__(self, parent: Optional[QWidget] = None, *, light: bool = False):
-        super().__init__(cls_text(light), parent)
+    def __init__(self, parent: Optional[QWidget] = None, *, icon: str = ""):
+        super().__init__("", parent)
         self.setProperty("flat", True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedWidth(34)
+        self.set_icon_spec(icon)
 
-    def set_light(self, light: bool) -> None:
-        self.setText(cls_text(light))
+    def set_icon_spec(self, spec: str) -> None:
+        set_theme_icon(self, spec)
 
 
-def cls_text(light: bool) -> str:
-    return ThemeToggle.SUN if light else ThemeToggle.MOON
+class _EmojiPopup(RoundedPanel):
+    """The grid of choices a ThemeIconPicker opens - a click outside it
+    dismisses it, and picking one closes it right away."""
+
+    picked = Signal(str)
+    COLUMNS = 8
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.Popup)
+        grid = QGridLayout(self)
+        grid.setContentsMargins(8, 8, 8, 8)
+        grid.setSpacing(4)
+        for index, spec in enumerate(["", *THEME_EMOJI_CHOICES]):
+            btn = QPushButton()
+            btn.setProperty("flat", True)
+            btn.setFixedSize(34, 34)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            set_theme_icon(btn, spec)
+            btn.clicked.connect(lambda _checked=False, v=spec: self._pick(v))
+            grid.addWidget(btn, index // self.COLUMNS, index % self.COLUMNS)
+
+    def _pick(self, spec: str) -> None:
+        self.picked.emit(spec)
+        self.close()
+
+
+class ThemeIconPicker(QPushButton):
+    """A button showing a custom theme's chosen toolbar icon; clicking it
+    opens a grid of the maskfits logo (the default, spec "") plus a set of
+    emoji to pick from. Emits iconChanged(spec) - "" for the logo."""
+
+    iconChanged = Signal(str)
+
+    def __init__(self, spec: str = "", parent: Optional[QWidget] = None):
+        super().__init__("", parent)
+        self._spec = spec
+        self.setFixedSize(40, 28)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._popup: Optional[_EmojiPopup] = None
+        self.clicked.connect(self._open_popup)
+        set_theme_icon(self, spec)
+
+    def value(self) -> str:
+        return self._spec
+
+    def _open_popup(self) -> None:
+        popup = _EmojiPopup(self.window())
+        popup.picked.connect(self._on_picked)
+        popup.adjustSize()
+        popup.move(self.mapToGlobal(self.rect().bottomLeft()))
+        self._popup = popup
+        popup.show()
+
+    def _on_picked(self, spec: str) -> None:
+        self._spec = spec
+        set_theme_icon(self, spec)
+        self.iconChanged.emit(spec)
 
 
 class ResizeGrip(QWidget):

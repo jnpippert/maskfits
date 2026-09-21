@@ -29,22 +29,22 @@ from maskfits.custom_themes import (
     save_custom_theme,
 )
 from maskfits.theme import DARK, LIGHT, theme_manager
-from maskfits.widgets import HexColorPicker, RoundButton, SegmentedControl
+from maskfits.widgets import HexColorPicker, RoundButton, SegmentedControl, ThemeIconPicker
 
 FIELD_LABELS = {
-    "app_bg": "app background",
-    "panel_bg": "panel background",
-    "panel_border": "panel border",
-    "text": "text",
-    "text_dim": "dim text",
-    "accent": "accent",
-    "danger": "danger",
-    "green": "success / green",
-    "warning": "warning",
-    "blue": "info / blue",
-    "track": "slider track",
-    "button_bg": "button background",
-    "canvas_bg": "image canvas background",
+    "app_bg": "App Background",
+    "panel_bg": "Panel Background",
+    "panel_border": "Panel Border",
+    "text": "Text",
+    "text_dim": "Dim Text",
+    "accent": "Accent",
+    "danger": "Danger",
+    "green": "Success / Green",
+    "warning": "Warning",
+    "blue": "Info / Blue",
+    "track": "Slider Track",
+    "button_bg": "Button Background",
+    "canvas_bg": "Image Canvas Background",
 }
 
 
@@ -73,11 +73,14 @@ class ThemeEditorWindow(QDialog):
             stored = get_custom_theme(edit_name) or {}
             self.name = edit_name
             self.mode = stored.get("mode", "dark")
+            icon = stored.get("icon", "")
+            self.icon = icon if isinstance(icon, str) else ""
             base = DARK if self.mode != "light" else LIGHT
             self.colors = {f: stored.get(f, getattr(base, f)) for f in CUSTOM_THEME_FIELDS}
         else:
             self.name = ""
             self.mode = "dark"
+            self.icon = ""
             self.colors = {f: getattr(DARK, f) for f in CUSTOM_THEME_FIELDS}
 
         self._pickers: dict[str, HexColorPicker] = {}
@@ -109,7 +112,7 @@ class ThemeEditorWindow(QDialog):
         layout.addWidget(desc)
 
         name_row = QHBoxLayout()
-        name_lbl = QLabel("name:")
+        name_lbl = QLabel("Name:")
         name_lbl.setProperty("dim", True)
         name_row.addWidget(name_lbl)
         name_row.addStretch(1)
@@ -121,7 +124,7 @@ class ThemeEditorWindow(QDialog):
         layout.addLayout(name_row)
 
         mode_row = QHBoxLayout()
-        mode_lbl = QLabel("base mode:")
+        mode_lbl = QLabel("Base Mode:")
         mode_lbl.setProperty("dim", True)
         mode_row.addWidget(mode_lbl)
         mode_row.addStretch(1)
@@ -130,6 +133,18 @@ class ThemeEditorWindow(QDialog):
         mode_row.addWidget(mode_control)
         layout.addSpacing(10)
         layout.addLayout(mode_row)
+
+        icon_row = QHBoxLayout()
+        icon_lbl = QLabel("Icon:")
+        icon_lbl.setProperty("dim", True)
+        icon_lbl.setToolTip("Shown on the toolbar button that cycles through themes.")
+        icon_row.addWidget(icon_lbl)
+        icon_row.addStretch(1)
+        self._icon_picker = ThemeIconPicker(self.icon)
+        self._icon_picker.iconChanged.connect(self._on_icon_changed)
+        icon_row.addWidget(self._icon_picker)
+        layout.addSpacing(10)
+        layout.addLayout(icon_row)
 
         for field in CUSTOM_THEME_FIELDS:
             row = QHBoxLayout()
@@ -167,6 +182,9 @@ class ThemeEditorWindow(QDialog):
         self.mode = value
         self._preview()
 
+    def _on_icon_changed(self, spec: str) -> None:
+        self.icon = spec
+
     def _on_color_changed(self, field: str, value: str) -> None:
         if not value:
             return
@@ -189,7 +207,7 @@ class ThemeEditorWindow(QDialog):
         if not self._editing and name in list_custom_themes():
             QMessageBox.warning(self, "maskfits", f"A theme named {name!r} already exists.")
             return
-        save_custom_theme(name, {"mode": self.mode, **self.colors})
+        save_custom_theme(name, {"mode": self.mode, "icon": self.icon, **self.colors})
         self._saved = True
         self.theme_saved.emit(name)
         self.accept()

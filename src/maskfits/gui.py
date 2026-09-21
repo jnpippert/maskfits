@@ -51,7 +51,7 @@ from maskfits.colormaps import (
     build_isopy_lut,
     mask_tint_for,
 )
-from maskfits.custom_themes import build_custom_theme, get_custom_theme
+from maskfits.custom_themes import build_custom_theme, get_custom_theme, next_theme_key, theme_icon
 from maskfits.cuts_histogram import CutsHistogram
 from maskfits.hotkeys_window import HotkeysWindow
 from maskfits.imagedata import (
@@ -529,6 +529,7 @@ class MaskFitsApp(QMainWindow):
         BEFORE touching theme_manager() - its theme_changed signal fires
         synchronously and _on_theme_changed reads self.light_mode, so it
         must already be correct by the time that happens."""
+        self._theme_key = theme_key
         custom_colors = None if theme_key in ("system", "dark", "light") else get_custom_theme(theme_key)
         if custom_colors is not None:
             theme_obj = build_custom_theme(custom_colors)
@@ -539,14 +540,30 @@ class MaskFitsApp(QMainWindow):
             theme_manager().set_mode("light" if self.light_mode else "dark")
             theme_manager().set_accent(accent)
 
-    def _toggle_theme(self) -> None:
-        self.light_mode = not self.light_mode
-        theme_manager().set_mode("light" if self.light_mode else "dark")
+    def _cycle_theme(self) -> None:
+        """Toolbar button: switches to the next theme - dark, light, then
+        every custom theme - and wraps around. "system" (follow the OS) isn't
+        a step in the cycle, so it counts as whichever of dark/light it
+        currently resolves to."""
+        current = self._theme_key
+        if current == "system":
+            current = "light" if self.light_mode else "dark"
+        self._apply_theme_setting(next_theme_key(current), self.settings.accent_color)
 
-    def _on_theme_changed(self, _theme) -> None:
+    def _refresh_theme_toggle(self) -> None:
+        if not hasattr(self, "theme_toggle"):
+            return
+        key = self._theme_key
+        if key == "system":
+            key = "light" if self.light_mode else "dark"
+        self.theme_toggle.set_icon_spec(theme_icon(key))
+        name = key.capitalize() if key in ("dark", "light") else key
+        self.theme_toggle.setToolTip(f"Theme: {name} (Click For The Next One)")
+
+    def _on_theme_changed(self, theme) -> None:
+        self.light_mode = theme.mode == "light"
         _set_windows_titlebar_dark(self, dark=not self.light_mode)
-        if hasattr(self, "theme_toggle"):
-            self.theme_toggle.set_light(self.light_mode)
+        self._refresh_theme_toggle()
         self.render()
 
     # ---------------------------------------------------------------- menu
@@ -656,6 +673,8 @@ class MaskFitsApp(QMainWindow):
         the next launch. The theme itself was already live-previewed by the
         dialog as the user edited it; Save just means "keep what's showing"."""
         self.settings = settings
+        self._theme_key = settings.theme
+        self._refresh_theme_toggle()
         self.export_dir_mode = settings.export_dir
         self._default_bin_factor = settings.bin_factor if settings.bin_enabled else None
         self._default_smooth_sigma = settings.smooth_sigma if settings.smooth_enabled else None
@@ -819,9 +838,10 @@ class MaskFitsApp(QMainWindow):
         layout.setContentsMargins(14, 8, 14, 8)
         outer.addWidget(layout)
 
-        self.theme_toggle = ThemeToggle(light=self.light_mode)
-        self.theme_toggle.clicked.connect(self._toggle_theme)
+        self.theme_toggle = ThemeToggle()
+        self.theme_toggle.clicked.connect(self._cycle_theme)
         layout.addWidget(self.theme_toggle)
+        self._refresh_theme_toggle()
 
         self.zoom_label = QLabel("1")
         self.zoom_label.setFixedWidth(36)

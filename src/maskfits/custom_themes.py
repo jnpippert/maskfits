@@ -34,6 +34,11 @@ CUSTOM_THEME_FIELDS = [
 
 RESERVED_NAMES = {"system", "dark", "light"}
 
+# Toolbar-button icon per built-in theme. A custom theme stores its own under
+# an "icon" key alongside its colors (not part of CUSTOM_THEME_FIELDS, which
+# is colors only): an emoji, or "" for the default - the maskfits logo.
+BUILTIN_THEME_ICONS = {"dark": "\U0001F319", "light": "\u2600\ufe0f"}
+
 
 def _store() -> QSettings:
     return QSettings(QSettings.Format.IniFormat, QSettings.Scope.UserScope, ORG_NAME, APP_NAME)
@@ -104,3 +109,29 @@ def build_custom_theme(colors: dict) -> Theme:
         track=colors["track"], button_bg=button_bg, button_hover=button_hover,
         canvas_bg=colors["canvas_bg"],
     )
+
+
+def theme_cycle_keys(store: Optional[QSettings] = None) -> list[str]:
+    """The themes the toolbar button cycles through, in order: built-in dark
+    and light, then every custom theme alphabetically (the same order the
+    Settings dialog's theme dropdown lists them). "system" isn't included -
+    it isn't a theme of its own, just "follow the OS" between dark and light."""
+    return ["dark", "light", *sorted(list_custom_themes(store).keys())]
+
+
+def next_theme_key(current: str, store: Optional[QSettings] = None) -> str:
+    """The theme after `current` in the cycle, wrapping around. A `current`
+    that isn't in the cycle (e.g. a custom theme deleted since) starts over
+    from the first theme."""
+    keys = theme_cycle_keys(store)
+    index = keys.index(current) if current in keys else -1
+    return keys[(index + 1) % len(keys)]
+
+
+def theme_icon(key: str, store: Optional[QSettings] = None) -> str:
+    """The toolbar-button icon for a theme key: an emoji, or "" meaning the
+    maskfits logo (the default for a custom theme that never picked one)."""
+    if key in BUILTIN_THEME_ICONS:
+        return BUILTIN_THEME_ICONS[key]
+    icon = (get_custom_theme(key, store) or {}).get("icon", "")
+    return icon if isinstance(icon, str) else ""
