@@ -182,12 +182,17 @@ class _HistogramCanvas(QWidget):
             return
         owner = self._owner
         value = self._x_to_value(event.position().x(), *self._drag_range)
+        # No from_entry here (unlike _on_lo_entry/_on_hi_entry) - that
+        # param exists to stop set_cuts() from overwriting the text box the
+        # user is actively typing into, which doesn't apply to a histogram
+        # drag. Passing "lo"/"hi" here (the bug) suppressed updating the
+        # very entry box whose handle was being dragged, leaving it stale.
         if self._drag == "lo":
             value = min(value, owner.vmax)
-            owner.set_cuts(value, owner.vmax, from_entry="lo")
+            owner.set_cuts(value, owner.vmax)
         else:
             value = max(value, owner.vmin)
-            owner.set_cuts(owner.vmin, value, from_entry="hi")
+            owner.set_cuts(owner.vmin, value)
         self.update()
 
     def mouseReleaseEvent(self, _event: QMouseEvent) -> None:  # noqa: N802
