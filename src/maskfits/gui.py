@@ -1202,6 +1202,20 @@ class MaskFitsApp(QMainWindow):
 
         self.render()
 
+    @staticmethod
+    def _file_kind(entry: Entry) -> str:
+        """Classifies the currently active extension as "single", "multi",
+        or "cube" - "single"/"multi"/"cube" drive both which top-row
+        control _update_extension_picker shows and which
+        Settings.export_filename_format(_multi/_cube) export_mask() uses,
+        so the two stay consistent by construction."""
+        image = entry.image
+        if image is not None and image.cube is not None:
+            return "cube"
+        if len(entry.available_extensions) > 1:
+            return "multi"
+        return "single"
+
     def _update_extension_picker(self) -> None:
         """Shows exactly one of the extension combo / cube slice controls,
         never both - a single-extension file shows neither (nothing to
@@ -1211,7 +1225,8 @@ class MaskFitsApp(QMainWindow):
         HDUs to combo between."""
         entry = self.entry
         image = entry.image
-        is_cube = image is not None and image.cube is not None
+        kind = self._file_kind(entry)
+        is_cube = kind == "cube"
 
         self.ext_combo.blockSignals(True)
         self.ext_combo.clear()
@@ -1889,16 +1904,31 @@ class MaskFitsApp(QMainWindow):
 
     def export_mask(self) -> None:
         """The "Export Mask" toolbar button and File menu action - always
-        writes to Settings.export_filename_format's filename (default
-        "mask_$FILENAME"), in Settings.export_dir's folder, with no
-        dialog. Save Mask As... (export_mask_as) is the interactive,
-        pick-your-own-name/location alternative and isn't affected by this
-        format."""
+        writes to a Settings.export_filename_format(_multi/_cube)
+        filename, in Settings.export_dir's folder, with no dialog - which
+        of the three formats depends on the current file's own type (see
+        _file_kind): a plain single-extension image uses
+        export_filename_format (default "mask_$FILENAME"), a multi-
+        extension FITS uses export_filename_format_multi ($EXT also
+        available, the current extension number), and a cube uses
+        export_filename_format_cube ($SLICE also available, the current
+        slice number). Save Mask As... (export_mask_as) is the
+        interactive, pick-your-own-name/location alternative and isn't
+        affected by any of this."""
         entry = self.entry
         if entry.image is None or entry.path is None:
             QMessageBox.warning(self, "maskfits", "No image loaded to export a mask for.")
             return
-        filename = format_mask_filename(self.settings.export_filename_format, self._mask_stem(entry.path))
+        stem = self._mask_stem(entry.path)
+        kind = self._file_kind(entry)
+        if kind == "cube":
+            filename = format_mask_filename(
+                self.settings.export_filename_format_cube, stem, slice_index=entry.image.slice_index
+            )
+        elif kind == "multi":
+            filename = format_mask_filename(self.settings.export_filename_format_multi, stem, ext=entry.ext)
+        else:
+            filename = format_mask_filename(self.settings.export_filename_format, stem)
         out_path = os.path.join(self._export_dir(entry), filename)
         self._build_mask_hdu(entry).writeto(out_path, overwrite=True)
         self._set_status(f"exported mask to {out_path}", success=True)

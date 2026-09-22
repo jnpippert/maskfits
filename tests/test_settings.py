@@ -145,3 +145,53 @@ def test_format_mask_filename_recognizes_every_fits_suffix_case_insensitively(su
 
 def test_format_mask_filename_replaces_every_occurrence():
     assert format_mask_filename("$FILENAME_a_$FILENAME_b", "x") == "x_a_x_b.fits"
+
+
+# ------------------------------------------ multi-ext/cube export formats
+
+
+def test_export_filename_format_multi_defaults(store):
+    settings = load_settings(store)
+    assert settings.export_filename_format_multi == "mask_$FILENAME_ext$EXT"
+    assert settings.export_filename_format_cube == "mask_$FILENAME_slice$SLICE"
+
+
+def test_export_filename_format_multi_round_trips(store):
+    save_settings(Settings(export_filename_format_multi="$FILENAME_e$EXT"), store)
+    assert load_settings(store).export_filename_format_multi == "$FILENAME_e$EXT"
+
+
+def test_export_filename_format_cube_round_trips(store):
+    save_settings(Settings(export_filename_format_cube="$FILENAME_s$SLICE"), store)
+    assert load_settings(store).export_filename_format_cube == "$FILENAME_s$SLICE"
+
+
+def test_export_filename_format_multi_falls_back_without_ext_placeholder(store):
+    store.setValue("export_filename_format_multi", "mask_$FILENAME")  # valid alone, but missing $EXT
+    store.sync()
+    assert load_settings(store).export_filename_format_multi == "mask_$FILENAME_ext$EXT"
+
+
+def test_export_filename_format_cube_falls_back_without_slice_placeholder(store):
+    store.setValue("export_filename_format_cube", "mask_$FILENAME")  # valid alone, but missing $SLICE
+    store.sync()
+    assert load_settings(store).export_filename_format_cube == "mask_$FILENAME_slice$SLICE"
+
+
+def test_is_valid_export_filename_format_with_required_placeholders():
+    assert is_valid_export_filename_format("mask_$FILENAME_$EXT", required=("$EXT",)) is True
+    assert is_valid_export_filename_format("mask_$FILENAME", required=("$EXT",)) is False
+    assert is_valid_export_filename_format("mask_$FILENAME_$SLICE", required=("$SLICE",)) is True
+    assert is_valid_export_filename_format("mask_$FILENAME", required=("$SLICE",)) is False
+
+
+def test_format_mask_filename_substitutes_ext():
+    assert format_mask_filename("mask_$FILENAME_ext$EXT", "img42", ext=3) == "mask_img42_ext3.fits"
+
+
+def test_format_mask_filename_substitutes_slice():
+    assert format_mask_filename("mask_$FILENAME_slice$SLICE", "img42", slice_index=7) == "mask_img42_slice7.fits"
+
+
+def test_format_mask_filename_ignores_ext_and_slice_when_not_given():
+    assert format_mask_filename("mask_$FILENAME", "img42") == "mask_img42.fits"

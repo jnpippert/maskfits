@@ -96,6 +96,8 @@ class SettingsWindow(QDialog):
         self.smooth_sigma = settings.smooth_sigma
         self.export_dir = settings.export_dir
         self.export_filename_format = settings.export_filename_format
+        self.export_filename_format_multi = settings.export_filename_format_multi
+        self.export_filename_format_cube = settings.export_filename_format_cube
         self.zoom = settings.zoom
         self.accent_color = settings.accent_color
         self.shortcuts: dict[str, list[str]] = dict(settings.shortcuts)
@@ -138,7 +140,7 @@ class SettingsWindow(QDialog):
         self._segment_row(layout, "default scale", SCALE_OPTIONS, self.scale, self._on_scale_changed)
         self._segment_row(layout, "export directory", EXPORT_DIR_OPTIONS, self.export_dir,
                            self._on_export_dir_changed)
-        self._export_filename_row(layout)
+        self._export_filename_rows(layout)
         self._slider_row(layout, "default zoom", self.zoom, ZOOM_MIN, ZOOM_MAX, self._on_zoom_changed)
         self._slider_row(layout, "default bin factor", self.bin_factor, BIN_FACTOR_MIN, BIN_FACTOR_MAX,
                           self._on_bin_factor_changed, integer=True, enabled_checkbox=True,
@@ -354,38 +356,74 @@ class SettingsWindow(QDialog):
 
     # ------------------------------------------------------- export filename
 
-    def _export_filename_row(self, layout: QVBoxLayout) -> None:
-        row = self._row_label(layout, "quick export filename")
-        self._export_filename_entry = QLineEdit(self.export_filename_format)
-        self._export_filename_entry.setFixedWidth(180)
-        self._export_filename_entry.textChanged.connect(self._on_export_filename_changed)
-        row.addWidget(self._export_filename_entry)
+    # (attribute suffix, row label, extra required placeholder) - "" is the
+    # plain single-extension-image format; the export_mask() code that
+    # picks between the three at export time lives in gui._file_kind /
+    # gui.MaskFitsApp.export_mask.
+    _EXPORT_FORMAT_ROWS = (
+        ("", "quick export filename", ()),
+        ("_multi", "quick export filename (multi-ext)", ("$EXT",)),
+        ("_cube", "quick export filename (cube)", ("$SLICE",)),
+    )
+
+    def _export_filename_rows(self, layout: QVBoxLayout) -> None:
+        self._export_filename_required: dict[str, tuple[str, ...]] = {}
+        self._export_filename_entries: dict[str, QLineEdit] = {}
+        self._export_filename_hints: dict[str, QLabel] = {}
+        for suffix, label, required in self._EXPORT_FORMAT_ROWS:
+            self._build_export_filename_row(layout, suffix, label, required)
+
+    def _build_export_filename_row(self, layout: QVBoxLayout, suffix: str, label: str,
+                                    required: tuple[str, ...]) -> None:
+        self._export_filename_required[suffix] = required
+        row = self._row_label(layout, label)
+        entry = QLineEdit(getattr(self, f"export_filename_format{suffix}"))
+        entry.setFixedWidth(180)
+        entry.textChanged.connect(lambda value, s=suffix: self._on_export_filename_changed(s, value))
+        row.addWidget(entry)
         reset_btn = RoundButton("Reset")
-        reset_btn.clicked.connect(self._reset_export_filename_format)
+        reset_btn.clicked.connect(lambda _checked=False, s=suffix: self._reset_export_filename_format(s))
         row.addWidget(reset_btn)
         layout.addLayout(row)
+        self._export_filename_entries[suffix] = entry
 
         hint_row = QHBoxLayout()
         hint_row.addStretch(1)
-        self._export_filename_hint = QLabel()
-        self._export_filename_hint.setProperty("dim", True)
-        hint_row.addWidget(self._export_filename_hint)
+        hint = QLabel()
+        hint.setProperty("dim", True)
+        hint_row.addWidget(hint)
         layout.addLayout(hint_row)
-        self._update_export_filename_hint()
+        self._export_filename_hints[suffix] = hint
+        self._update_export_filename_hint(suffix)
+        # Preserve the pre-existing (no-suffix) attribute names too, since
+        # they're the ones code outside this method (and existing tests)
+        # already refer to for the plain single-extension-image row.
+        if suffix == "":
+            self._export_filename_entry = entry
+            self._export_filename_hint = hint
 
-    def _on_export_filename_changed(self, value: str) -> None:
-        self.export_filename_format = value
-        self._update_export_filename_hint()
+    def _on_export_filename_changed(self, suffix: str, value: str) -> None:
+        setattr(self, f"export_filename_format{suffix}", value)
+        self._update_export_filename_hint(suffix)
 
-    def _reset_export_filename_format(self) -> None:
-        self._export_filename_entry.setText(Settings().export_filename_format)
+    def _reset_export_filename_format(self, suffix: str) -> None:
+        default_value = getattr(Settings(), f"export_filename_format{suffix}")
+        self._export_filename_entries[suffix].setText(default_value)
 
-    def _update_export_filename_hint(self) -> None:
-        fmt = self.export_filename_format
-        if is_valid_export_filename_format(fmt):
-            self._export_filename_hint.setText(f"e.g. {format_mask_filename(fmt, 'myimage')}")
+    def _update_export_filename_hint(self, suffix: str) -> None:
+        fmt = getattr(self, f"export_filename_format{suffix}")
+        required = self._export_filename_required[suffix]
+        hint = self._export_filename_hints[suffix]
+        if is_valid_export_filename_format(fmt, required=required):
+            preview_kwargs = {}
+            if "$EXT" in required:
+                preview_kwargs["ext"] = 1
+            if "$SLICE" in required:
+                preview_kwargs["slice_index"] = 2
+            hint.setText(f"e.g. {format_mask_filename(fmt, 'myimage', **preview_kwargs)}")
         else:
-            self._export_filename_hint.setText("must include $FILENAME")
+            missing = " and ".join(["$FILENAME", *required])
+            hint.setText(f"must include {missing}")
 
     # --------------------------------------------------------------- accent
 
@@ -492,15 +530,31 @@ class SettingsWindow(QDialog):
                 if is_valid_export_filename_format(self.export_filename_format)
                 else Settings().export_filename_format
             ),
+            export_filename_format_multi=(
+                self.export_filename_format_multi
+                if is_valid_export_filename_format(self.export_filename_format_multi, required=("$EXT",))
+                else Settings().export_filename_format_multi
+            ),
+            export_filename_format_cube=(
+                self.export_filename_format_cube
+                if is_valid_export_filename_format(self.export_filename_format_cube, required=("$SLICE",))
+                else Settings().export_filename_format_cube
+            ),
             zoom=self.zoom,
             accent_color=self.accent_color,
             shortcuts=self.shortcuts,
         )
 
     def _save(self) -> None:
-        if not is_valid_export_filename_format(self.export_filename_format):
-            QMessageBox.warning(self, "maskfits", "The quick export filename must include $FILENAME.")
-            return
+        for suffix, required, message in (
+            ("", (), "The quick export filename must include $FILENAME."),
+            ("_multi", ("$EXT",), "The multi-ext quick export filename must include $FILENAME and $EXT."),
+            ("_cube", ("$SLICE",), "The cube quick export filename must include $FILENAME and $SLICE."),
+        ):
+            fmt = getattr(self, f"export_filename_format{suffix}")
+            if not is_valid_export_filename_format(fmt, required=required):
+                QMessageBox.warning(self, "maskfits", message)
+                return
         settings = self._current_settings()
         save_settings(settings)
         self._saved = True

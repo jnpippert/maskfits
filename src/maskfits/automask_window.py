@@ -250,8 +250,8 @@ class AutoMaskWindow(QDialog):
         confirm_btn.clicked.connect(self._confirm)
         discard_btn = RoundButton("Discard", danger=True)
         discard_btn.clicked.connect(self._discard)
-        btn_row.addWidget(confirm_btn)
         btn_row.addWidget(discard_btn)
+        btn_row.addWidget(confirm_btn)
         layout.addLayout(btn_row)
         self._confirm_btn = confirm_btn
         self._style_confirm_button()

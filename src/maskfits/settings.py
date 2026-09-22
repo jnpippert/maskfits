@@ -46,10 +46,18 @@ class Settings:
     smooth_sigma: float = 3.0
     export_dir: str = "file_parent"
     # The quick-export ("Export Mask" toolbar button / File menu) output
-    # filename - $FILENAME is replaced with the source file's own stem (see
-    # format_mask_filename). Must contain $FILENAME; a ".fits"/".fit"/".fts"
-    # suffix is optional - added automatically if missing.
+    # filename - one of three formats, chosen by the current file's own
+    # type (see MaskFitsApp.export_mask): a plain single-extension image,
+    # a multi-extension FITS, or a cube. $FILENAME (the source file's own
+    # stem - see format_mask_filename) is required in all three;
+    # export_filename_format_multi must also use $EXT (the extension
+    # number) and export_filename_format_cube must also use $SLICE (the
+    # slice number), so exporting from different extensions/slices never
+    # silently overwrites the same file. A ".fits"/".fit"/".fts" suffix is
+    # optional in all three - added automatically if missing.
     export_filename_format: str = "mask_$FILENAME"
+    export_filename_format_multi: str = "mask_$FILENAME_ext$EXT"
+    export_filename_format_cube: str = "mask_$FILENAME_slice$SLICE"
     zoom: float = 1.0
     # Hex string ("#rrggbb") or None to use the built-in crimson accent.
     accent_color: Optional[str] = None
@@ -59,20 +67,31 @@ class Settings:
     shortcuts: dict[str, list[str]] = field(default_factory=dict)
 
 
-def is_valid_export_filename_format(fmt: str) -> bool:
-    """A quick-export filename format must be non-empty and actually use the
-    $FILENAME placeholder - otherwise every exported mask would overwrite
-    the same file."""
-    return bool(fmt) and "$FILENAME" in fmt
+def is_valid_export_filename_format(fmt: str, *, required: tuple[str, ...] = ()) -> bool:
+    """A quick-export filename format must be non-empty and actually use
+    the $FILENAME placeholder - otherwise every exported mask would
+    overwrite the same file. `required` names any additional placeholders
+    that must also be present (e.g. "$EXT" for the multi-extension format,
+    "$SLICE" for the cube one), for the same reason - without $EXT/$SLICE,
+    every extension/slice's export would collide on one filename too."""
+    if not fmt or "$FILENAME" not in fmt:
+        return False
+    return all(p in fmt for p in required)
 
 
-def format_mask_filename(fmt: str, stem: str) -> str:
-    """Resolves a Settings.export_filename_format string into an actual
-    output filename: $FILENAME replaced with the source file's own stem
-    (see MaskFitsApp._mask_stem), and a ".fits" suffix added unless the
-    result already ends with a recognized FITS extension - so both
+def format_mask_filename(fmt: str, stem: str, *, ext: Optional[int] = None,
+                          slice_index: Optional[int] = None) -> str:
+    """Resolves a Settings.export_filename_format(_multi/_cube) string into
+    an actual output filename: $FILENAME replaced with the source file's
+    own stem (see MaskFitsApp._mask_stem), $EXT/$SLICE (when given) with
+    the current extension/slice number, and a ".fits" suffix added unless
+    the result already ends with a recognized FITS extension - so both
     "mask_$FILENAME" (the default) and "$FILENAME_out.fits" work as typed."""
     name = fmt.replace("$FILENAME", stem)
+    if ext is not None:
+        name = name.replace("$EXT", str(ext))
+    if slice_index is not None:
+        name = name.replace("$SLICE", str(slice_index))
     if not name.lower().endswith((".fits", ".fit", ".fts")):
         name += ".fits"
     return name
@@ -93,6 +112,12 @@ def load_settings(store: Optional[QSettings] = None) -> Settings:
     stretch = s.value("stretch", defaults.stretch, type=str)
     export_dir = s.value("export_dir", defaults.export_dir, type=str)
     export_filename_format = s.value("export_filename_format", defaults.export_filename_format, type=str)
+    export_filename_format_multi = s.value(
+        "export_filename_format_multi", defaults.export_filename_format_multi, type=str
+    )
+    export_filename_format_cube = s.value(
+        "export_filename_format_cube", defaults.export_filename_format_cube, type=str
+    )
     accent = s.value("accent_color", "", type=str)
     # A custom theme's name is a valid `theme` value too, alongside the
     # three built-ins - checked here (rather than a static THEME_CHOICES
@@ -115,6 +140,16 @@ def load_settings(store: Optional[QSettings] = None) -> Settings:
         export_filename_format=(
             export_filename_format if is_valid_export_filename_format(export_filename_format)
             else defaults.export_filename_format
+        ),
+        export_filename_format_multi=(
+            export_filename_format_multi
+            if is_valid_export_filename_format(export_filename_format_multi, required=("$EXT",))
+            else defaults.export_filename_format_multi
+        ),
+        export_filename_format_cube=(
+            export_filename_format_cube
+            if is_valid_export_filename_format(export_filename_format_cube, required=("$SLICE",))
+            else defaults.export_filename_format_cube
         ),
         zoom=s.value("zoom", defaults.zoom, type=float),
         accent_color=accent or None,
@@ -146,6 +181,8 @@ def save_settings(settings: Settings, store: Optional[QSettings] = None) -> None
     s.setValue("smooth_sigma", settings.smooth_sigma)
     s.setValue("export_dir", settings.export_dir)
     s.setValue("export_filename_format", settings.export_filename_format)
+    s.setValue("export_filename_format_multi", settings.export_filename_format_multi)
+    s.setValue("export_filename_format_cube", settings.export_filename_format_cube)
     s.setValue("zoom", settings.zoom)
     s.setValue("accent_color", settings.accent_color or "")
     s.setValue("shortcuts_json", json.dumps(settings.shortcuts))
