@@ -180,7 +180,18 @@ class ThemeEditorWindow(QDialog):
     # --------------------------------------------------------------- edits
 
     def _on_mode_changed(self, value: str) -> None:
+        """Base Mode picks a starting palette, not just a label - switching
+        it resets every color field to that built-in theme's defaults (the
+        same ones a brand-new editor starts from), since a bare mode flag
+        with no color change would otherwise be invisible - the previous
+        behavior, and the reported bug. The user can still tweak individual
+        fields from there same as always."""
         self.mode = value
+        base = DARK if value != "light" else LIGHT
+        for field in CUSTOM_THEME_FIELDS:
+            color = getattr(base, field)
+            self.colors[field] = color
+            self._pickers[field].setValue(color)
         self._preview()
 
     def _on_icon_changed(self, spec: str) -> None:
