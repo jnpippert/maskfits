@@ -1313,14 +1313,32 @@ class MaskFitsApp(QMainWindow):
             carry_mask = full_res_mask.copy()
             carry_shape = carry_mask.shape
             carry_rotated = entry.image.rotated
+        # The colormap doesn't change here - only the extension does - so
+        # the cut levels the user is currently looking at shouldn't either.
+        # ensure_loaded() (via load_current below) always recomputes fresh
+        # cuts for a newly loaded image (right, for prev_image/next_image
+        # loading a genuinely different file) - saved here and restored
+        # after, so that recompute is effectively undone for an extension
+        # switch specifically. Only an explicit stretch-preset change
+        # (set_stretch) or leaving/entering IsoPy should ever move the cuts.
+        saved_lowcut, saved_highcut = entry.lowcut, entry.highcut
         self._release_mask()
         entry.ext = ext
         entry.image = None
-        self.load_current(reset_view=True)
+        # reset_view=False, unlike prev_image/next_image switching to a
+        # different file entirely - an extension is still the same file, so
+        # the user's current zoom/pan is worth keeping (it's exactly the
+        # framing they were just looking at, e.g. to compare the same
+        # region across a science frame and its weight map).
+        self.load_current(reset_view=False)
         new_image = entry.image
         if (carry_mask is not None and new_image is not None
                 and new_image.data.shape == carry_shape and new_image.rotated == carry_rotated):
             new_image.mask = carry_mask
+        if new_image is not None:
+            entry.lowcut, entry.highcut = saved_lowcut, saved_highcut
+            self._update_cuts_display()
+            self.render()
 
     def prev_extension(self) -> None:
         """Up-arrow hotkey - steps to the previous entry in
