@@ -47,8 +47,9 @@ def _write_three_ext_fits(path):
 
 
 def test_default_keys_are_up_and_down():
-    assert SHORTCUT_ACTIONS_BY_ID["prev_extension"].defaults == ("Up",)
-    assert SHORTCUT_ACTIONS_BY_ID["next_extension"].defaults == ("Down",)
+    # Up counts extensions up (0, 1, 2, ...), Down counts them back down.
+    assert SHORTCUT_ACTIONS_BY_ID["next_extension"].defaults == ("Up",)
+    assert SHORTCUT_ACTIONS_BY_ID["prev_extension"].defaults == ("Down",)
 
 
 def test_next_extension_steps_forward_and_updates_the_combo(qapp, tmp_path):

@@ -1341,7 +1341,7 @@ class MaskFitsApp(QMainWindow):
             self.render()
 
     def prev_extension(self) -> None:
-        """Up-arrow hotkey - steps to the previous entry in
+        """Down-arrow hotkey - steps to the previous entry in
         available_extensions (not just entry.ext - 1, since extensions
         aren't always contiguous - e.g. only 0 and 2 have image data).
         load_current() (via switch_extension) refreshes the extension combo
@@ -1354,7 +1354,7 @@ class MaskFitsApp(QMainWindow):
             self.switch_extension(exts[idx - 1])
 
     def next_extension(self) -> None:
-        """Down-arrow hotkey - see prev_extension."""
+        """Up-arrow hotkey - see prev_extension."""
         exts = [i for i, _ in self.entry.available_extensions]
         if self.entry.ext not in exts:
             return
