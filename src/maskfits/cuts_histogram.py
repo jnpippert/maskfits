@@ -14,6 +14,7 @@ from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QVBoxLayout, QWidget
 
+from maskfits.imagedata import safe_span
 from maskfits.theme import current_theme, theme_manager
 from maskfits.widgets import RoundButton
 
@@ -316,7 +317,7 @@ class CutsHistogram(QWidget):
     def compute_disp_range(self) -> tuple[float, float]:
         if self.show_full_range:
             return self.data_min, self.data_max
-        span = max(self.vmax - self.vmin, 1e-9)
+        span = safe_span(self.vmin, self.vmax)
         margin = span * 0.5
         lo = max(self.vmin - margin, self.range_min)
         hi = min(self.vmax + margin, self.range_max)

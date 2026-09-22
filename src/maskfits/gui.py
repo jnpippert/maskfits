@@ -65,6 +65,7 @@ from maskfits.imagedata import (
     load_fits_image,
     minmax_cuts,
     percentile_cuts,
+    safe_span,
     zscale_cuts,
 )
 from maskfits.layouts import FlowLayout
@@ -354,7 +355,7 @@ class MagnifierWidget(QWidget):
             mask_crop[sy0 - y0:sy1 - y0, sx0 - x0:sx1 - x0] = image.mask[sy0:sy1, sx0:sx1]
 
         entry = app.entry
-        span = max(entry.highcut - entry.lowcut, 1e-12)
+        span = safe_span(entry.lowcut, entry.highcut)
         norm = np.clip((crop - entry.lowcut) / span, 0, 1)
         norm = np.where(np.isnan(crop), 0.12, norm)
         rgb = app._scale_and_color(norm)
@@ -891,19 +892,35 @@ class MaskFitsApp(QMainWindow):
 
         self.filename_label = QLabel("noname")
         self.ext_combo = QComboBox()
-        self.ext_combo.setEnabled(False)
         self.ext_combo.currentIndexChanged.connect(self._on_ext_combo_changed)
-        layout.addWidget(self._chunk(self.filename_label, self.ext_combo))
+        # Cube slice controls - mutually exclusive with ext_combo (see
+        # _update_extension_picker): a single-extension file shows neither,
+        # a multi-extension one shows ext_combo, a cube extension shows
+        # these instead, since a cube's "extensions" are its wavelength/
+        # slice axis, not separate HDUs.
+        self.slice_slider = RoundSlider(0, 1, 0, integer=True)
+        self.slice_slider.setFixedWidth(90)
+        self.slice_slider.valueChanged.connect(self._on_slice_slider_changed)
+        self.slice_entry = QLineEdit("0")
+        self.slice_entry.setFixedWidth(44)
+        self.slice_entry.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.slice_entry.editingFinished.connect(self._on_slice_entry)
+        self.slice_slider.hide()
+        self.slice_entry.hide()
+        layout.addWidget(self._chunk(self.filename_label, self.ext_combo,
+                                      self.slice_slider, self.slice_entry))
 
         auto_mask_btn = RoundButton("Auto Mask")
         auto_mask_btn.clicked.connect(self.open_auto_mask)
-        export_btn = RoundButton("Export Mask", accent=True)
-        export_btn.clicked.connect(self.export_mask)
         reset_btn = RoundButton("Reset Mask")
         reset_btn.clicked.connect(self.reset_mask)
+        layout.addWidget(self._chunk(auto_mask_btn, reset_btn))
+
+        export_btn = RoundButton("Export Mask", accent=True)
+        export_btn.clicked.connect(self.export_mask)
         kill_btn = RoundButton("Kill", danger=True)
         kill_btn.clicked.connect(self.kill_current)
-        layout.addWidget(self._chunk(auto_mask_btn, export_btn, reset_btn, kill_btn))
+        layout.add_right_widget(self._chunk(export_btn, kill_btn))
 
     def _build_sidebar(self, parent: QWidget) -> None:
         layout = QVBoxLayout(parent)
@@ -1186,7 +1203,16 @@ class MaskFitsApp(QMainWindow):
         self.render()
 
     def _update_extension_picker(self) -> None:
+        """Shows exactly one of the extension combo / cube slice controls,
+        never both - a single-extension file shows neither (nothing to
+        pick), a multi-extension file shows the combo (unchanged), and a
+        cube extension shows the slice slider+entry instead, since a
+        cube's "extensions" are its wavelength/slice axis, not separate
+        HDUs to combo between."""
         entry = self.entry
+        image = entry.image
+        is_cube = image is not None and image.cube is not None
+
         self.ext_combo.blockSignals(True)
         self.ext_combo.clear()
         extensions = entry.available_extensions
@@ -1195,8 +1221,28 @@ class MaskFitsApp(QMainWindow):
         current_index = next((i for i, (idx, _) in enumerate(extensions) if idx == entry.ext), -1)
         if current_index >= 0:
             self.ext_combo.setCurrentIndex(current_index)
-        self.ext_combo.setEnabled(len(extensions) > 1)
+        self.ext_combo.setVisible(not is_cube and len(extensions) > 1)
         self.ext_combo.blockSignals(False)
+
+        self.slice_slider.setVisible(is_cube)
+        self.slice_entry.setVisible(is_cube)
+        if is_cube:
+            n_slices = image.cube.shape[0]
+            self.slice_slider.set_range(0, max(n_slices - 1, 0))
+            self._sync_slice_controls()
+
+    def _sync_slice_controls(self) -> None:
+        """Reflects entry.image.slice_index onto the slider/entry - called
+        from every path that can change it (the slider itself, the entry
+        box, the Left/Right hotkeys) so all three always agree, no matter
+        which one triggered the change."""
+        image = self.entry.image
+        if image is None or image.cube is None:
+            return
+        self.slice_slider.blockSignals(True)
+        self.slice_slider.setValue(image.slice_index)
+        self.slice_slider.blockSignals(False)
+        self.slice_entry.setText(str(image.slice_index))
 
     def _on_ext_combo_changed(self, index: int) -> None:
         if index < 0:
@@ -1204,6 +1250,23 @@ class MaskFitsApp(QMainWindow):
         ext = self.ext_combo.itemData(index)
         if ext is not None:
             self.switch_extension(ext)
+
+    def _on_slice_slider_changed(self, value: float) -> None:
+        self.switch_slice(int(value))
+
+    def _on_slice_entry(self) -> None:
+        image = self.entry.image
+        if image is None or image.cube is None:
+            return
+        try:
+            index = int(self.slice_entry.text())
+        except ValueError:
+            index = image.slice_index
+        self.switch_slice(index)
+        # Covers the no-op case (invalid text, or a value switch_slice()
+        # clamped/ignored) where it returns early without resyncing - the
+        # entry box must still snap back to the actual current value.
+        self._sync_slice_controls()
 
     def _set_status(self, text: str, *, success: bool = False) -> None:
         """Set the bottom status bar text, optionally tinted green (theme's
@@ -1340,6 +1403,76 @@ class MaskFitsApp(QMainWindow):
             self._update_cuts_display()
             self.render()
 
+    def switch_slice(self, index: int) -> None:
+        """Cube slice navigation (the slice slider/entry, cube-only) -
+        unlike switch_extension, every slice of a cube always shares the
+        same shape by definition, so the mask, zoom/pan, and cut levels
+        always carry over unconditionally - no "different shape, start
+        fresh" case to handle. No file re-read either: a cube's full data
+        is already in memory (see imagedata.load_fits_image), so this is
+        just a re-index, not a reload."""
+        entry = self.entry
+        image = entry.image
+        if image is None or image.cube is None:
+            return
+        index = max(0, min(index, image.cube.shape[0] - 1))
+        if index == image.slice_index:
+            return
+        carry_mask = (self._unbin_mask_cached(entry) if entry.is_binned else image.mask).copy()
+        self._release_mask()
+        image.slice_index = index
+        image.data = image.cube[index]
+        image.mask = carry_mask
+        self._sync_slice_controls()
+        self._update_cuts_display()
+        suffix = self._cube_slice_label(image)
+        self._set_status(f"slice {index + 1}/{image.cube.shape[0]}{f' ({suffix})' if suffix else ''}")
+        self.render()
+
+    @staticmethod
+    def _cube_slice_label(image: FitsImage) -> str:
+        """The current slice's position along the cube's third axis (e.g.
+        "r 6165 Angstrom" for an SDSS-band cube, "4686 Angstrom" for a
+        linear wavelength cube) - empty string if the header doesn't
+        describe that axis at all, since not every cube extension will.
+
+        Two conventions, checked in order:
+        - Per-slice WAVE<i>/BAND<i> keywords (e.g. WAVE0/BAND0, WAVE1/
+          BAND1, ...) - for a handful of discrete, unevenly-spaced bands
+          (SDSS ugriz's central wavelengths aren't evenly spaced, so a
+          single linear axis can't describe them). No CUNIT3 keyword
+          accompanies this convention in practice, so it defaults to
+          Angstrom - the only unit this app's own cube generators use it
+          for; not a general assumption for arbitrary WAVE<i> data.
+        - Standard FITS linear WCS axis (CRVAL3/CDELT3/CRPIX3/CUNIT3):
+          pixel i (0-based) is CRVAL3 + (i - (CRPIX3-1))*CDELT3.
+        """
+        header = image.header
+        index = image.slice_index
+
+        wave_key = f"WAVE{index}"
+        if wave_key in header:
+            try:
+                value = float(header[wave_key])
+            except (TypeError, ValueError):
+                return ""
+            band = str(header.get(f"BAND{index}", "")).strip()
+            unit = str(header.get("CUNIT3", "Angstrom")).strip()
+            text = f"{value:.6g} {unit}".strip()
+            return f"{band} {text}".strip() if band else text
+
+        if "CRVAL3" not in header or "CDELT3" not in header:
+            return ""
+        try:
+            crval3 = float(header["CRVAL3"])
+            cdelt3 = float(header["CDELT3"])
+            crpix3 = float(header.get("CRPIX3", 1))
+        except (TypeError, ValueError):
+            return ""
+        value = crval3 + (index - (crpix3 - 1)) * cdelt3
+        unit = str(header.get("CUNIT3", "")).strip()
+        return f"{value:.6g} {unit}".strip()
+
     def prev_extension(self) -> None:
         """Down-arrow hotkey - steps to the previous entry in
         available_extensions (not just entry.ext - 1, since extensions
@@ -1406,12 +1539,26 @@ class MaskFitsApp(QMainWindow):
         self.load_current(reset_view=True)
 
     def prev_image(self) -> None:
+        """Left-arrow hotkey - while a cube is loaded, this instead steps
+        one slice down (right is up, left is down - see switch_slice),
+        since Left/Right are the natural "step through" direction and a
+        cube's slices are what there is to step through, not other loaded
+        files."""
+        image = self.image
+        if image is not None and image.cube is not None:
+            self.switch_slice(image.slice_index - 1)
+            return
         if self.index > 0:
             self._release_mask()
             self.index -= 1
             self.load_current(reset_view=True)
 
     def next_image(self) -> None:
+        """Right-arrow hotkey - see prev_image."""
+        image = self.image
+        if image is not None and image.cube is not None:
+            self.switch_slice(image.slice_index + 1)
+            return
         if self.index < len(self.entries) - 1:
             self._release_mask()
             self.index += 1
@@ -1920,7 +2067,7 @@ class MaskFitsApp(QMainWindow):
         crop = data[y0:y1:step_y, x0:x1:step_x]
         mask_crop = image.mask[y0:y1:step_y, x0:x1:step_x]
 
-        span = max(entry.highcut - entry.lowcut, 1e-12)
+        span = safe_span(entry.lowcut, entry.highcut)
         norm = np.clip((crop - entry.lowcut) / span, 0, 1)
         norm = np.nan_to_num(norm, nan=0.0)
         rgb = self._scale_and_color(norm)

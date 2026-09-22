@@ -43,6 +43,13 @@ class FitsImage:
     wcs: WCS | None = None
     rotated: bool = False
     mask: np.ndarray = field(default=None)  # type: ignore[assignment]
+    # Set only when this extension's data is a genuine 3D cube (e.g. an IFU
+    # datacube) - the full (n_slices, ny, nx) array, already transposed
+    # consistently with `data`/`rotated` if the frame is portrait. `data` is
+    # always `cube[slice_index]`; switching slices (see gui.switch_slice)
+    # just re-indexes this in memory, no reload from disk.
+    cube: Optional[np.ndarray] = None
+    slice_index: int = 0
 
     def __post_init__(self) -> None:
         if self.mask is None:
@@ -85,7 +92,10 @@ def load_fits_image(path: str, ext: Optional[int] = None) -> FitsImage:
             raise ValueError(f"No 2D image data found in {path}")
 
         data = np.asarray(hdu.data)
-        if data.ndim > 2:
+        is_cube = data.ndim == 3
+        if data.ndim > 3:
+            # Higher-dimensional data (rare) - fall back to the first 2D
+            # slice, same as before; no cube/slice UI for this case.
             data = data[tuple([0] * (data.ndim - 2))]
         header = hdu.header.copy()
 
@@ -99,12 +109,39 @@ def load_fits_image(path: str, ext: Optional[int] = None) -> FitsImage:
             wcs = None
 
     data = data.astype(np.float64)
-    ny, nx = data.shape
-    rotated = ny > nx
-    if rotated:
-        data = np.ascontiguousarray(data.T)
+    cube: Optional[np.ndarray] = None
+    if is_cube:
+        _n_slices, ny, nx = data.shape
+        rotated = ny > nx
+        if rotated:
+            data = np.ascontiguousarray(data.transpose(0, 2, 1))
+        cube = data
+        data = cube[0]
+    else:
+        ny, nx = data.shape
+        rotated = ny > nx
+        if rotated:
+            data = np.ascontiguousarray(data.T)
 
-    return FitsImage(path=path, data=data, header=header, wcs=wcs, rotated=rotated)
+    return FitsImage(path=path, data=data, header=header, wcs=wcs, rotated=rotated, cube=cube)
+
+
+def safe_span(lowcut: float, highcut: float) -> float:
+    """A minimum-clamped highcut-lowcut span, for use as a color-
+    normalization divisor or display-margin size. Floored relative to the
+    cut values' own magnitude rather than a fixed absolute constant, so it
+    stays a true no-op for ordinary "counts"-scale data while still
+    preventing a divide-by-zero for physical-flux-unit data (e.g. an IFU
+    cube in erg/s/cm2/Angstrom), whose meaningful span can be many orders
+    of magnitude smaller - a fixed ~1e-12-style floor would swallow a
+    ~1e-20 span whole and flatten every pixel to the same normalized
+    value (rendering solid black), the bug this fixes. Falls back to a
+    tiny absolute floor only in the fully degenerate case (both cuts
+    exactly 0), matching the previous fixed-floor behavior there."""
+    span = highcut - lowcut
+    magnitude = max(abs(lowcut), abs(highcut))
+    floor = magnitude * 1e-9 if magnitude > 0 else 1e-12
+    return span if span > floor else floor
 
 
 def minmax_cuts(data: np.ndarray) -> tuple[float, float]:

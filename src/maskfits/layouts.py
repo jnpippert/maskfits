@@ -42,12 +42,31 @@ class FlowLayout(QWidget):
         # (panel_bg) this FlowLayout is actually sitting inside of.
         self.setObjectName("flowLayout")
 
+        # row1 is itself split into a flowing zone (unchanged behavior -
+        # wraps to row2 under its own trailing stretch) and a right-anchored
+        # zone next to it (add_right_widget) that never wraps - for controls
+        # (Export Mask/Kill) that should always stay pinned to the
+        # toolbar's right edge regardless of how much else is flowing.
         self._row1 = QWidget(self)
         self._row1.setObjectName("flowRow")
-        self._row1_layout = QHBoxLayout(self._row1)
+        row1_outer = QHBoxLayout(self._row1)
+        row1_outer.setContentsMargins(0, 0, 0, 0)
+        row1_outer.setSpacing(h_spacing)
+
+        self._row1_flow = QWidget(self._row1)
+        self._row1_layout = QHBoxLayout(self._row1_flow)
         self._row1_layout.setContentsMargins(0, 0, 0, 0)
         self._row1_layout.setSpacing(h_spacing)
         self._row1_layout.addStretch(0)
+
+        self._row1_right = QWidget(self._row1)
+        self._row1_right_layout = QHBoxLayout(self._row1_right)
+        self._row1_right_layout.setContentsMargins(0, 0, 0, 0)
+        self._row1_right_layout.setSpacing(h_spacing)
+        self._right_widgets: list[QWidget] = []
+
+        row1_outer.addWidget(self._row1_flow, 1)
+        row1_outer.addWidget(self._row1_right, 0)
 
         self._row2 = QWidget(self)
         self._row2.setObjectName("flowRow")
@@ -66,12 +85,22 @@ class FlowLayout(QWidget):
         self.layout().setContentsMargins(left, top, right, bottom)
 
     def addWidget(self, widget: QWidget) -> None:  # noqa: N802
-        widget.setParent(self._row1)
+        widget.setParent(self._row1_flow)
         self._widgets.append(widget)
         # Provisionally in row1 (last position, before the trailing stretch)
         # - the next resizeEvent reflows properly based on actual widths.
         self._row1_layout.insertWidget(self._row1_layout.count() - 1, widget)
         self._last_split = None
+        self._update_row_height()
+
+    def add_right_widget(self, widget: QWidget) -> None:
+        """Adds `widget` pinned to row1's right edge - unlike addWidget(),
+        it never wraps to row2 and never shares row1's usable width with
+        the normally-flowing widgets (their wrap point accounts for the
+        space this reserves - see _reflow)."""
+        widget.setParent(self._row1_right)
+        self._right_widgets.append(widget)
+        self._row1_right_layout.addWidget(widget)
         self._update_row_height()
 
     def _update_row_height(self) -> None:
@@ -83,10 +112,13 @@ class FlowLayout(QWidget):
         layout doesn't always re-query sizeHint() before repainting), which
         visibly compresses every control's text instead of leaving it
         readable."""
-        if not self._widgets:
+        all_widgets = self._widgets + self._right_widgets
+        if not all_widgets:
             return
-        self._row_height = max(w.sizeHint().height() for w in self._widgets)
+        self._row_height = max(w.sizeHint().height() for w in all_widgets)
         self._row1.setFixedHeight(self._row_height)
+        self._row1_flow.setFixedHeight(self._row_height)
+        self._row1_right.setFixedHeight(self._row_height)
         self._row2.setFixedHeight(self._row_height)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
@@ -97,7 +129,8 @@ class FlowLayout(QWidget):
         if not self._widgets:
             return
         left, _top, right, _bottom = self._margins
-        usable = max(available_width - left - right, 1)
+        right_reserved = sum(w.sizeHint().width() + self._h_spacing for w in self._right_widgets)
+        usable = max(available_width - left - right - right_reserved, 1)
         total = 0
         split = len(self._widgets)
         for i, w in enumerate(self._widgets):

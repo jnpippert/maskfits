@@ -200,6 +200,15 @@ class RoundSlider(QWidget):
     def value(self) -> float:
         return self._value
 
+    def set_range(self, lo: float, hi: float) -> None:
+        """Changes the slider's range in place (e.g. a newly-loaded cube
+        with a different slice count) - clamps the current value into the
+        new range but does not itself emit valueChanged; call setValue()
+        after if the caller wants that."""
+        self._lo, self._hi = lo, hi
+        self._value = self._clamp(self._value)
+        self.update()
+
     def setValue(self, value: float) -> None:  # noqa: N802 - matches Qt naming convention
         value = self._clamp(value)
         if value != self._value:
