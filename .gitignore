@@ -11,5 +11,6 @@ dist/
 images/
 .vscode/
 .tests/
+.tests/data/
 *.fits
 isopy*
