@@ -45,6 +45,11 @@ class Settings:
     smooth_enabled: bool = False
     smooth_sigma: float = 3.0
     export_dir: str = "file_parent"
+    # The quick-export ("Export Mask" toolbar button / File menu) output
+    # filename - $FILENAME is replaced with the source file's own stem (see
+    # format_mask_filename). Must contain $FILENAME; a ".fits"/".fit"/".fts"
+    # suffix is optional - added automatically if missing.
+    export_filename_format: str = "mask_$FILENAME"
     zoom: float = 1.0
     # Hex string ("#rrggbb") or None to use the built-in crimson accent.
     accent_color: Optional[str] = None
@@ -52,6 +57,25 @@ class Settings:
     # - see maskfits.shortcuts. Anything not present here still uses that
     # action's own default key(s).
     shortcuts: dict[str, list[str]] = field(default_factory=dict)
+
+
+def is_valid_export_filename_format(fmt: str) -> bool:
+    """A quick-export filename format must be non-empty and actually use the
+    $FILENAME placeholder - otherwise every exported mask would overwrite
+    the same file."""
+    return bool(fmt) and "$FILENAME" in fmt
+
+
+def format_mask_filename(fmt: str, stem: str) -> str:
+    """Resolves a Settings.export_filename_format string into an actual
+    output filename: $FILENAME replaced with the source file's own stem
+    (see MaskFitsApp._mask_stem), and a ".fits" suffix added unless the
+    result already ends with a recognized FITS extension - so both
+    "mask_$FILENAME" (the default) and "$FILENAME_out.fits" work as typed."""
+    name = fmt.replace("$FILENAME", stem)
+    if not name.lower().endswith((".fits", ".fit", ".fts")):
+        name += ".fits"
+    return name
 
 
 def _backing_store() -> QSettings:
@@ -68,6 +92,7 @@ def load_settings(store: Optional[QSettings] = None) -> Settings:
     scale = s.value("scale", defaults.scale, type=str)
     stretch = s.value("stretch", defaults.stretch, type=str)
     export_dir = s.value("export_dir", defaults.export_dir, type=str)
+    export_filename_format = s.value("export_filename_format", defaults.export_filename_format, type=str)
     accent = s.value("accent_color", "", type=str)
     # A custom theme's name is a valid `theme` value too, alongside the
     # three built-ins - checked here (rather than a static THEME_CHOICES
@@ -87,6 +112,10 @@ def load_settings(store: Optional[QSettings] = None) -> Settings:
         smooth_enabled=s.value("smooth_enabled", defaults.smooth_enabled, type=bool),
         smooth_sigma=s.value("smooth_sigma", defaults.smooth_sigma, type=float),
         export_dir=export_dir if export_dir in EXPORT_DIR_CHOICES else defaults.export_dir,
+        export_filename_format=(
+            export_filename_format if is_valid_export_filename_format(export_filename_format)
+            else defaults.export_filename_format
+        ),
         zoom=s.value("zoom", defaults.zoom, type=float),
         accent_color=accent or None,
         shortcuts=_load_shortcuts(s),
@@ -116,6 +145,7 @@ def save_settings(settings: Settings, store: Optional[QSettings] = None) -> None
     s.setValue("smooth_enabled", settings.smooth_enabled)
     s.setValue("smooth_sigma", settings.smooth_sigma)
     s.setValue("export_dir", settings.export_dir)
+    s.setValue("export_filename_format", settings.export_filename_format)
     s.setValue("zoom", settings.zoom)
     s.setValue("accent_color", settings.accent_color or "")
     s.setValue("shortcuts_json", json.dumps(settings.shortcuts))

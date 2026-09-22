@@ -3,7 +3,13 @@ import pytest
 PySide6 = pytest.importorskip("PySide6")
 from PySide6.QtCore import QSettings  # noqa: E402
 
-from maskfits.settings import Settings, load_settings, save_settings  # noqa: E402
+from maskfits.settings import (  # noqa: E402
+    Settings,
+    format_mask_filename,
+    is_valid_export_filename_format,
+    load_settings,
+    save_settings,
+)
 
 
 @pytest.fixture
@@ -86,3 +92,56 @@ def test_shortcuts_json_malformed_json_falls_back_to_empty(store):
     store.setValue("shortcuts_json", "{not valid json")
     store.sync()
     assert load_settings(store).shortcuts == {}
+
+
+# ----------------------------------------------------- export filename format
+
+
+def test_export_filename_format_defaults_to_mask_filename(store):
+    assert load_settings(store).export_filename_format == "mask_$FILENAME"
+
+
+def test_export_filename_format_round_trips(store):
+    save_settings(Settings(export_filename_format="$FILENAME_out"), store)
+    assert load_settings(store).export_filename_format == "$FILENAME_out"
+
+
+def test_export_filename_format_falls_back_when_missing_the_placeholder(store):
+    store.setValue("export_filename_format", "no_placeholder_here")
+    store.sync()
+    assert load_settings(store).export_filename_format == "mask_$FILENAME"
+
+
+def test_export_filename_format_falls_back_when_empty(store):
+    store.setValue("export_filename_format", "")
+    store.sync()
+    assert load_settings(store).export_filename_format == "mask_$FILENAME"
+
+
+def test_is_valid_export_filename_format():
+    assert is_valid_export_filename_format("mask_$FILENAME") is True
+    assert is_valid_export_filename_format("$FILENAME") is True
+    assert is_valid_export_filename_format("") is False
+    assert is_valid_export_filename_format("no_placeholder") is False
+
+
+def test_format_mask_filename_uses_the_default_format():
+    assert format_mask_filename("mask_$FILENAME", "img42") == "mask_img42.fits"
+
+
+def test_format_mask_filename_adds_fits_suffix_when_missing():
+    assert format_mask_filename("$FILENAME_masked", "img42") == "img42_masked.fits"
+
+
+def test_format_mask_filename_does_not_double_the_suffix():
+    assert format_mask_filename("$FILENAME.fits", "img42") == "img42.fits"
+
+
+@pytest.mark.parametrize("suffix", [".fits", ".FITS", ".fit", ".fts", ".Fit"])
+def test_format_mask_filename_recognizes_every_fits_suffix_case_insensitively(suffix):
+    result = format_mask_filename(f"$FILENAME{suffix}", "img42")
+    assert result == f"img42{suffix}"
+
+
+def test_format_mask_filename_replaces_every_occurrence():
+    assert format_mask_filename("$FILENAME_a_$FILENAME_b", "x") == "x_a_x_b.fits"

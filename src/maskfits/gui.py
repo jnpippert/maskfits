@@ -75,7 +75,7 @@ from maskfits.masking import (
     extend_ray_to_border,
     line_mask,
 )
-from maskfits.settings import Settings, load_settings
+from maskfits.settings import Settings, format_mask_filename, load_settings
 from maskfits.settings_window import SettingsWindow
 from maskfits.shortcuts import SHORTCUT_ACTIONS, effective_keys
 from maskfits.theme import current_theme, detect_os_light_mode, theme_manager
@@ -1741,11 +1741,18 @@ class MaskFitsApp(QMainWindow):
         return os.path.dirname(entry.path)
 
     def export_mask(self) -> None:
+        """The "Export Mask" toolbar button and File menu action - always
+        writes to Settings.export_filename_format's filename (default
+        "mask_$FILENAME"), in Settings.export_dir's folder, with no
+        dialog. Save Mask As... (export_mask_as) is the interactive,
+        pick-your-own-name/location alternative and isn't affected by this
+        format."""
         entry = self.entry
         if entry.image is None or entry.path is None:
             QMessageBox.warning(self, "maskfits", "No image loaded to export a mask for.")
             return
-        out_path = os.path.join(self._export_dir(entry), f"mask_{self._mask_stem(entry.path)}.fits")
+        filename = format_mask_filename(self.settings.export_filename_format, self._mask_stem(entry.path))
+        out_path = os.path.join(self._export_dir(entry), filename)
         self._build_mask_hdu(entry).writeto(out_path, overwrite=True)
         self._set_status(f"exported mask to {out_path}", success=True)
 

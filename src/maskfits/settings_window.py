@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QVBoxLayout,
     QWidget,
 )
@@ -35,6 +36,8 @@ from maskfits.settings import (
     MODE_CHOICES,
     STRETCH_CHOICES,
     Settings,
+    format_mask_filename,
+    is_valid_export_filename_format,
     save_settings,
 )
 from maskfits.shortcuts_window import ShortcutsWindow
@@ -92,6 +95,7 @@ class SettingsWindow(QDialog):
         self.smooth_enabled = settings.smooth_enabled
         self.smooth_sigma = settings.smooth_sigma
         self.export_dir = settings.export_dir
+        self.export_filename_format = settings.export_filename_format
         self.zoom = settings.zoom
         self.accent_color = settings.accent_color
         self.shortcuts: dict[str, list[str]] = dict(settings.shortcuts)
@@ -134,6 +138,7 @@ class SettingsWindow(QDialog):
         self._segment_row(layout, "default scale", SCALE_OPTIONS, self.scale, self._on_scale_changed)
         self._segment_row(layout, "export directory", EXPORT_DIR_OPTIONS, self.export_dir,
                            self._on_export_dir_changed)
+        self._export_filename_row(layout)
         self._slider_row(layout, "default zoom", self.zoom, ZOOM_MIN, ZOOM_MAX, self._on_zoom_changed)
         self._slider_row(layout, "default bin factor", self.bin_factor, BIN_FACTOR_MIN, BIN_FACTOR_MAX,
                           self._on_bin_factor_changed, integer=True, enabled_checkbox=True,
@@ -347,6 +352,41 @@ class SettingsWindow(QDialog):
     def _on_theme_editor_deleted(self, name: str) -> None:
         self._reload_theme_combo(select="system")
 
+    # ------------------------------------------------------- export filename
+
+    def _export_filename_row(self, layout: QVBoxLayout) -> None:
+        row = self._row_label(layout, "quick export filename")
+        self._export_filename_entry = QLineEdit(self.export_filename_format)
+        self._export_filename_entry.setFixedWidth(180)
+        self._export_filename_entry.textChanged.connect(self._on_export_filename_changed)
+        row.addWidget(self._export_filename_entry)
+        reset_btn = RoundButton("Reset")
+        reset_btn.clicked.connect(self._reset_export_filename_format)
+        row.addWidget(reset_btn)
+        layout.addLayout(row)
+
+        hint_row = QHBoxLayout()
+        hint_row.addStretch(1)
+        self._export_filename_hint = QLabel()
+        self._export_filename_hint.setProperty("dim", True)
+        hint_row.addWidget(self._export_filename_hint)
+        layout.addLayout(hint_row)
+        self._update_export_filename_hint()
+
+    def _on_export_filename_changed(self, value: str) -> None:
+        self.export_filename_format = value
+        self._update_export_filename_hint()
+
+    def _reset_export_filename_format(self) -> None:
+        self._export_filename_entry.setText(Settings().export_filename_format)
+
+    def _update_export_filename_hint(self) -> None:
+        fmt = self.export_filename_format
+        if is_valid_export_filename_format(fmt):
+            self._export_filename_hint.setText(f"e.g. {format_mask_filename(fmt, 'myimage')}")
+        else:
+            self._export_filename_hint.setText("must include $FILENAME")
+
     # --------------------------------------------------------------- accent
 
     def _accent_row(self, layout: QVBoxLayout) -> None:
@@ -447,12 +487,20 @@ class SettingsWindow(QDialog):
             smooth_enabled=self.smooth_enabled,
             smooth_sigma=self.smooth_sigma,
             export_dir=self.export_dir if self.export_dir in EXPORT_DIR_CHOICES else "file_parent",
+            export_filename_format=(
+                self.export_filename_format
+                if is_valid_export_filename_format(self.export_filename_format)
+                else Settings().export_filename_format
+            ),
             zoom=self.zoom,
             accent_color=self.accent_color,
             shortcuts=self.shortcuts,
         )
 
     def _save(self) -> None:
+        if not is_valid_export_filename_format(self.export_filename_format):
+            QMessageBox.warning(self, "maskfits", "The quick export filename must include $FILENAME.")
+            return
         settings = self._current_settings()
         save_settings(settings)
         self._saved = True
