@@ -356,26 +356,28 @@ class SettingsWindow(QDialog):
 
     # ------------------------------------------------------- export filename
 
-    # (attribute suffix, row label, extra required placeholder) - "" is the
-    # plain single-extension-image format; the export_mask() code that
-    # picks between the three at export time lives in gui._file_kind /
-    # gui.MaskFitsApp.export_mask.
+    # (attribute suffix, row label, forbidden placeholders) - "" is the
+    # plain single-extension-image format. $EXT only resolves to anything
+    # for a multi-extension file and $SLICE only for a cube (see
+    # gui.MaskFitsApp.export_mask/_file_kind), so each is barred from
+    # every format but its own - and optional even there, the user may
+    # accept that leaving it out makes exports collide on one filename.
     _EXPORT_FORMAT_ROWS = (
-        ("", "quick export filename", ()),
-        ("_multi", "quick export filename (multi-ext)", ("$EXT",)),
-        ("_cube", "quick export filename (cube)", ("$SLICE",)),
+        ("", "quick export filename", ("$EXT", "$SLICE")),
+        ("_multi", "quick export filename (multi-ext)", ("$SLICE",)),
+        ("_cube", "quick export filename (cube)", ("$EXT",)),
     )
 
     def _export_filename_rows(self, layout: QVBoxLayout) -> None:
-        self._export_filename_required: dict[str, tuple[str, ...]] = {}
+        self._export_filename_forbidden: dict[str, tuple[str, ...]] = {}
         self._export_filename_entries: dict[str, QLineEdit] = {}
         self._export_filename_hints: dict[str, QLabel] = {}
-        for suffix, label, required in self._EXPORT_FORMAT_ROWS:
-            self._build_export_filename_row(layout, suffix, label, required)
+        for suffix, label, forbidden in self._EXPORT_FORMAT_ROWS:
+            self._build_export_filename_row(layout, suffix, label, forbidden)
 
     def _build_export_filename_row(self, layout: QVBoxLayout, suffix: str, label: str,
-                                    required: tuple[str, ...]) -> None:
-        self._export_filename_required[suffix] = required
+                                    forbidden: tuple[str, ...]) -> None:
+        self._export_filename_forbidden[suffix] = forbidden
         row = self._row_label(layout, label)
         entry = QLineEdit(getattr(self, f"export_filename_format{suffix}"))
         entry.setFixedWidth(180)
@@ -412,18 +414,21 @@ class SettingsWindow(QDialog):
 
     def _update_export_filename_hint(self, suffix: str) -> None:
         fmt = getattr(self, f"export_filename_format{suffix}")
-        required = self._export_filename_required[suffix]
+        forbidden = self._export_filename_forbidden[suffix]
         hint = self._export_filename_hints[suffix]
-        if is_valid_export_filename_format(fmt, required=required):
-            preview_kwargs = {}
-            if "$EXT" in required:
-                preview_kwargs["ext"] = 1
-            if "$SLICE" in required:
-                preview_kwargs["slice_index"] = 2
-            hint.setText(f"e.g. {format_mask_filename(fmt, 'myimage', **preview_kwargs)}")
-        else:
-            missing = " and ".join(["$FILENAME", *required])
-            hint.setText(f"must include {missing}")
+        if not fmt or "$FILENAME" not in fmt:
+            hint.setText("must include $FILENAME")
+            return
+        present = [p for p in forbidden if p in fmt]
+        if present:
+            hint.setText(f"{' and '.join(present)} not allowed here")
+            return
+        preview_kwargs = {}
+        if "$EXT" not in forbidden:
+            preview_kwargs["ext"] = 1
+        if "$SLICE" not in forbidden:
+            preview_kwargs["slice_index"] = 2
+        hint.setText(f"e.g. {format_mask_filename(fmt, 'myimage', **preview_kwargs)}")
 
     # --------------------------------------------------------------- accent
 
@@ -527,17 +532,17 @@ class SettingsWindow(QDialog):
             export_dir=self.export_dir if self.export_dir in EXPORT_DIR_CHOICES else "file_parent",
             export_filename_format=(
                 self.export_filename_format
-                if is_valid_export_filename_format(self.export_filename_format)
+                if is_valid_export_filename_format(self.export_filename_format, forbidden=("$EXT", "$SLICE"))
                 else Settings().export_filename_format
             ),
             export_filename_format_multi=(
                 self.export_filename_format_multi
-                if is_valid_export_filename_format(self.export_filename_format_multi, required=("$EXT",))
+                if is_valid_export_filename_format(self.export_filename_format_multi, forbidden=("$SLICE",))
                 else Settings().export_filename_format_multi
             ),
             export_filename_format_cube=(
                 self.export_filename_format_cube
-                if is_valid_export_filename_format(self.export_filename_format_cube, required=("$SLICE",))
+                if is_valid_export_filename_format(self.export_filename_format_cube, forbidden=("$EXT",))
                 else Settings().export_filename_format_cube
             ),
             zoom=self.zoom,
@@ -546,14 +551,20 @@ class SettingsWindow(QDialog):
         )
 
     def _save(self) -> None:
-        for suffix, required, message in (
-            ("", (), "The quick export filename must include $FILENAME."),
-            ("_multi", ("$EXT",), "The multi-ext quick export filename must include $FILENAME and $EXT."),
-            ("_cube", ("$SLICE",), "The cube quick export filename must include $FILENAME and $SLICE."),
+        for suffix, forbidden, label in (
+            ("", ("$EXT", "$SLICE"), "quick export filename"),
+            ("_multi", ("$SLICE",), "multi-ext quick export filename"),
+            ("_cube", ("$EXT",), "cube quick export filename"),
         ):
             fmt = getattr(self, f"export_filename_format{suffix}")
-            if not is_valid_export_filename_format(fmt, required=required):
-                QMessageBox.warning(self, "maskfits", message)
+            if not fmt or "$FILENAME" not in fmt:
+                QMessageBox.warning(self, "maskfits", f"The {label} must include $FILENAME.")
+                return
+            bad = [p for p in forbidden if p in fmt]
+            if bad:
+                QMessageBox.warning(
+                    self, "maskfits", f"The {label} can't include {' or '.join(bad)}."
+                )
                 return
         settings = self._current_settings()
         save_settings(settings)

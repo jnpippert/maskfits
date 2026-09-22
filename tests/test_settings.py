@@ -166,23 +166,52 @@ def test_export_filename_format_cube_round_trips(store):
     assert load_settings(store).export_filename_format_cube == "$FILENAME_s$SLICE"
 
 
-def test_export_filename_format_multi_falls_back_without_ext_placeholder(store):
-    store.setValue("export_filename_format_multi", "mask_$FILENAME")  # valid alone, but missing $EXT
+def test_export_filename_format_multi_accepts_missing_ext_placeholder(store):
+    """$EXT is optional in the multi-ext format - leaving it out is the
+    user's own choice to accept that exports across extensions collide on
+    one filename, not an invalid format."""
+    store.setValue("export_filename_format_multi", "mask_$FILENAME")
+    store.sync()
+    assert load_settings(store).export_filename_format_multi == "mask_$FILENAME"
+
+
+def test_export_filename_format_cube_accepts_missing_slice_placeholder(store):
+    store.setValue("export_filename_format_cube", "mask_$FILENAME")
+    store.sync()
+    assert load_settings(store).export_filename_format_cube == "mask_$FILENAME"
+
+
+def test_export_filename_format_multi_falls_back_with_slice_placeholder(store):
+    """$SLICE is meaningless (and barred) in the multi-ext format - only
+    $EXT resolves to anything there."""
+    store.setValue("export_filename_format_multi", "mask_$FILENAME_$SLICE")
     store.sync()
     assert load_settings(store).export_filename_format_multi == "mask_$FILENAME_ext$EXT"
 
 
-def test_export_filename_format_cube_falls_back_without_slice_placeholder(store):
-    store.setValue("export_filename_format_cube", "mask_$FILENAME")  # valid alone, but missing $SLICE
+def test_export_filename_format_cube_falls_back_with_ext_placeholder(store):
+    store.setValue("export_filename_format_cube", "mask_$FILENAME_$EXT")
     store.sync()
     assert load_settings(store).export_filename_format_cube == "mask_$FILENAME_slice$SLICE"
 
 
-def test_is_valid_export_filename_format_with_required_placeholders():
-    assert is_valid_export_filename_format("mask_$FILENAME_$EXT", required=("$EXT",)) is True
-    assert is_valid_export_filename_format("mask_$FILENAME", required=("$EXT",)) is False
-    assert is_valid_export_filename_format("mask_$FILENAME_$SLICE", required=("$SLICE",)) is True
-    assert is_valid_export_filename_format("mask_$FILENAME", required=("$SLICE",)) is False
+def test_export_filename_format_falls_back_with_ext_or_slice_placeholder(store):
+    """Neither $EXT nor $SLICE means anything for a plain single-extension
+    image - both are barred from export_filename_format."""
+    store.setValue("export_filename_format", "mask_$FILENAME_$EXT")
+    store.sync()
+    assert load_settings(store).export_filename_format == "mask_$FILENAME"
+
+    store.setValue("export_filename_format", "mask_$FILENAME_$SLICE")
+    store.sync()
+    assert load_settings(store).export_filename_format == "mask_$FILENAME"
+
+
+def test_is_valid_export_filename_format_with_forbidden_placeholders():
+    assert is_valid_export_filename_format("mask_$FILENAME_$EXT", forbidden=("$SLICE",)) is True
+    assert is_valid_export_filename_format("mask_$FILENAME_$EXT", forbidden=("$EXT",)) is False
+    assert is_valid_export_filename_format("mask_$FILENAME", forbidden=("$EXT",)) is True
+    assert is_valid_export_filename_format("mask_$FILENAME_$SLICE", forbidden=("$SLICE",)) is False
 
 
 def test_format_mask_filename_substitutes_ext():

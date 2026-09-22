@@ -49,12 +49,17 @@ class Settings:
     # filename - one of three formats, chosen by the current file's own
     # type (see MaskFitsApp.export_mask): a plain single-extension image,
     # a multi-extension FITS, or a cube. $FILENAME (the source file's own
-    # stem - see format_mask_filename) is required in all three;
-    # export_filename_format_multi must also use $EXT (the extension
-    # number) and export_filename_format_cube must also use $SLICE (the
-    # slice number), so exporting from different extensions/slices never
-    # silently overwrites the same file. A ".fits"/".fit"/".fts" suffix is
-    # optional in all three - added automatically if missing.
+    # stem - see format_mask_filename) is required in all three.
+    # $EXT (the extension number) and $SLICE (the slice number) are each
+    # optional - the user may leave them out and accept that exporting
+    # from different extensions/slices then overwrites the same file -
+    # but $EXT only makes sense (and is only allowed) in
+    # export_filename_format_multi, and $SLICE only in
+    # export_filename_format_cube; neither is allowed in the plain
+    # single-extension export_filename_format, and each is also barred
+    # from the other's format (see is_valid_export_filename_format's
+    # `forbidden`). A ".fits"/".fit"/".fts" suffix is optional in all
+    # three - added automatically if missing.
     export_filename_format: str = "mask_$FILENAME"
     export_filename_format_multi: str = "mask_$FILENAME_ext$EXT"
     export_filename_format_cube: str = "mask_$FILENAME_slice$SLICE"
@@ -67,16 +72,20 @@ class Settings:
     shortcuts: dict[str, list[str]] = field(default_factory=dict)
 
 
-def is_valid_export_filename_format(fmt: str, *, required: tuple[str, ...] = ()) -> bool:
+def is_valid_export_filename_format(fmt: str, *, forbidden: tuple[str, ...] = ()) -> bool:
     """A quick-export filename format must be non-empty and actually use
     the $FILENAME placeholder - otherwise every exported mask would
-    overwrite the same file. `required` names any additional placeholders
-    that must also be present (e.g. "$EXT" for the multi-extension format,
-    "$SLICE" for the cube one), for the same reason - without $EXT/$SLICE,
-    every extension/slice's export would collide on one filename too."""
+    overwrite the same file. `forbidden` names any placeholders that must
+    NOT be present (e.g. "$EXT" is meaningless - and barred - in the
+    single-extension and cube formats; "$SLICE" is barred in the single-
+    extension and multi-extension ones) since each only resolves to
+    anything for its own file type - see MaskFitsApp.export_mask - and
+    would otherwise pass through the output filename unresolved. $EXT
+    itself is optional (not required) in the multi-extension format, and
+    $SLICE likewise in the cube one."""
     if not fmt or "$FILENAME" not in fmt:
         return False
-    return all(p in fmt for p in required)
+    return not any(p in fmt for p in forbidden)
 
 
 def format_mask_filename(fmt: str, stem: str, *, ext: Optional[int] = None,
@@ -138,17 +147,18 @@ def load_settings(store: Optional[QSettings] = None) -> Settings:
         smooth_sigma=s.value("smooth_sigma", defaults.smooth_sigma, type=float),
         export_dir=export_dir if export_dir in EXPORT_DIR_CHOICES else defaults.export_dir,
         export_filename_format=(
-            export_filename_format if is_valid_export_filename_format(export_filename_format)
+            export_filename_format
+            if is_valid_export_filename_format(export_filename_format, forbidden=("$EXT", "$SLICE"))
             else defaults.export_filename_format
         ),
         export_filename_format_multi=(
             export_filename_format_multi
-            if is_valid_export_filename_format(export_filename_format_multi, required=("$EXT",))
+            if is_valid_export_filename_format(export_filename_format_multi, forbidden=("$SLICE",))
             else defaults.export_filename_format_multi
         ),
         export_filename_format_cube=(
             export_filename_format_cube
-            if is_valid_export_filename_format(export_filename_format_cube, required=("$SLICE",))
+            if is_valid_export_filename_format(export_filename_format_cube, forbidden=("$EXT",))
             else defaults.export_filename_format_cube
         ),
         zoom=s.value("zoom", defaults.zoom, type=float),

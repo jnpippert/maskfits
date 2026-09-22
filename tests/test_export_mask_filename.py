@@ -251,3 +251,39 @@ def test_export_mask_defaults_produce_distinct_filenames_across_slices(qapp, tmp
     written = sorted(p.name for p in tmp_path.glob("*.fits") if p.name != "mycube.fits")
     assert len(written) == 2
     assert len(set(written)) == 2
+
+
+# ------------------------------------------------- $EXT/$SLICE are optional
+
+
+def test_export_mask_multi_format_works_without_ext(qapp, tmp_path):
+    """$EXT is optional in export_filename_format_multi - a format that
+    omits it is still valid, it just means every extension's export lands
+    on the same filename (the user's own choice)."""
+    path = tmp_path / "myimage.fits"
+    _write_multi(path)
+    win = MaskFitsApp(
+        [str(path)],
+        settings=Settings(export_dir="file_parent", export_filename_format_multi="mask_$FILENAME"),
+    )
+    win.show()
+    qapp.processEvents()
+
+    win.export_mask()
+
+    assert (tmp_path / "mask_myimage.fits").exists()
+
+
+def test_export_mask_cube_format_works_without_slice(qapp, tmp_path):
+    path = tmp_path / "mycube.fits"
+    _write_cube(path, n_slices=3)
+    win = MaskFitsApp(
+        [str(path)],
+        settings=Settings(export_dir="file_parent", export_filename_format_cube="mask_$FILENAME"),
+    )
+    win.show()
+    qapp.processEvents()
+
+    win.export_mask()
+
+    assert (tmp_path / "mask_mycube.fits").exists()

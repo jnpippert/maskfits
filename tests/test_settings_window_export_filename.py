@@ -115,16 +115,42 @@ def test_cube_row_hint_shows_a_slice_worked_example(qapp):
     assert win._export_filename_hints["_cube"].text() == "e.g. mask_myimage_slice2.fits"
 
 
-def test_multi_row_warns_when_ext_placeholder_missing(qapp):
+def test_multi_row_accepts_a_format_without_ext(qapp):
+    """$EXT is optional (not required) in the multi-ext format - leaving
+    it out is a valid choice, just one that collides filenames across
+    extensions."""
     win = SettingsWindow(Settings())
     win._export_filename_entries["_multi"].setText("mask_$FILENAME")
-    assert win._export_filename_hints["_multi"].text() == "must include $FILENAME and $EXT"
+    assert win._export_filename_hints["_multi"].text() == "e.g. mask_myimage.fits"
 
 
-def test_cube_row_warns_when_slice_placeholder_missing(qapp):
+def test_cube_row_accepts_a_format_without_slice(qapp):
     win = SettingsWindow(Settings())
     win._export_filename_entries["_cube"].setText("mask_$FILENAME")
-    assert win._export_filename_hints["_cube"].text() == "must include $FILENAME and $SLICE"
+    assert win._export_filename_hints["_cube"].text() == "e.g. mask_myimage.fits"
+
+
+def test_multi_row_warns_when_slice_placeholder_used(qapp):
+    """$SLICE only means anything for a cube - it's barred from the
+    multi-ext format entirely, not just optional."""
+    win = SettingsWindow(Settings())
+    win._export_filename_entries["_multi"].setText("mask_$FILENAME_$SLICE")
+    assert win._export_filename_hints["_multi"].text() == "$SLICE not allowed here"
+
+
+def test_cube_row_warns_when_ext_placeholder_used(qapp):
+    win = SettingsWindow(Settings())
+    win._export_filename_entries["_cube"].setText("mask_$FILENAME_$EXT")
+    assert win._export_filename_hints["_cube"].text() == "$EXT not allowed here"
+
+
+def test_single_row_warns_when_ext_or_slice_placeholder_used(qapp):
+    win = SettingsWindow(Settings())
+    win._export_filename_entries[""].setText("mask_$FILENAME_$EXT")
+    assert win._export_filename_hints[""].text() == "$EXT not allowed here"
+
+    win._export_filename_entries[""].setText("mask_$FILENAME_$SLICE")
+    assert win._export_filename_hints[""].text() == "$SLICE not allowed here"
 
 
 def test_multi_row_reset_restores_the_default(qapp):
@@ -152,25 +178,59 @@ def test_save_persists_all_three_formats(qapp, monkeypatch):
     assert saved[0].export_filename_format_cube == "c_$FILENAME_$SLICE"
 
 
-def test_save_is_refused_when_multi_format_missing_ext(qapp, monkeypatch):
+def test_save_accepts_multi_format_without_ext(qapp, monkeypatch):
     saved = []
     monkeypatch.setattr("maskfits.settings_window.save_settings", lambda s, store=None: saved.append(s))
-    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: None)
 
     win = SettingsWindow(Settings())
     win._export_filename_entries["_multi"].setText("mask_$FILENAME")
     win._save()
 
-    assert saved == []
+    assert saved and saved[0].export_filename_format_multi == "mask_$FILENAME"
 
 
-def test_save_is_refused_when_cube_format_missing_slice(qapp, monkeypatch):
+def test_save_accepts_cube_format_without_slice(qapp, monkeypatch):
+    saved = []
+    monkeypatch.setattr("maskfits.settings_window.save_settings", lambda s, store=None: saved.append(s))
+
+    win = SettingsWindow(Settings())
+    win._export_filename_entries["_cube"].setText("mask_$FILENAME")
+    win._save()
+
+    assert saved and saved[0].export_filename_format_cube == "mask_$FILENAME"
+
+
+def test_save_is_refused_when_multi_format_uses_slice(qapp, monkeypatch):
     saved = []
     monkeypatch.setattr("maskfits.settings_window.save_settings", lambda s, store=None: saved.append(s))
     monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: None)
 
     win = SettingsWindow(Settings())
-    win._export_filename_entries["_cube"].setText("mask_$FILENAME")
+    win._export_filename_entries["_multi"].setText("mask_$FILENAME_$SLICE")
+    win._save()
+
+    assert saved == []
+
+
+def test_save_is_refused_when_cube_format_uses_ext(qapp, monkeypatch):
+    saved = []
+    monkeypatch.setattr("maskfits.settings_window.save_settings", lambda s, store=None: saved.append(s))
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: None)
+
+    win = SettingsWindow(Settings())
+    win._export_filename_entries["_cube"].setText("mask_$FILENAME_$EXT")
+    win._save()
+
+    assert saved == []
+
+
+def test_save_is_refused_when_single_format_uses_ext_or_slice(qapp, monkeypatch):
+    saved = []
+    monkeypatch.setattr("maskfits.settings_window.save_settings", lambda s, store=None: saved.append(s))
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: None)
+
+    win = SettingsWindow(Settings())
+    win._export_filename_entries[""].setText("mask_$FILENAME_$EXT")
     win._save()
 
     assert saved == []
