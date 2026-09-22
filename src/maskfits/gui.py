@@ -1295,13 +1295,54 @@ class MaskFitsApp(QMainWindow):
         self.render()
 
     def switch_extension(self, ext: int) -> None:
+        """Different extensions of the same file are often just different
+        representations of the same pixel grid (e.g. a science frame and its
+        weight/variance map) - so if the extension being switched to has the
+        same shape, the mask painted so far carries over instead of being
+        discarded, letting the user mask against whichever representation
+        shows a feature most clearly. A different shape can't share a mask
+        at all (nothing to line pixels up with), so that's treated like
+        opening a new file - the mask (and undo history, via
+        _release_mask()) is dropped entirely."""
         entry = self.entry
         if entry.path is None or ext == entry.ext:
             return
+        carry_mask = carry_shape = carry_rotated = None
+        if entry.image is not None:
+            full_res_mask = self._unbin_mask_cached(entry) if entry.is_binned else entry.image.mask
+            carry_mask = full_res_mask.copy()
+            carry_shape = carry_mask.shape
+            carry_rotated = entry.image.rotated
         self._release_mask()
         entry.ext = ext
         entry.image = None
         self.load_current(reset_view=True)
+        new_image = entry.image
+        if (carry_mask is not None and new_image is not None
+                and new_image.data.shape == carry_shape and new_image.rotated == carry_rotated):
+            new_image.mask = carry_mask
+
+    def prev_extension(self) -> None:
+        """Up-arrow hotkey - steps to the previous entry in
+        available_extensions (not just entry.ext - 1, since extensions
+        aren't always contiguous - e.g. only 0 and 2 have image data).
+        load_current() (via switch_extension) refreshes the extension combo
+        in the top row to match."""
+        exts = [i for i, _ in self.entry.available_extensions]
+        if self.entry.ext not in exts:
+            return
+        idx = exts.index(self.entry.ext)
+        if idx > 0:
+            self.switch_extension(exts[idx - 1])
+
+    def next_extension(self) -> None:
+        """Down-arrow hotkey - see prev_extension."""
+        exts = [i for i, _ in self.entry.available_extensions]
+        if self.entry.ext not in exts:
+            return
+        idx = exts.index(self.entry.ext)
+        if idx < len(exts) - 1:
+            self.switch_extension(exts[idx + 1])
 
     # ------------------------------------------------------------- navigation
 
@@ -2153,6 +2194,8 @@ class MaskFitsApp(QMainWindow):
             "toggle_smooth": (self._toggle_smoothing, True),
             "toggle_bin": (self._toggle_binning, True),
             "reset_zoom": (self.reset_zoom, True),
+            "prev_extension": (self.prev_extension, True),
+            "next_extension": (self.next_extension, True),
             "digit_1": (lambda: self._hotkey_digit(1), True),
             "digit_2": (lambda: self._hotkey_digit(2), True),
             "digit_3": (lambda: self._hotkey_digit(3), True),

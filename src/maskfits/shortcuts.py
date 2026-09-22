@@ -36,6 +36,8 @@ SHORTCUT_ACTIONS: list[ShortcutAction] = [
     ShortcutAction("toggle_smooth", "Smooth image (current sigma)", ("S",)),
     ShortcutAction("toggle_bin", "Bin image (current factor)", ("B",)),
     ShortcutAction("reset_zoom", "Reset zoom", ("Ctrl+R",)),
+    ShortcutAction("prev_extension", "Previous FITS extension", ("Up",)),
+    ShortcutAction("next_extension", "Next FITS extension", ("Down",)),
     ShortcutAction("digit_1", "Hotkey 1 (ellipticity- / satellite style 1)", ("1",)),
     ShortcutAction("digit_2", "Hotkey 2 (ellipticity+ / satellite style 2)", ("2",)),
     ShortcutAction("digit_3", "Hotkey 3 (angle- / satellite style 3)", ("3",)),
