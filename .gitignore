@@ -12,3 +12,4 @@ images/
 .vscode/
 .tests/
 *.fits
+isopy*
