@@ -26,6 +26,7 @@ from maskfits.custom_themes import (
     delete_custom_theme,
     get_custom_theme,
     list_custom_themes,
+    rename_custom_theme,
     save_custom_theme,
 )
 from maskfits.theme import DARK, LIGHT, theme_manager
@@ -51,6 +52,7 @@ FIELD_LABELS = {
 class ThemeEditorWindow(QDialog):
     theme_saved = Signal(str)
     theme_deleted = Signal(str)
+    theme_renamed = Signal(str, str)  # old name, new name - emitted before theme_saved
 
     def __init__(self, parent: Optional[QWidget] = None, *, edit_name: Optional[str] = None):
         super().__init__(parent)
@@ -118,7 +120,6 @@ class ThemeEditorWindow(QDialog):
         name_row.addStretch(1)
         self._name_entry = QLineEdit(self.name)
         self._name_entry.setFixedWidth(180)
-        self._name_entry.setEnabled(not self._editing)
         name_row.addWidget(self._name_entry)
         layout.addSpacing(10)
         layout.addLayout(name_row)
@@ -204,11 +205,16 @@ class ThemeEditorWindow(QDialog):
         if name in RESERVED_NAMES:
             QMessageBox.warning(self, "maskfits", f"{name!r} is a built-in theme name - pick another.")
             return
-        if not self._editing and name in list_custom_themes():
+        if name != self.name and name in list_custom_themes():
             QMessageBox.warning(self, "maskfits", f"A theme named {name!r} already exists.")
             return
+        renamed = self._editing and name != self.name
+        if renamed:
+            rename_custom_theme(self.name, name)
         save_custom_theme(name, {"mode": self.mode, "icon": self.icon, **self.colors})
         self._saved = True
+        if renamed:
+            self.theme_renamed.emit(self.name, name)
         self.theme_saved.emit(name)
         self.accept()
 

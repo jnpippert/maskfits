@@ -659,12 +659,23 @@ class MaskFitsApp(QMainWindow):
             return
         dialog = SettingsWindow(self.settings, self)
         dialog.settings_saved.connect(self._apply_settings_live)
+        dialog.theme_renamed.connect(self._on_theme_renamed)
         dialog.finished.connect(self._clear_settings_window)
         self._settings_window = dialog
         dialog.show()
 
     def _clear_settings_window(self, _result=None) -> None:
         self._settings_window = None
+
+    def _on_theme_renamed(self, old: str, new: str) -> None:
+        """A custom theme was renamed in the theme editor (which already
+        moved its stored data and any persisted Settings selection) - keep
+        this window's own idea of the current theme pointing at it."""
+        if self._theme_key == old:
+            self._theme_key = new
+            self._refresh_theme_toggle()
+        if self.settings.theme == old:
+            self.settings.theme = new
 
     def _apply_settings_live(self, settings: Settings) -> None:
         """Settings were just saved (persisted to disk by the dialog itself)

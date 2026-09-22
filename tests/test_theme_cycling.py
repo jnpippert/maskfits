@@ -166,3 +166,148 @@ def test_icon_picker_emits_and_shows_the_choice(qapp):
 
 def test_emoji_choices_are_unique():
     assert len(THEME_EMOJI_CHOICES) == len(set(THEME_EMOJI_CHOICES))
+
+
+# ------------------------------------------------------------------ rename
+
+
+def test_rename_custom_theme_moves_colors_and_icon(store):
+    from maskfits.custom_themes import get_custom_theme, list_custom_themes, rename_custom_theme
+
+    save_custom_theme("Forest", {**COLORS, "icon": "\U0001F332"}, store)
+    rename_custom_theme("Forest", "Woods", store)
+
+    assert list(list_custom_themes(store)) == ["Woods"]
+    assert get_custom_theme("Woods", store)["icon"] == "\U0001F332"
+
+
+def test_rename_follows_the_persisted_settings_theme(store):
+    from maskfits.custom_themes import rename_custom_theme
+    from maskfits.settings import load_settings, save_settings
+
+    save_custom_theme("Forest", COLORS, store)
+    save_settings(Settings(theme="Forest"), store)
+    rename_custom_theme("Forest", "Woods", store)
+
+    assert load_settings(store).theme == "Woods"
+
+
+def test_rename_leaves_a_different_persisted_theme_alone(store):
+    from maskfits.custom_themes import rename_custom_theme
+    from maskfits.settings import load_settings, save_settings
+
+    save_custom_theme("Forest", COLORS, store)
+    save_settings(Settings(theme="dark"), store)
+    rename_custom_theme("Forest", "Woods", store)
+
+    assert load_settings(store).theme == "dark"
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "dark", "light", "system", "Taken"])
+def test_rename_rejects_invalid_names(store, bad):
+    from maskfits.custom_themes import list_custom_themes, rename_custom_theme
+
+    save_custom_theme("Forest", COLORS, store)
+    save_custom_theme("Taken", COLORS, store)
+    with pytest.raises(ValueError):
+        rename_custom_theme("Forest", bad, store)
+    assert sorted(list_custom_themes(store)) == ["Forest", "Taken"]
+
+
+def test_rename_to_the_same_name_is_a_no_op(store):
+    from maskfits.custom_themes import list_custom_themes, rename_custom_theme
+
+    save_custom_theme("Forest", COLORS, store)
+    rename_custom_theme("Forest", "Forest", store)
+    assert list(list_custom_themes(store)) == ["Forest"]
+
+
+def test_rename_of_a_missing_theme_raises(store):
+    from maskfits.custom_themes import rename_custom_theme
+
+    with pytest.raises(ValueError):
+        rename_custom_theme("Nope", "Other", store)
+
+
+def _patch_editor_store(monkeypatch, store):
+    from maskfits import custom_themes
+    from maskfits import theme_editor_window as tew
+
+    monkeypatch.setattr(tew, "list_custom_themes", lambda s=None: custom_themes.list_custom_themes(store))
+    monkeypatch.setattr(tew, "get_custom_theme", lambda n, s=None: custom_themes.get_custom_theme(n, store))
+    monkeypatch.setattr(tew, "save_custom_theme", lambda n, c, s=None: custom_themes.save_custom_theme(n, c, store))
+    monkeypatch.setattr(tew, "rename_custom_theme", lambda o, n, s=None: custom_themes.rename_custom_theme(o, n, store))
+
+
+def test_the_editor_name_field_is_editable_for_an_existing_theme(qapp, store, monkeypatch):
+    save_custom_theme("Forest", COLORS, store)
+    _patch_editor_store(monkeypatch, store)
+    editor = ThemeEditorWindow(edit_name="Forest")
+    assert editor._name_entry.isEnabled()
+
+
+def test_editing_and_renaming_saves_under_the_new_name(qapp, store, monkeypatch):
+    from maskfits.custom_themes import get_custom_theme, list_custom_themes
+
+    save_custom_theme("Forest", {**COLORS, "icon": "\U0001F332"}, store)
+    _patch_editor_store(monkeypatch, store)
+
+    editor = ThemeEditorWindow(edit_name="Forest")
+    renamed, saved = [], []
+    editor.theme_renamed.connect(lambda old, new: renamed.append((old, new)))
+    editor.theme_saved.connect(saved.append)
+    editor._name_entry.setText("Woods")
+    editor._on_icon_changed("\U0001F333")
+    editor._save()
+
+    assert renamed == [("Forest", "Woods")]
+    assert saved == ["Woods"]
+    assert list(list_custom_themes(store)) == ["Woods"]
+    assert get_custom_theme("Woods", store)["icon"] == "\U0001F333"
+
+
+def test_editing_without_renaming_does_not_emit_renamed(qapp, store, monkeypatch):
+    save_custom_theme("Forest", COLORS, store)
+    _patch_editor_store(monkeypatch, store)
+
+    editor = ThemeEditorWindow(edit_name="Forest")
+    renamed = []
+    editor.theme_renamed.connect(lambda old, new: renamed.append((old, new)))
+    editor._save()
+
+    assert renamed == []
+
+
+def test_renaming_onto_an_existing_theme_is_refused(qapp, store, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    from maskfits.custom_themes import list_custom_themes
+
+    save_custom_theme("Forest", COLORS, store)
+    save_custom_theme("Taken", COLORS, store)
+    _patch_editor_store(monkeypatch, store)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: None)
+
+    editor = ThemeEditorWindow(edit_name="Forest")
+    editor._name_entry.setText("Taken")
+    editor._save()
+
+    assert sorted(list_custom_themes(store)) == ["Forest", "Taken"]
+
+
+def test_main_window_follows_a_renamed_active_theme(qapp, monkeypatch):
+    themes = {"Forest": {**COLORS, "icon": "\U0001F332"}, "Woods": {**COLORS, "icon": "\U0001F332"}}
+    monkeypatch.setattr("maskfits.gui.get_custom_theme", lambda name, store=None: themes.get(name))
+    monkeypatch.setattr("maskfits.custom_themes.list_custom_themes", lambda store=None: themes)
+
+    win = MaskFitsApp([], settings=Settings(theme="Forest"))
+    win._on_theme_renamed("Forest", "Woods")
+
+    assert win._theme_key == "Woods"
+    assert win.settings.theme == "Woods"
+
+
+def test_main_window_ignores_the_rename_of_another_theme(qapp):
+    win = MaskFitsApp([], settings=Settings(theme="dark"))
+    win._on_theme_renamed("Forest", "Woods")
+    assert win._theme_key == "dark"
+    assert win.settings.theme == "dark"

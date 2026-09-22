@@ -84,6 +84,32 @@ def delete_custom_theme(name: str, store: Optional[QSettings] = None) -> None:
     s.sync()
 
 
+def rename_custom_theme(old: str, new: str, store: Optional[QSettings] = None) -> None:
+    """Renames a custom theme, keeping its colors/icon. If it was also the
+    persisted Settings theme, that selection follows the new name - otherwise
+    the next launch would find no theme by the old name and fall back to
+    "system". Raises ValueError for an empty/built-in/already-taken new name
+    or a theme that doesn't exist."""
+    new = new.strip()
+    if not new:
+        raise ValueError("A theme name is required.")
+    if new in RESERVED_NAMES:
+        raise ValueError(f"{new!r} is a built-in theme name and can't be used for a custom theme.")
+    s = store if store is not None else _store()
+    themes = list_custom_themes(s)
+    if old not in themes:
+        raise ValueError(f"There is no custom theme named {old!r}.")
+    if new == old:
+        return
+    if new in themes:
+        raise ValueError(f"A theme named {new!r} already exists.")
+    themes[new] = themes.pop(old)
+    s.setValue("custom_themes_json", json.dumps(themes))
+    if s.value("theme", "", type=str) == old:
+        s.setValue("theme", new)
+    s.sync()
+
+
 def build_custom_theme(colors: dict) -> Theme:
     """Builds a full Theme from a custom-theme color dict (see
     CUSTOM_THEME_FIELDS) - hover/pressed/contrasting-text variants for

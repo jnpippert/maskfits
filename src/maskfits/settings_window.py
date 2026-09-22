@@ -61,6 +61,7 @@ ZOOM_MIN, ZOOM_MAX = 0.5, 20.0
 
 class SettingsWindow(QDialog):
     settings_saved = Signal(Settings)
+    theme_renamed = Signal(str, str)  # old name, new name of a custom theme
 
     def __init__(self, settings: Settings, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -331,6 +332,7 @@ class SettingsWindow(QDialog):
             return
         editor = ThemeEditorWindow(self, edit_name=self.theme)
         editor.theme_saved.connect(self._on_theme_editor_saved)
+        editor.theme_renamed.connect(self.theme_renamed)
         editor.theme_deleted.connect(self._on_theme_editor_deleted)
         editor.finished.connect(self._clear_theme_editor)
         self._theme_editor = editor

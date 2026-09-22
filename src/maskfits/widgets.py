@@ -281,17 +281,19 @@ class RoundSlider(QWidget):
 LOGO_PATH = os.path.join(os.path.dirname(__file__), "assets", "icon.png")
 
 # Emoji offered for a custom theme's toolbar icon (alongside the maskfits
-# logo, which is the default) - a spread of nature/weather/space/animal/
-# food/color picks that suit a themed palette (a tree for a forest theme...).
-THEME_EMOJI_CHOICES = [
-    "\U0001F332", "\U0001F333", "\U0001F334", "\U0001F335", "\U0001F33F", "\U0001F340", "\U0001F341", "\U0001F342",
-    "\U0001F338", "\U0001F33A", "\U0001F33B", "\U0001F339", "\U0001F30A", "\U0001F525", "\u2744\ufe0f", "\u26C4",
-    "\u2600\ufe0f", "\U0001F319", "\u2B50", "\U0001F308", "\u2601\ufe0f", "\u26A1", "\U0001F30B", "\U0001F3D4\ufe0f",
-    "\U0001F30C", "\U0001FA90", "\U0001F30D", "\U0001F680", "\U0001F47D", "\U0001F98A", "\U0001F431", "\U0001F436",
-    "\U0001F43C", "\U0001F989", "\U0001F419", "\U0001F98B", "\U0001F34A", "\U0001F34B", "\U0001F353", "\U0001F347",
-    "\U0001F36B", "\u2615", "\U0001F383", "\U0001F47B", "\U0001F384", "\U0001F48E", "\U0001F3A8", "\U0001F3AE",
-    "\U0001F5A4", "\U0001F49C", "\U0001F499", "\U0001F49A", "\U0001F49B", "\U0001F9E1", "\u2764\ufe0f",
-]
+# logo, which is the default) - grouped by category, all Unicode 11 or older
+# so they render on older Windows 10 builds too. A themed palette usually
+# suggests one (a tree for a forest theme, a wave for an ocean one...).
+_EMOJI_GROUPS = """
+🌲 🌳 🌴 🌵 🌿 🍀 🍁 🍂 🍃 🌾 🌱 🌷 🌸 🌺 🌻 🌹 🌼 🍄
+☀️ 🌙 ⭐ 🌟 ✨ 🌈 ☁️ ⛅ 🌧️ ⛈️ ⚡ ❄️ ⛄ 🔥 💧 🌊 🌪️ 🌫️
+🌌 🌍 🌕 🌑 ☄️ 🚀 🛸 👽 🌋 🏔️ ⛰️ 🏝️ 🏜️ 🏞️ 🌅 🌄 🌆 🌃
+🦊 🐱 🐶 🐼 🦉 🐙 🦋 🐝 🐞 🐢 🐬 🐳 🦈 🐧 🦁 🐯 🐻 🐨 🦄 🐲 🦅 🐺 🦇
+🍊 🍋 🍎 🍓 🍇 🍒 🍑 🍉 🍍 🥝 🥑 🍫 🍩 🍪 🍰 🍦 ☕ 🍵 🍷 🍺 🍯 🍭 🌰 🥕 🌶️
+🎃 👻 🎄 🎁 💎 🎨 🎮 🎧 🎸 🎲 🎯 🏆 👑 🔮 ⚙️ 🔧 💡 📷 🔬 🔭 🎈 🎉
+🖤 💜 💙 💚 💛 🧡 ❤️
+"""
+THEME_EMOJI_CHOICES = _EMOJI_GROUPS.split()
 
 
 def set_theme_icon(button: QPushButton, spec: str, logo_size: int = 24) -> None:
@@ -326,7 +328,7 @@ class _EmojiPopup(RoundedPanel):
     dismisses it, and picking one closes it right away."""
 
     picked = Signal(str)
-    COLUMNS = 8
+    COLUMNS = 12
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
