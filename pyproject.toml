@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "maskfits"
-version = "2.8.0"
+version = "2.8.1"
 description = "A PySide6 GUI for masking pixels in FITS astronomical images."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -40,6 +40,10 @@ Issues = "https://github.com/jnpippert/maskfits/issues"
 # Lets the macOS Dock icon be set at runtime (see maskfits.gui._apply_icon).
 # Without it the app still runs fine - the Dock just shows the generic Python icon.
 macos = ["pyobjc-framework-Cocoa"]
+# pytest-xdist parallelizes the suite across CPU cores (pytest -n auto) -
+# each worker is a separate process/interpreter, so every test's own
+# QApplication stays independent, no shared-Qt-state risk across workers.
+test = ["pytest>=8.0", "pytest-xdist>=3.8"]
 
 [project.scripts]
 maskfits = "maskfits.cli:main"
