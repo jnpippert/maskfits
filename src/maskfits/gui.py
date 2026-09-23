@@ -82,17 +82,15 @@ from maskfits.shortcuts import SHORTCUT_ACTIONS, effective_keys
 from maskfits.theme import current_theme, detect_os_light_mode, theme_manager
 from maskfits.update_check import UpdateCheckWorker, check_for_updates, get_clone_url
 from maskfits.update_dialog import show_update_dialog
-from maskfits.widgets import ResizeGrip, RoundButton, RoundedPanel, RoundSlider, SegmentedControl, ThemeToggle
+from maskfits.widgets import RoundButton, RoundedPanel, RoundSlider, SegmentedControl, SidebarToggle, ThemeToggle
 
 MAG_SIZE = 31
 MAG_BLOCK = 6
 PAN_W = PAN_H = MAG_SIZE * MAG_BLOCK
 MAX_SHAPE_SIZE = 500
 RADIUS_MIN = 0.5  # small enough to mask a single pixel
-SIDEBAR_W = 340
-SIDEBAR_W_MIN = 220
-SIDEBAR_W_MAX = 560
-GRIP_W = 10
+SIDEBAR_W = 340  # fixed - see MaskFitsApp._toggle_sidebar's docstring for why
+SIDEBAR_TOGGLE_W = 10
 ZOOM_STEP = 1.25
 ZOOM_MULT_MIN = 0.5
 ZOOM_MULT_MAX = 100.0
@@ -480,7 +478,7 @@ class MaskFitsApp(QMainWindow):
         self._line_anchor_erase = False
         self._undo: Optional[tuple[int, np.ndarray]] = None
         self._redo: Optional[tuple[int, np.ndarray]] = None
-        self.sidebar_width = SIDEBAR_W
+        self.sidebar_collapsed = False
 
         self._base_pixmap: Optional[QPixmap] = None
         self._base_pos = QPointF(0, 0)
@@ -561,6 +559,18 @@ class MaskFitsApp(QMainWindow):
         self.theme_toggle.set_icon_spec(theme_icon(key))
         name = key.capitalize() if key in ("dark", "light") else key
         self.theme_toggle.setToolTip(f"Theme: {name} (Click For The Next One)")
+
+    def _preview_theme_icon(self, spec: str) -> None:
+        """Live icon preview from an open Settings/theme-editor window -
+        e.g. cycling the theme combo, or editing a theme's icon, before
+        either is saved. Bypasses _refresh_theme_toggle's self._theme_key
+        lookup entirely (that only updates on an actual commit - see
+        _apply_settings_live/_on_theme_renamed), which is exactly why this
+        preview used to go stale while Settings was open: the colors
+        updated live via theme_manager()'s own signal, but the icon lookup
+        never saw anything happen until Save."""
+        if hasattr(self, "theme_toggle"):
+            self.theme_toggle.set_icon_spec(spec)
 
     def _on_theme_changed(self, theme) -> None:
         self.light_mode = theme.mode == "light"
@@ -662,6 +672,7 @@ class MaskFitsApp(QMainWindow):
         dialog = SettingsWindow(self.settings, self)
         dialog.settings_saved.connect(self._apply_settings_live)
         dialog.theme_renamed.connect(self._on_theme_renamed)
+        dialog.theme_icon_previewed.connect(self._preview_theme_icon)
         dialog.finished.connect(self._clear_settings_window)
         self._settings_window = dialog
         dialog.show()
@@ -795,7 +806,7 @@ class MaskFitsApp(QMainWindow):
         body.setSpacing(0)
 
         self.sidebar_container = QWidget(body_widget)
-        self.sidebar_container.setFixedWidth(self.sidebar_width)
+        self.sidebar_container.setFixedWidth(SIDEBAR_W)
         sidebar_layout = QVBoxLayout(self.sidebar_container)
         sidebar_layout.setContentsMargins(0, 0, 0, 0)
         sidebar_panel = RoundedPanel(self.sidebar_container, mode="fill", scrollable=True)
@@ -803,10 +814,9 @@ class MaskFitsApp(QMainWindow):
         body.addWidget(self.sidebar_container)
         self._build_sidebar(sidebar_panel.inner)
 
-        grip = ResizeGrip(body_widget, width=GRIP_W)
-        grip.dragged.connect(self._on_sidebar_grip_drag)
-        grip.released.connect(self._on_sidebar_grip_release)
-        body.addWidget(grip)
+        self.sidebar_toggle = SidebarToggle(body_widget, width=SIDEBAR_TOGGLE_W)
+        self.sidebar_toggle.clicked.connect(self._toggle_sidebar)
+        body.addWidget(self.sidebar_toggle)
 
         self.canvas = ImageCanvas(self, body_widget)
         body.addWidget(self.canvas, 1)
@@ -823,16 +833,15 @@ class MaskFitsApp(QMainWindow):
         copyright_label.setProperty("dim", True)
         status_layout.addWidget(copyright_label)
 
-    def _on_sidebar_grip_drag(self, dx: int) -> None:
-        new_width = max(SIDEBAR_W_MIN, min(SIDEBAR_W_MAX, self.sidebar_width + dx))
-        if new_width == self.sidebar_width:
-            return
-        self.sidebar_width = new_width
-        self.sidebar_container.setFixedWidth(new_width)
-
-    def _on_sidebar_grip_release(self) -> None:
-        if hasattr(self, "cuts_histogram"):
-            self.cuts_histogram.resize_width(self.sidebar_width - 28)
+    def _toggle_sidebar(self) -> None:
+        """The strip between the sidebar and canvas is a show/hide toggle,
+        not a drag-resize handle (see SIDEBAR_W's own comment) - collapsing
+        just hides the sidebar entirely rather than shrinking it, so
+        nothing in it (buttons, the histogram, the cut-level boxes) is ever
+        at risk of being clipped."""
+        self.sidebar_collapsed = not self.sidebar_collapsed
+        self.sidebar_container.setVisible(not self.sidebar_collapsed)
+        self.sidebar_toggle.set_collapsed(self.sidebar_collapsed)
 
     def _chunk(self, *widgets: QWidget) -> QWidget:
         box = QWidget()
@@ -2204,14 +2213,39 @@ class MaskFitsApp(QMainWindow):
         """A small crosshair marking the image's exact center (nx/2, ny/2
         in image pixel coordinates, the same point reset_zoom() re-centers
         the view on) - toggled by the K hotkey, to help judge how well a
-        source is centered in the frame."""
+        source is centered in the frame. Colored via _center_cross_color()
+        - the inverse of whatever's actually displayed there right now
+        (colormap AND mask tint included) - rather than a fixed color, so
+        it can never blend into a same-colored mask covering the center
+        the way a flat tint (even the mask's own color) eventually would."""
         ny, nx = self.image.data.shape
         cx, cy = self.img_to_canvas(nx / 2.0, ny / 2.0)
         half = 9.0
-        pen = QPen(QColor(current_theme().accent), 1.5)
+        pen = QPen(QColor(*self._center_cross_color()), 1.5)
         painter.setPen(pen)
         painter.drawLine(QPointF(cx - half, cy), QPointF(cx + half, cy))
         painter.drawLine(QPointF(cx, cy - half), QPointF(cx, cy + half))
+
+    def _center_cross_color(self) -> tuple[int, int, int]:
+        """The exact inverse (255-r, 255-g, 255-b) of the average displayed
+        color (colormap-mapped, then mask-tinted the same way render() does)
+        over the central 15x15 image pixels - guarantees contrast against
+        whatever's actually there, mask or no mask, any colormap."""
+        image = self.image
+        entry = self.entry
+        ny, nx = image.data.shape
+        half = 7  # 2*7+1 = 15
+        cy_i, cx_i = ny // 2, nx // 2
+        y0, y1 = max(cy_i - half, 0), min(cy_i + half + 1, ny)
+        x0, x1 = max(cx_i - half, 0), min(cx_i + half + 1, nx)
+        crop = image.data[y0:y1, x0:x1]
+        mask_crop = image.mask[y0:y1, x0:x1]
+        span = safe_span(entry.lowcut, entry.highcut)
+        norm = np.nan_to_num(np.clip((crop - entry.lowcut) / span, 0, 1), nan=0.0)
+        rgb = self._scale_and_color(norm)
+        self._tint_masked(rgb, mask_crop)
+        avg = rgb.reshape(-1, 3).mean(axis=0)
+        return (int(255 - avg[0]), int(255 - avg[1]), int(255 - avg[2]))
 
     def _toggle_center_cross(self) -> None:
         self.show_center_cross = not self.show_center_cross

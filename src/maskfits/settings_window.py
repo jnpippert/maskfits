@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from maskfits.colormaps import COLORMAP_NAMES
-from maskfits.custom_themes import build_custom_theme, get_custom_theme, list_custom_themes
+from maskfits.custom_themes import build_custom_theme, get_custom_theme, list_custom_themes, theme_icon
 from maskfits.imagedata import PERCENTILE_PRESETS, STRETCH_NAMES
 from maskfits.settings import (
     EXPORT_DIR_CHOICES,
@@ -65,6 +65,7 @@ ZOOM_MIN, ZOOM_MAX = 0.5, 20.0
 class SettingsWindow(QDialog):
     settings_saved = Signal(Settings)
     theme_renamed = Signal(str, str)  # old name, new name of a custom theme
+    theme_icon_previewed = Signal(str)  # live, as the theme combo/editor icon change
 
     def __init__(self, settings: Settings, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -81,6 +82,7 @@ class SettingsWindow(QDialog):
         self._snapshot_mode = theme_manager().mode
         self._snapshot_accent = theme_manager().accent
         self._snapshot_custom = theme_manager().custom
+        self._snapshot_icon = theme_icon(settings.theme)
         self._saved = False
         self._theme_editor: Optional[ThemeEditorWindow] = None
         self._shortcuts_window: Optional[ShortcutsWindow] = None
@@ -303,15 +305,25 @@ class SettingsWindow(QDialog):
 
     def _apply_theme_choice(self, key: str) -> None:
         self.theme = key
+        icon_key = key
         if key in ("system", "dark", "light"):
             mode = ("light" if detect_os_light_mode() else "dark") if key == "system" else key
             theme_manager().set_mode(mode)
             theme_manager().set_accent(self.accent_color)
+            # "system" isn't a real icon key (see custom_themes.
+            # BUILTIN_THEME_ICONS) - resolve it to whichever of dark/light
+            # it means right now, same as
+            # gui.MaskFitsApp._refresh_theme_toggle does.
+            icon_key = mode
         else:
             custom = get_custom_theme(key)
             if custom is not None:
                 theme_manager().set_custom(build_custom_theme(custom))
         self._sync_theme_dependent_ui()
+        # Live-updates the main window's toolbar icon too, not just its
+        # colors - previously only the colors tracked this combo, leaving
+        # the toolbar showing a stale icon until Save (the reported bug).
+        self.theme_icon_previewed.emit(theme_icon(icon_key))
 
     def _on_theme_combo_changed(self, index: int) -> None:
         key = self._theme_combo.itemData(index)
@@ -326,6 +338,7 @@ class SettingsWindow(QDialog):
             return
         editor = ThemeEditorWindow(self)
         editor.theme_saved.connect(self._on_theme_editor_saved)
+        editor.icon_previewed.connect(self.theme_icon_previewed)
         editor.finished.connect(self._clear_theme_editor)
         self._theme_editor = editor
         editor.show()
@@ -341,6 +354,7 @@ class SettingsWindow(QDialog):
         editor.theme_saved.connect(self._on_theme_editor_saved)
         editor.theme_renamed.connect(self.theme_renamed)
         editor.theme_deleted.connect(self._on_theme_editor_deleted)
+        editor.icon_previewed.connect(self.theme_icon_previewed)
         editor.finished.connect(self._clear_theme_editor)
         self._theme_editor = editor
         editor.show()
@@ -582,6 +596,7 @@ class SettingsWindow(QDialog):
         else:
             theme_manager().set_mode(self._snapshot_mode)
             theme_manager().set_accent(self._snapshot_accent)
+        self.theme_icon_previewed.emit(self._snapshot_icon)
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if self._theme_editor is not None:

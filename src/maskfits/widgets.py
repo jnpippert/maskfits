@@ -5,9 +5,9 @@ a Canvas, since Tk has no real widget styling), most of these are thin
 QWidget/QPushButton subclasses whose actual look comes from the QSS in
 theme.build_qss() - selected either by Qt's built-in widget-class selectors
 (QPushButton, ...) or by these classes' own Python class names
-(RoundedPanel). `ResizeGrip` and `RoundSlider` are the exceptions that need a
-real paintEvent: no native widget matches ResizeGrip's drag-affordance look,
-and QSlider's native complex-control painting (even under Fusion, even with
+(RoundedPanel). `SidebarToggle` and `RoundSlider` are the exceptions that
+need a real paintEvent: no native widget matches SidebarToggle's chevron
+look, and QSlider's native complex-control painting (even under Fusion, even with
 every sub-control QSS-styled) leaves residual decoration a stylesheet has no
 documented hook to fully suppress - see RoundSlider's own docstring.
 """
@@ -392,27 +392,37 @@ class ThemeIconPicker(QPushButton):
         self.iconChanged.emit(spec)
 
 
-class ResizeGrip(QWidget):
-    """A thin vertical drag handle for resizing a panel next to it, with a
-    small rounded grabber mark at its vertical center as a visual affordance
-    that the gap between the two panels is draggable.
+class SidebarToggle(QWidget):
+    """A thin vertical strip between the sidebar and the canvas - click to
+    collapse/expand the sidebar. Not a drag-resize handle (the sidebar is a
+    fixed width - see gui.SIDEBAR_W - specifically so its buttons/histogram/
+    cut-level boxes never get clipped by dragging it too narrow); this is
+    purely a show/hide toggle, with a chevron indicating which way a click
+    will fold it.
 
-    Emits `dragged(int)` as a delta (dx) for each drag step, and `released()`
-    once dragging ends - mirroring the old Tkinter callback shape so callers
-    just accumulate the delta into whatever width they're tracking, and can
-    defer expensive work (like re-laying-out a child widget) to `released()`.
+    Emits `clicked()` on a genuine click (press and release both inside the
+    widget) - not on a press that drags/releases elsewhere, so an accidental
+    drag never fires it.
     """
 
-    dragged = Signal(int)
-    released = Signal()
+    clicked = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None, *, width: int = 10):
         super().__init__(parent)
         self.setFixedWidth(width)
-        self.setCursor(Qt.CursorShape.SizeHorCursor)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._hovering = False
-        self._drag_last_x: Optional[int] = None
+        self._pressed = False
+        self._collapsed = False
         theme_manager().theme_changed.connect(lambda _t: self.update())
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        """Only flips which way the chevron points - the caller (gui.
+        MaskFitsApp._toggle_sidebar) owns actually hiding/showing the
+        sidebar itself."""
+        if collapsed != self._collapsed:
+            self._collapsed = collapsed
+            self.update()
 
     def enterEvent(self, event: QEnterEvent) -> None:  # noqa: N802
         self._hovering = True
@@ -426,22 +436,14 @@ class ResizeGrip(QWidget):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
-            self._drag_last_x = event.globalPosition().toPoint().x()
-
-    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        if self._drag_last_x is None:
-            return
-        x = event.globalPosition().toPoint().x()
-        dx = x - self._drag_last_x
-        self._drag_last_x = x
-        if dx:
-            self.dragged.emit(dx)
+            self._pressed = True
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        if self._drag_last_x is None:
+        if event.button() != Qt.MouseButton.LeftButton or not self._pressed:
             return
-        self._drag_last_x = None
-        self.released.emit()
+        self._pressed = False
+        if self.rect().contains(event.position().toPoint()):
+            self.clicked.emit()
 
     def paintEvent(self, event) -> None:  # noqa: N802
         theme = current_theme()
@@ -450,12 +452,19 @@ class ResizeGrip(QWidget):
         w, h = self.width(), self.height()
         cx = w / 2
         cy = h / 2
-        bar_w = 4
-        bar_h = min(36, max(h - 8, 0))
         color = QColor(theme.text) if self._hovering else QColor(theme.panel_border)
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(cx - bar_w / 2, cy - bar_h / 2, bar_w, bar_h), bar_w / 2, bar_w / 2)
-        painter.fillPath(path, color)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(color)
+        # A small chevron - pointing left (collapse) when the sidebar is
+        # showing, right (expand) when it's folded away.
+        tip_dx = 4.0 if self._collapsed else -4.0
+        half_h = 6.0
+        triangle = QPainterPath()
+        triangle.moveTo(cx + tip_dx, cy)
+        triangle.lineTo(cx - tip_dx, cy - half_h)
+        triangle.lineTo(cx - tip_dx, cy + half_h)
+        triangle.closeSubpath()
+        painter.fillPath(triangle, color)
 
 
 class HexColorPicker(QWidget):

@@ -53,6 +53,7 @@ class ThemeEditorWindow(QDialog):
     theme_saved = Signal(str)
     theme_deleted = Signal(str)
     theme_renamed = Signal(str, str)  # old name, new name - emitted before theme_saved
+    icon_previewed = Signal(str)  # live, as the user picks a new icon - see _on_icon_changed
 
     def __init__(self, parent: Optional[QWidget] = None, *, edit_name: Optional[str] = None):
         super().__init__(parent)
@@ -84,6 +85,7 @@ class ThemeEditorWindow(QDialog):
             self.mode = "dark"
             self.icon = ""
             self.colors = {f: getattr(DARK, f) for f in CUSTOM_THEME_FIELDS}
+        self._snapshot_icon = self.icon
 
         self._pickers: dict[str, HexColorPicker] = {}
         self._build()
@@ -196,6 +198,7 @@ class ThemeEditorWindow(QDialog):
 
     def _on_icon_changed(self, spec: str) -> None:
         self.icon = spec
+        self.icon_previewed.emit(spec)
 
     def _on_color_changed(self, field: str, value: str) -> None:
         if not value:
@@ -249,6 +252,7 @@ class ThemeEditorWindow(QDialog):
         else:
             theme_manager().set_mode(self._snapshot_mode)
             theme_manager().set_accent(self._snapshot_accent)
+        self.icon_previewed.emit(self._snapshot_icon)
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if not self._saved:

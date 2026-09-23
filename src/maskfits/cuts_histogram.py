@@ -271,16 +271,6 @@ class CutsHistogram(QWidget):
     def _fmt(value: float) -> str:
         return f"{value:.6g}"
 
-    # ------------------------------------------------------------- geometry
-
-    def resize_width(self, width: int) -> None:
-        """Re-fit to a new width - e.g. the sidebar panel it's embedded in
-        was resized. Callers should only call this once a resize settles
-        (see gui.MaskFitsApp._on_sidebar_grip_release), for the same reason
-        drags elsewhere in this file only trigger a full rebin on release."""
-        self.canvas.ensure_bars(*self.compute_disp_range(), force=True)
-        self.canvas.update()
-
     # ------------------------------------------------------------- data
 
     def set_data(self, data: np.ndarray, lowcut: float, highcut: float) -> None:
