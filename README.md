@@ -1,6 +1,8 @@
 # maskfits
 
-A PySide6 GUI for masking pixels in FITS astronomical images.
+A PySide6 GUI for masking pixels in FITS astronomical images. 
+
+A Vibe Coded project infused with my own ideas and creativity.
 
 ## Install
 
