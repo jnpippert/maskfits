@@ -156,13 +156,13 @@ def test_single_row_warns_when_ext_or_slice_placeholder_used(qapp):
 def test_multi_row_reset_restores_the_default(qapp):
     win = SettingsWindow(Settings(export_filename_format_multi="custom_$FILENAME_$EXT"))
     win._reset_export_filename_format("_multi")
-    assert win._export_filename_entries["_multi"].text() == "mask_$FILENAME_ext$EXT"
+    assert win._export_filename_entries["_multi"].text() == "mask_$FILENAME"
 
 
 def test_cube_row_reset_restores_the_default(qapp):
     win = SettingsWindow(Settings(export_filename_format_cube="custom_$FILENAME_$SLICE"))
     win._reset_export_filename_format("_cube")
-    assert win._export_filename_entries["_cube"].text() == "mask_$FILENAME_slice$SLICE"
+    assert win._export_filename_entries["_cube"].text() == "mask_$FILENAME"
 
 
 def test_save_persists_all_three_formats(qapp, monkeypatch):

@@ -61,8 +61,8 @@ class Settings:
     # `forbidden`). A ".fits"/".fit"/".fts" suffix is optional in all
     # three - added automatically if missing.
     export_filename_format: str = "mask_$FILENAME"
-    export_filename_format_multi: str = "mask_$FILENAME_ext$EXT"
-    export_filename_format_cube: str = "mask_$FILENAME_slice$SLICE"
+    export_filename_format_multi: str = "mask_$FILENAME"
+    export_filename_format_cube: str = "mask_$FILENAME"
     zoom: float = 1.0
     # Hex string ("#rrggbb") or None to use the built-in crimson accent.
     accent_color: Optional[str] = None

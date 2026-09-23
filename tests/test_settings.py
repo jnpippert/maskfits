@@ -152,8 +152,8 @@ def test_format_mask_filename_replaces_every_occurrence():
 
 def test_export_filename_format_multi_defaults(store):
     settings = load_settings(store)
-    assert settings.export_filename_format_multi == "mask_$FILENAME_ext$EXT"
-    assert settings.export_filename_format_cube == "mask_$FILENAME_slice$SLICE"
+    assert settings.export_filename_format_multi == "mask_$FILENAME"
+    assert settings.export_filename_format_cube == "mask_$FILENAME"
 
 
 def test_export_filename_format_multi_round_trips(store):
@@ -186,13 +186,13 @@ def test_export_filename_format_multi_falls_back_with_slice_placeholder(store):
     $EXT resolves to anything there."""
     store.setValue("export_filename_format_multi", "mask_$FILENAME_$SLICE")
     store.sync()
-    assert load_settings(store).export_filename_format_multi == "mask_$FILENAME_ext$EXT"
+    assert load_settings(store).export_filename_format_multi == "mask_$FILENAME"
 
 
 def test_export_filename_format_cube_falls_back_with_ext_placeholder(store):
     store.setValue("export_filename_format_cube", "mask_$FILENAME_$EXT")
     store.sync()
-    assert load_settings(store).export_filename_format_cube == "mask_$FILENAME_slice$SLICE"
+    assert load_settings(store).export_filename_format_cube == "mask_$FILENAME"
 
 
 def test_export_filename_format_falls_back_with_ext_or_slice_placeholder(store):

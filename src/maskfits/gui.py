@@ -438,6 +438,7 @@ class MaskFitsApp(QMainWindow):
         self.colormap = self.settings.colormap
         self.invert_colormap = False
         self.mask_alpha = 100
+        self.show_center_cross = False
         self.tool = self.settings.mode
         self.ellipticity = 0
         self.angle = 0
@@ -2179,19 +2180,42 @@ class MaskFitsApp(QMainWindow):
     # ------------------------------------------------------------ overlays
 
     def _paint_overlays(self, painter: QPainter) -> None:
-        """Hover previews for the active tool - drawn as vector shapes
-        directly (rotated-ellipse outline via the exact same geometry as the
-        real mask stamp, thick flat-capped line for the satellite trail),
-        unlike the old Tkinter version which had to pre-render a small RGBA
-        raster because Tk canvas ovals can't be rotated."""
-        if self.image is None or self._cursor_canvas_pos is None:
+        """The center-cross marker (toggled independent of the cursor) plus
+        hover previews for the active tool - the latter drawn as vector
+        shapes directly (rotated-ellipse outline via the exact same
+        geometry as the real mask stamp, thick flat-capped line for the
+        satellite trail), unlike the old Tkinter version which had to
+        pre-render a small RGBA raster because Tk canvas ovals can't be
+        rotated."""
+        if self.image is None:
             return
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if self.show_center_cross:
+            self._paint_center_cross(painter)
+        if self._cursor_canvas_pos is None:
+            return
         cx, cy = self._cursor_canvas_pos
         if self.tool == "ellipse":
             self._paint_ellipse_preview(painter, cx, cy)
         elif self._line_anchor is not None:
             self._paint_line_preview(painter, cx, cy)
+
+    def _paint_center_cross(self, painter: QPainter) -> None:
+        """A small crosshair marking the image's exact center (nx/2, ny/2
+        in image pixel coordinates, the same point reset_zoom() re-centers
+        the view on) - toggled by the K hotkey, to help judge how well a
+        source is centered in the frame."""
+        ny, nx = self.image.data.shape
+        cx, cy = self.img_to_canvas(nx / 2.0, ny / 2.0)
+        half = 9.0
+        pen = QPen(QColor(current_theme().accent), 1.5)
+        painter.setPen(pen)
+        painter.drawLine(QPointF(cx - half, cy), QPointF(cx + half, cy))
+        painter.drawLine(QPointF(cx, cy - half), QPointF(cx, cy + half))
+
+    def _toggle_center_cross(self) -> None:
+        self.show_center_cross = not self.show_center_cross
+        self._refresh_active_preview()
 
     def _paint_ellipse_preview(self, painter: QPainter, cx: float, cy: float) -> None:
         a, b, angle = self._current_round_params()
@@ -2396,6 +2420,7 @@ class MaskFitsApp(QMainWindow):
             "toggle_smooth": (self._toggle_smoothing, True),
             "toggle_bin": (self._toggle_binning, True),
             "reset_zoom": (self.reset_zoom, True),
+            "toggle_center_cross": (self._toggle_center_cross, True),
             "prev_extension": (self.prev_extension, True),
             "next_extension": (self.next_extension, True),
             "digit_1": (lambda: self._hotkey_digit(1), True),

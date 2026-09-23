@@ -219,9 +219,12 @@ def test_export_mask_ignores_the_cube_format_for_a_single_extension_file(qapp, t
     assert not list(tmp_path.glob("SHOULD_NOT_BE_USED*"))
 
 
-def test_export_mask_defaults_produce_distinct_filenames_across_extensions(qapp, tmp_path):
-    """The built-in default multi-ext format already includes $EXT, so two
-    extensions never collide on the same output filename out of the box."""
+def test_export_mask_default_format_overwrites_across_extensions(qapp, tmp_path):
+    """All three quick-export defaults are the same plain "mask_$FILENAME"
+    (no $EXT/$SLICE) - so exporting from two different extensions with
+    default settings lands on the same filename and overwrites, unless the
+    user opts into $EXT themselves. This pins that as the accepted,
+    documented default behavior, not a bug."""
     path = tmp_path / "myimage.fits"
     _write_multi(path)
     win = MaskFitsApp([str(path)], settings=Settings(export_dir="file_parent"))
@@ -232,12 +235,11 @@ def test_export_mask_defaults_produce_distinct_filenames_across_extensions(qapp,
     win.switch_extension(1)
     win.export_mask()
 
-    written = sorted(p.name for p in tmp_path.glob("*.fits") if p.name != "myimage.fits")
-    assert len(written) == 2
-    assert len(set(written)) == 2
+    written = [p.name for p in tmp_path.glob("*.fits") if p.name != "myimage.fits"]
+    assert written == ["mask_myimage.fits"]
 
 
-def test_export_mask_defaults_produce_distinct_filenames_across_slices(qapp, tmp_path):
+def test_export_mask_default_format_overwrites_across_slices(qapp, tmp_path):
     path = tmp_path / "mycube.fits"
     _write_cube(path, n_slices=3)
     win = MaskFitsApp([str(path)], settings=Settings(export_dir="file_parent"))
@@ -248,9 +250,8 @@ def test_export_mask_defaults_produce_distinct_filenames_across_slices(qapp, tmp
     win.switch_slice(1)
     win.export_mask()
 
-    written = sorted(p.name for p in tmp_path.glob("*.fits") if p.name != "mycube.fits")
-    assert len(written) == 2
-    assert len(set(written)) == 2
+    written = [p.name for p in tmp_path.glob("*.fits") if p.name != "mycube.fits"]
+    assert written == ["mask_mycube.fits"]
 
 
 # ------------------------------------------------- $EXT/$SLICE are optional
