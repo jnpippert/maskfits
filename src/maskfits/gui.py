@@ -622,7 +622,7 @@ class MaskFitsApp(QMainWindow):
         scale_menu.addSeparator()
         scale_menu.addAction("Reset", self.reset_scale)
 
-        color_menu = menubar.addMenu("Color")
+        color_menu = menubar.addMenu("Colormap")
         color_group = QActionGroup(self)
         color_group.setExclusive(True)
         self._color_actions: dict[str, QAction] = {}
