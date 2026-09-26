@@ -155,6 +155,27 @@ def extend_line_to_borders(
     return x0 + t0 * dx, y0 + t0 * dy, x0 + t1 * dx, y0 + t1 * dy
 
 
+def line_band_polygon_points(
+    x0: float, y0: float, x1: float, y1: float, width: float
+) -> list[float]:
+    """Flat [x0, y0, x1, y1, ...] corner list for the flat-ended rectangular
+    band line_mask() actually cuts along (x0, y0)-(x1, y1) - the band's true
+    outline (4 straight edges), not a rounded-cap capsule.
+    """
+    dx, dy = x1 - x0, y1 - y0
+    length = math.hypot(dx, dy)
+    if length == 0:
+        return [x0, y0, x0, y0, x0, y0, x0, y0]
+    half = width / 2.0
+    nx, ny = -dy / length * half, dx / length * half
+    return [
+        x0 + nx, y0 + ny,
+        x1 + nx, y1 + ny,
+        x1 - nx, y1 - ny,
+        x0 - nx, y0 - ny,
+    ]
+
+
 def ellipse_polygon_points(
     cx: float,
     cy: float,

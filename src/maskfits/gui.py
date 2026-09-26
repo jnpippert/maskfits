@@ -74,6 +74,7 @@ from maskfits.masking import (
     ellipse_polygon_points,
     extend_line_to_borders,
     extend_ray_to_border,
+    line_band_polygon_points,
     line_mask,
 )
 from maskfits.settings import Settings, format_mask_filename, load_settings
@@ -372,6 +373,21 @@ class MagnifierWidget(QWidget):
         cxp, cyp = ox + half * block, oy + half * block
         painter.setPen(QPen(QColor(theme.green), 2))
         painter.drawRect(cxp, cyp, block, block)
+
+        # Same reference point the crop itself was cut around (cx_i, cy_i),
+        # so the outline lines up with the pixels actually shown - see
+        # MaskFitsApp._paint_shape_outline. The y term has a +1 block that
+        # the x term doesn't: rgb[::-1] above reverses ROW ORDER (a discrete
+        # array flip), which isn't the same operation as a continuous mirror
+        # about the center row - it shifts the correspondence by exactly one
+        # whole pixel row versus the naive mirrored formula (verified by
+        # checking where a pixel's own center actually lands: cy_i + 0.5
+        # must map to the vertical center of its own displayed block).
+        def to_widget(ix: float, iy: float) -> tuple[float, float]:
+            return (ox + half * block + (ix - cx_i) * block,
+                    oy + (half + 1) * block - (iy - cy_i) * block)
+
+        app._paint_shape_outline(painter, to_widget, block)
 
 
 MODE_FLAGS = {"s": "line", "e": "ellipse"}
@@ -1144,6 +1160,9 @@ class MaskFitsApp(QMainWindow):
     def _on_alpha_changed(self, v: float) -> None:
         self.mask_alpha = int(v)
         self._alpha_label.setText(f"Mask Opacity: {self.mask_alpha}%")
+
+    def _toggle_tool(self) -> None:
+        self.set_tool("line" if self.tool == "ellipse" else "ellipse")
 
     def set_tool(self, value: str) -> None:
         if value == self.tool:
@@ -2281,6 +2300,38 @@ class MaskFitsApp(QMainWindow):
         painter.setPen(pen)
         painter.drawLine(QPointF(sx0, sy0), QPointF(sx1, sy1))
 
+    def _paint_shape_outline(self, painter: QPainter, to_widget, scale: float) -> None:
+        """Draws just the boundary of the active tool's hover-preview shape
+        (no fill) - used by the magnifier, where the main canvas overlay's
+        semi-transparent fill (_paint_ellipse_preview/_paint_line_preview)
+        would obscure the already-tiny zoomed pixels underneath. `to_widget`
+        maps image px -> target widget px, `scale` is target px per image
+        px - lets the same drawing code serve both the main canvas (via
+        img_to_canvas/self.zoom) and the magnifier (via its own crop-
+        centered transform/block size)."""
+        if self._cursor_img_pos is None:
+            return
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor(*self._mask_tint()), 1))
+        if self.tool == "ellipse":
+            ix, iy = self._cursor_img_pos
+            cx, cy = to_widget(ix, iy)
+            a, b, angle = self._current_round_params()
+            pts = ellipse_polygon_points(cx, cy, a * scale, b * scale, angle)
+            poly = QPolygonF([QPointF(pts[i], pts[i + 1]) for i in range(0, len(pts), 2)])
+            painter.drawPolygon(poly)
+        elif self._line_anchor is not None:
+            x0, y0 = self._line_anchor
+            x1, y1 = self._cursor_img_pos
+            ex0, ey0, ex1, ey1 = self._extend_for_style(x0, y0, x1, y1)
+            sx0, sy0 = to_widget(ex0, ey0)
+            sx1, sy1 = to_widget(ex1, ey1)
+            disp_width = max(self.thickness * scale, 1.0)
+            pts = line_band_polygon_points(sx0, sy0, sx1, sy1, disp_width)
+            poly = QPolygonF([QPointF(pts[i], pts[i + 1]) for i in range(0, len(pts), 2)])
+            painter.drawPolygon(poly)
+
     def _extend_for_style(self, x0: float, y0: float, x1: float, y1: float) -> tuple[float, float, float, float]:
         if self.image is None:
             return x0, y0, x1, y1
@@ -2299,6 +2350,13 @@ class MaskFitsApp(QMainWindow):
     def _refresh_active_preview(self) -> None:
         if hasattr(self, "canvas"):
             self.canvas.update()
+        # The magnifier now also draws the shape outline (see
+        # _paint_shape_outline), not just the cursor's pixel crop - so any
+        # change that moves/resizes/re-tints that outline (shape size,
+        # ellipticity, angle, tool switch, mask color) must repaint it too,
+        # not just wait for the next mouse-move to call magnifier.update().
+        if hasattr(self, "magnifier"):
+            self.magnifier.update()
 
     def _update_shape_preview_state(self) -> None:
         self._refresh_active_preview()
@@ -2455,6 +2513,8 @@ class MaskFitsApp(QMainWindow):
             "toggle_bin": (self._toggle_binning, True),
             "reset_zoom": (self.reset_zoom, True),
             "toggle_center_cross": (self._toggle_center_cross, True),
+            "toggle_tool": (self._toggle_tool, True),
+            "quick_export": (self.export_mask, True),
             "prev_extension": (self.prev_extension, True),
             "next_extension": (self.next_extension, True),
             "digit_1": (lambda: self._hotkey_digit(1), True),

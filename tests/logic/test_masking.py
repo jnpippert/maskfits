@@ -4,6 +4,7 @@ from maskfits.masking import (
     ellipse_mask,
     extend_line_to_borders,
     extend_ray_to_border,
+    line_band_polygon_points,
     line_mask,
 )
 
@@ -47,6 +48,26 @@ def test_line_mask_zero_length_is_a_dot():
     mask = line_mask((20, 20), 5, 5, 5, 5, width=4)
     assert mask[5, 5]
     assert not mask[5, 15]
+
+
+def test_line_band_polygon_points_is_a_flat_rectangle():
+    # Horizontal segment along x: the band's corners must sit directly
+    # above/below the endpoints, at +/- half the width - a true flat-cut
+    # rectangle, not a rounded capsule (same geometry line_mask() itself cuts).
+    pts = line_band_polygon_points(0, 0, 10, 0, width=4)
+    corners = [(pts[i], pts[i + 1]) for i in range(0, len(pts), 2)]
+    assert corners == [(0, 2), (10, 2), (10, -2), (0, -2)]
+
+
+def test_line_band_polygon_points_vertical_segment():
+    pts = line_band_polygon_points(5, 0, 5, 10, width=6)
+    corners = [(pts[i], pts[i + 1]) for i in range(0, len(pts), 2)]
+    assert corners == [(2, 0), (2, 10), (8, 10), (8, 0)]
+
+
+def test_line_band_polygon_points_zero_length_is_degenerate():
+    pts = line_band_polygon_points(3, 3, 3, 3, width=4)
+    assert pts == [3, 3, 3, 3, 3, 3, 3, 3]
 
 
 def test_extend_ray_to_border_only_extends_forward():
