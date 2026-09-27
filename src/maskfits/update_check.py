@@ -1,12 +1,16 @@
 """Two independent update checks, for two different audiences:
 
-- check_for_updates(): Help -> Check New Repo Version... - compares the
-  local git clone's current commit against its remote's tip via `git fetch`
-  + `git rev-list`, without touching the working tree. Only meaningful for
-  an editable/dev install run from an actual git clone (a regular `pip
-  install maskfits` has no .git directory to compare against, so this
-  cleanly reports that instead of guessing) - this is the "is the repo
-  itself ahead of what I have checked out" check, for contributors/devs.
+- check_for_updates(): Help -> Check New Repo Version... - for an actual git
+  clone, compares its current commit against its remote's tip via `git
+  fetch` + `git rev-list`, without touching the working tree (the "is the
+  repo itself ahead of what I have checked out" check, for contributors/
+  devs). A regular `pip install maskfits` has no .git directory to compare
+  against, so it falls back instead to fetching pyproject.toml straight off
+  GitHub's default branch and comparing its `version` against this install's
+  own __version__ (see _check_for_updates_via_github_pyproject) - a much
+  coarser signal (a version bump doesn't happen on every commit) and, unlike
+  the PyPI check below, not necessarily a stable release: just a heads-up
+  that there may be newer, possibly-unstable work on GitHub.
 
 - check_for_major_pip_update() (see UpdateCheckWorker): the silent startup
   check, run for every install regardless of how it was installed - compares
@@ -33,6 +37,10 @@ from maskfits import __version__ as LOCAL_VERSION
 TIMEOUT_S = 15
 PYPI_PACKAGE_NAME = "maskfits"
 PYPI_JSON_URL = f"https://pypi.org/pypi/{PYPI_PACKAGE_NAME}/json"
+GITHUB_REPO = "jnpippert/maskfits"
+GITHUB_BRANCH = "main"
+GITHUB_REPO_URL = f"https://github.com/{GITHUB_REPO}"
+GITHUB_RAW_PYPROJECT_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{GITHUB_BRANCH}/pyproject.toml"
 
 
 def _repo_root() -> Optional[Path]:
@@ -119,17 +127,73 @@ def _major_version(version_str: str) -> Optional[int]:
     return int(match.group(1)) if match else None
 
 
+def _version_tuple(version_str: str) -> Optional[tuple[int, ...]]:
+    """Parses the leading dotted-integer run of a version string (ignoring
+    any local/build suffix like "+unknown" or a pre-release tag) into a
+    tuple usable for ordering comparisons - "2.9.0+unknown" -> (2, 9, 0).
+    None if it doesn't start with a recognizable version at all."""
+    match = re.match(r"\s*(\d+(?:\.\d+)*)", version_str)
+    if not match:
+        return None
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def _fetch_github_pyproject_version() -> Optional[str]:
+    """The `version` currently in pyproject.toml on GITHUB_REPO's default
+    branch, fetched directly (no git clone needed) - or None on any failure
+    (offline, GitHub unreachable/down, unexpected response, ...). Never
+    raises."""
+    request = Request(GITHUB_RAW_PYPROJECT_URL, headers={"User-Agent": f"{PYPI_PACKAGE_NAME}-update-check"})
+    try:
+        with urlopen(request, timeout=TIMEOUT_S) as response:
+            text = response.read().decode("utf-8")
+    except (URLError, OSError, TimeoutError):
+        return None
+    match = re.search(r'(?m)^version\s*=\s*"([^"]+)"', text)
+    return match.group(1) if match else None
+
+
+def _check_for_updates_via_github_pyproject() -> tuple[bool, str]:
+    """check_for_updates()'s fallback for a non-clone install (a regular
+    `pip install maskfits` has no .git to compare against) - compares this
+    install's own __version__ against pyproject.toml's `version` on GitHub's
+    default branch instead. Coarser than the commit-based check (a version
+    bump doesn't happen on every commit) and, unlike check_for_major_pip_
+    update's PyPI comparison, a "yes" here isn't necessarily a stable
+    release - just a heads-up that there may be newer, possibly-unstable
+    work on GitHub. Never raises."""
+    remote_version = _fetch_github_pyproject_version()
+    if remote_version is None:
+        return False, "Could not check GitHub for updates - no internet connection, or GitHub isn't reachable right now."
+
+    if remote_version == LOCAL_VERSION:
+        return False, f"You're up to date with {GITHUB_BRANCH} (v{LOCAL_VERSION})."
+
+    local_tuple = _version_tuple(LOCAL_VERSION)
+    remote_tuple = _version_tuple(remote_version)
+    if local_tuple is None or remote_tuple is None or remote_tuple <= local_tuple:
+        return False, f"You're up to date with {GITHUB_BRANCH} (v{LOCAL_VERSION})."
+
+    return True, (
+        f"Update available! Newest GitHub Version is: {remote_version}. "
+        f"Your version is {LOCAL_VERSION}.\n\n"
+        "This is ahead of the latest PyPI release and may not be fully stable."
+    )
+
+
 def check_for_updates() -> tuple[bool, str]:
     """Returns (update_available, message) for ANY new commit on the
     remote - used by the manual Help -> Check New Repo Version... action,
     which reports every commit, not just major bumps (see
     check_for_major_pip_update for the quieter startup check, which looks at
-    PyPI releases instead of raw commits). Never raises; any failure
-    (offline, GitHub unreachable/down, no git, not a clone, ...) comes back
-    as a message instead."""
+    PyPI releases instead of raw commits). Falls back to a coarser version-
+    string comparison (see _check_for_updates_via_github_pyproject) when
+    this isn't a git clone at all, rather than refusing to check. Never
+    raises; any failure (offline, GitHub unreachable/down, no git, ...)
+    comes back as a message instead."""
     root = _repo_root()
     if root is None:
-        return False, "Not running from a git clone - nothing to check."
+        return _check_for_updates_via_github_pyproject()
 
     try:
         branch, local_sha, remote_sha = _fetch_remote_state(root)

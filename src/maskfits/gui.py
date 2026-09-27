@@ -81,7 +81,7 @@ from maskfits.settings import Settings, format_mask_filename, load_settings
 from maskfits.settings_window import SettingsWindow
 from maskfits.shortcuts import SHORTCUT_ACTIONS, effective_keys
 from maskfits.theme import current_theme, detect_os_light_mode, theme_manager
-from maskfits.update_check import UpdateCheckWorker, check_for_updates, get_clone_url
+from maskfits.update_check import GITHUB_REPO_URL, UpdateCheckWorker, check_for_updates, get_clone_url
 from maskfits.update_dialog import show_update_dialog
 from maskfits.widgets import RoundButton, RoundedPanel, RoundSlider, SegmentedControl, SidebarToggle, ThemeToggle
 
@@ -741,23 +741,26 @@ class MaskFitsApp(QMainWindow):
         self._hotkeys_window = None
 
     def _check_repo_version(self) -> None:
-        """Compares the local git clone against its GitHub remote (git
-        fetch + rev-list - see update_check.check_for_updates) and reports
-        the result - for contributors/devs working from a checkout, not the
-        general "is my install up to date" question (see
-        start_background_update_check, which checks PyPI instead). Only
-        meaningful for an actual git clone; anything else (offline, no git,
-        a plain `pip install maskfits` with no .git) just gets a clear
-        message instead of crashing."""
+        """Compares against GitHub's main branch and reports the result -
+        for contributors/devs (or a curious pip-installed user) wanting to
+        know if there's newer work on GitHub, not the general "is my
+        install up to date" question (see start_background_update_check,
+        which checks PyPI instead). From an actual git clone this compares
+        commits (git fetch + rev-list); otherwise (a plain `pip install
+        maskfits`, no .git present) update_check.check_for_updates() falls
+        back to comparing pyproject.toml's version on GitHub against this
+        install's own - see its docstring. Either way, this is only ever a
+        "there might be something newer, possibly unstable" heads-up, never
+        a claim that it's a vetted release."""
         self.setCursor(Qt.CursorShape.WaitCursor)
         QApplication.processEvents()
         try:
             available, message = check_for_updates()
         finally:
             self.unsetCursor()
-        title = "maskfits - New Commits Available" if available else "maskfits"
-        clone_url = get_clone_url()
-        command = f"git clone {clone_url}" if clone_url else None
+        title = "maskfits - Update Available" if available else "maskfits"
+        clone_url = get_clone_url() or GITHUB_REPO_URL
+        command = f"git clone {clone_url}" if available else None
         show_update_dialog(self, title, message, available=available, command=command)
 
     def start_background_update_check(self) -> None:

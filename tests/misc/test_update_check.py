@@ -110,11 +110,17 @@ def test_timeout_reports_cleanly(monkeypatch):
     assert "timed out" in message.lower()
 
 
-def test_no_git_repo_reports_cleanly(monkeypatch):
+def test_no_git_repo_falls_back_to_the_github_pyproject_check(monkeypatch):
+    # Not a git clone (e.g. a regular `pip install maskfits`) - check_for_
+    # updates() must not just refuse; it delegates to the pyproject-on-
+    # GitHub comparison instead (see the dedicated tests below).
     monkeypatch.setattr(update_check, "_repo_root", lambda: None)
+    monkeypatch.setattr(update_check, "LOCAL_VERSION", "1.0.0")
+    monkeypatch.setattr(update_check, "_fetch_github_pyproject_version", lambda: "1.1.0")
     available, message = update_check.check_for_updates()
-    assert available is False
-    assert "git clone" in message.lower()
+    assert available is True
+    assert "Newest GitHub Version is: 1.1.0" in message
+    assert "Your version is 1.0.0" in message
 
 
 def test_dns_failure_gets_a_friendly_network_headline(monkeypatch):
@@ -253,3 +259,93 @@ def test_latest_pypi_version_against_the_real_pypi_does_not_raise():
     # string, or None if offline/PyPI is unreachable), it must never raise.
     result = update_check._latest_pypi_version()
     assert result is None or isinstance(result, str)
+
+
+# --------------------------------------- github pyproject.toml (pip fallback)
+
+
+@pytest.mark.parametrize(
+    "version_str, expected",
+    [
+        ("2.9.0", (2, 9, 0)),
+        ("1.0.0+unknown", (1, 0, 0)),
+        ("10.2", (10, 2)),
+        ("not-a-version", None),
+    ],
+)
+def test_version_tuple_parsing(version_str, expected):
+    assert update_check._version_tuple(version_str) == expected
+
+
+def test_fetch_github_pyproject_version_parses_the_response(monkeypatch):
+    import io
+
+    text = 'name = "maskfits"\nversion = "3.1.4"\ndescription = "x"\n'
+
+    def fake_urlopen(request, timeout):
+        assert update_check.GITHUB_RAW_PYPROJECT_URL in request.full_url
+        return io.BytesIO(text.encode())
+
+    monkeypatch.setattr(update_check, "urlopen", fake_urlopen)
+    assert update_check._fetch_github_pyproject_version() == "3.1.4"
+
+
+def test_fetch_github_pyproject_version_returns_none_on_network_error(monkeypatch):
+    def fake_urlopen(request, timeout):
+        raise update_check.URLError("no internet")
+
+    monkeypatch.setattr(update_check, "urlopen", fake_urlopen)
+    assert update_check._fetch_github_pyproject_version() is None
+
+
+def test_fetch_github_pyproject_version_returns_none_without_a_version_line(monkeypatch):
+    import io
+
+    def fake_urlopen(request, timeout):
+        return io.BytesIO(b"name = \"maskfits\"\n")
+
+    monkeypatch.setattr(update_check, "urlopen", fake_urlopen)
+    assert update_check._fetch_github_pyproject_version() is None
+
+
+def test_github_pyproject_check_reports_a_newer_version(monkeypatch):
+    monkeypatch.setattr(update_check, "LOCAL_VERSION", "2.9.0")
+    monkeypatch.setattr(update_check, "_fetch_github_pyproject_version", lambda: "2.10.0")
+    available, message = update_check._check_for_updates_via_github_pyproject()
+    assert available is True
+    assert "Update available!" in message
+    assert "Newest GitHub Version is: 2.10.0" in message
+    assert "Your version is 2.9.0" in message
+    assert "not be fully stable" in message
+
+
+def test_github_pyproject_check_up_to_date(monkeypatch):
+    monkeypatch.setattr(update_check, "LOCAL_VERSION", "2.9.0")
+    monkeypatch.setattr(update_check, "_fetch_github_pyproject_version", lambda: "2.9.0")
+    available, message = update_check._check_for_updates_via_github_pyproject()
+    assert available is False
+    assert "up to date" in message.lower()
+
+
+def test_github_pyproject_check_silent_when_local_is_ahead(monkeypatch):
+    # Local is somehow ahead of GitHub main (e.g. a not-yet-pushed local
+    # bump) - must not report a phantom update.
+    monkeypatch.setattr(update_check, "LOCAL_VERSION", "3.0.0")
+    monkeypatch.setattr(update_check, "_fetch_github_pyproject_version", lambda: "2.9.0")
+    available, _message = update_check._check_for_updates_via_github_pyproject()
+    assert available is False
+
+
+def test_github_pyproject_check_silent_when_unreachable(monkeypatch):
+    monkeypatch.setattr(update_check, "_fetch_github_pyproject_version", lambda: None)
+    available, message = update_check._check_for_updates_via_github_pyproject()
+    assert available is False
+    assert "github" in message.lower()
+
+
+def test_github_pyproject_check_against_the_real_github_does_not_raise():
+    # Exercises the real network call - whatever the answer is, must never
+    # raise, and always comes back as a (bool, str) tuple.
+    available, message = update_check._check_for_updates_via_github_pyproject()
+    assert isinstance(available, bool)
+    assert isinstance(message, str) and message

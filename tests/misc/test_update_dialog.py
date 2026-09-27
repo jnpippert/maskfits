@@ -81,7 +81,18 @@ def test_copy_button_puts_command_on_clipboard(qapp, monkeypatch):
         qapp, monkeypatch, message="Update available.", available=True,
         command="git clone https://github.com/jnpippert/maskfits.git",
     )
-    copy_btn = next(b for b in dialog.findChildren(RoundButton) if b.text() == "Copy")
+    copy_btn = next(b for b in dialog.findChildren(RoundButton) if b.toolTip() == "Copy")
+    assert copy_btn.text() == "\U0001F4CB"
     copy_btn.click()
     assert QApplication.clipboard().text() == "git clone https://github.com/jnpippert/maskfits.git"
-    assert copy_btn.text() == "Copied!"
+    assert copy_btn.text() == "✓"
+
+
+def test_no_ok_button_anymore(qapp, monkeypatch):
+    # The dialog's own title bar close (X) is the only way to dismiss it -
+    # no redundant "Ok" button.
+    dialog = _show_without_blocking(
+        qapp, monkeypatch, message="Update available.", available=True,
+        command="git clone https://github.com/jnpippert/maskfits.git",
+    )
+    assert all(b.text() != "Ok" for b in dialog.findChildren(RoundButton))

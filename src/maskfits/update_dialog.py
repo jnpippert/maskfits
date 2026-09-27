@@ -3,11 +3,14 @@ Check New Repo Version... action (git) and the silent startup major-version
 check (PyPI) render through show_update_dialog(), so the two look identical.
 
 When an update actually is available, the dialog adds a read-only,
-monospace one-line command plus a "copy" button (QApplication's clipboard) -
-whatever the caller passes as `command` (a `git clone <url>` for the repo
-check, `pip install --upgrade maskfits` for the PyPI check) - a one-click way
-to get the exact command rather than making the user retype it from the
-message text.
+monospace one-line command plus a small clipboard-icon button (copies via
+QApplication's clipboard) - whatever the caller passes as `command` (a `git
+clone <url>` for the repo check, `pip install --upgrade maskfits` for the
+PyPI check) - a one-click way to get the exact command rather than making
+the user retype it from the message text.
+
+No Ok button - the dialog's own title bar close (X) button is the only way
+to dismiss it, so there's no second, redundant control doing the same thing.
 """
 
 from __future__ import annotations
@@ -64,23 +67,16 @@ def show_update_dialog(parent: Optional[QWidget], title: str, message: str, *,
         code_entry.setMinimumWidth(max(min(fits_width, CODE_WIDTH_MAX), CODE_WIDTH_MIN))
         row.addWidget(code_entry, 1)
 
-        copy_btn = RoundButton("Copy")
+        copy_btn = RoundButton("\U0001F4CB")  # clipboard icon
+        copy_btn.setToolTip("Copy")
 
         def do_copy() -> None:
             QApplication.clipboard().setText(command)
-            copy_btn.setText("Copied!")
-            QTimer.singleShot(1500, lambda: copy_btn.setText("Copy"))
+            copy_btn.setText("✓")  # checkmark, confirms the copy
+            QTimer.singleShot(1500, lambda: copy_btn.setText("\U0001F4CB"))
 
         copy_btn.clicked.connect(do_copy)
         row.addWidget(copy_btn)
         layout.addLayout(row)
-
-    layout.addSpacing(14)
-    btn_row = QHBoxLayout()
-    btn_row.addStretch(1)
-    ok_btn = RoundButton("Ok", accent=True)
-    ok_btn.clicked.connect(dialog.accept)
-    btn_row.addWidget(ok_btn)
-    layout.addLayout(btn_row)
 
     dialog.exec()
