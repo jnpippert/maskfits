@@ -226,10 +226,12 @@ class RoundSlider(QWidget):
     # -------------------------------------------------------------- layout
 
     def _track_rect(self) -> QRectF:
-        r = self._RADIUS
+        # Inset past the handle's own radius by its 2px outline (plus 1px
+        # for antialiasing), so the handle isn't clipped at min/max.
+        inset = self._RADIUS + 2
         h = 6
         y = (self.height() - h) / 2
-        return QRectF(r, y, max(self.width() - 2 * r, 1), h)
+        return QRectF(inset, y, max(self.width() - 2 * inset, 1), h)
 
     def _handle_center_x(self, track: QRectF) -> float:
         return track.left() + track.width() * min(max(self._frac(), 0.0), 1.0)

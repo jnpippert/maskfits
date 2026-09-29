@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QFileDialog,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -90,7 +91,7 @@ MAG_BLOCK = 6
 PAN_W = PAN_H = MAG_SIZE * MAG_BLOCK
 MAX_SHAPE_SIZE = 500
 RADIUS_MIN = 0.5  # small enough to mask a single pixel
-SIDEBAR_W = 340  # fixed - see MaskFitsApp._toggle_sidebar's docstring for why
+SIDEBAR_W = 380  # fixed - see MaskFitsApp._toggle_sidebar's docstring for why
 SIDEBAR_TOGGLE_W = 10
 ZOOM_STEP = 1.25
 ZOOM_MULT_MIN = 0.5
@@ -963,35 +964,29 @@ class MaskFitsApp(QMainWindow):
         mag_row.addStretch(1)
         layout.addLayout(mag_row)
 
-        readout_layout = QVBoxLayout()
-        readout_layout.setSpacing(2)
+        # Two equal-width halves (x/y/value left, RA/DEC/shape right), so the
+        # right column always starts at the panel's horizontal center no
+        # matter how long the left values get. Each half is its own grid so
+        # its values line up under each other past the longest key.
         self.readout: dict[str, QLabel] = {}
-        for left_key, right_key in (("x", "RA"), ("y", "DEC")):
-            row = QHBoxLayout()
-            row.addWidget(self._dim_label(f"{left_key}:"))
-            left_lbl = QLabel("")
-            # Fixed width + center alignment, so "x"/"y"'s varying digit
-            # count doesn't shift "RA:"/"DEC:" sideways between the two rows
-            # - they stay anchored under each other instead of drifting.
-            left_lbl.setFixedWidth(36)
-            left_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            row.addWidget(left_lbl)
-            row.addSpacing(10)
-            row.addWidget(self._dim_label(f"{right_key}:"))
-            right_lbl = QLabel("")
-            row.addWidget(right_lbl)
-            row.addStretch(1)
-            self.readout[left_key] = left_lbl
-            self.readout[right_key] = right_lbl
-            readout_layout.addLayout(row)
-        value_row = QHBoxLayout()
-        value_row.addWidget(self._dim_label("value:"))
-        value_lbl = QLabel("")
-        value_row.addWidget(value_lbl)
-        value_row.addStretch(1)
-        self.readout["value"] = value_lbl
-        readout_layout.addLayout(value_row)
-        layout.addLayout(readout_layout)
+        readout_row = QHBoxLayout()
+        readout_row.setSpacing(0)
+        for keys in (("x", "y", "value"), ("RA", "DEC", "shape")):
+            half = QWidget()
+            half.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            grid = QGridLayout(half)
+            grid.setContentsMargins(0, 0, 0, 0)
+            grid.setHorizontalSpacing(6)
+            grid.setVerticalSpacing(2)
+            grid.setColumnStretch(1, 1)
+            for row_i, key in enumerate(keys):
+                grid.addWidget(self._dim_label(f"{key}:"), row_i, 0)
+                lbl = QLabel("")
+                lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+                grid.addWidget(lbl, row_i, 1)
+                self.readout[key] = lbl
+            readout_row.addWidget(half, 1)
+        layout.addLayout(readout_row)
 
         self._divider(layout)
 
@@ -1225,6 +1220,7 @@ class MaskFitsApp(QMainWindow):
 
         self.filename_label.setText(os.path.basename(entry.path) if entry.path else "noname")
         self._update_extension_picker()
+        self.readout["shape"].setText(self._shape_text(entry.image))
         self.counter_label.setText(f"{self.index + 1}/{len(self.entries)}")
         self._sync_isopy_cuts()
         self._update_cuts_display()
@@ -1233,6 +1229,25 @@ class MaskFitsApp(QMainWindow):
         self._set_status(f"loaded {entry.path}" if entry.path else "new file")
 
         self.render()
+
+    @staticmethod
+    def _shape_text(image: Optional[FitsImage]) -> str:
+        """The file's own on-disk shape as NAXIS1 x NAXIS2 (x NAXIS3 for a
+        cube) - read from the header rather than image.data, which may be
+        transposed (portrait) or binned."""
+        if image is None:
+            return ""
+        if image.cube is not None:
+            nz, a, b = image.cube.shape
+            dims = [b, a, nz] if not image.rotated else [a, b, nz]
+        else:
+            a, b = image.data.shape
+            dims = [b, a] if not image.rotated else [a, b]
+        for i in range(len(dims)):
+            naxis = image.header.get(f"NAXIS{i + 1}")
+            if isinstance(naxis, int):
+                dims[i] = naxis
+        return " × ".join(str(d) for d in dims)
 
     @staticmethod
     def _file_kind(entry: Entry) -> str:
