@@ -263,6 +263,27 @@ def current_theme() -> Theme:
     return theme_manager().theme
 
 
+def on_theme_changed(owner: QObject, callback) -> None:
+    """Calls `callback()` on every theme change, for as long as `owner` is
+    alive. A lambda connected straight to theme_changed is never
+    disconnected when the widget it captures is destroyed (Qt has no
+    receiver object to tie it to), so it keeps firing into the deleted
+    widget - "Internal C++ object already deleted" on every theme change."""
+    signal = theme_manager().theme_changed
+
+    def slot(_theme: Theme) -> None:
+        callback()
+
+    def disconnect() -> None:
+        try:
+            signal.disconnect(slot)
+        except (RuntimeError, TypeError):
+            pass  # manager already torn down (app exit)
+
+    signal.connect(slot)
+    owner.destroyed.connect(disconnect)
+
+
 def build_palette(theme: Theme) -> QPalette:
     """A QPalette matching the Theme, for native chrome that reads palette
     roles rather than QSS (dialogs, some menu internals, disabled-state

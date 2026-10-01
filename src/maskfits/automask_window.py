@@ -37,7 +37,7 @@ from maskfits.automask import (
     sigma_clip_mask,
     valid_pixels,
 )
-from maskfits.theme import current_theme, theme_manager
+from maskfits.theme import current_theme, on_theme_changed
 from maskfits.widgets import RoundButton, RoundSlider, SegmentedControl
 
 if TYPE_CHECKING:
@@ -58,7 +58,7 @@ class _AutoMaskHistCanvas(QWidget):
         self._vals: Optional[np.ndarray] = None
         self._bg = 0.0
         self._threshold = 0.0
-        theme_manager().theme_changed.connect(lambda _t: self.update())
+        on_theme_changed(self, self.update)
 
     def set_data(self, vals: np.ndarray, bg: float, threshold: float) -> None:
         self._vals = vals
@@ -168,7 +168,7 @@ class AutoMaskWindow(QDialog):
 
         self._build()
         self._apply()
-        theme_manager().theme_changed.connect(lambda _t: self._style_confirm_button())
+        on_theme_changed(self, self._style_confirm_button)
 
         self._center_on_parent()
 

@@ -15,7 +15,7 @@ from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QVBoxLayout, QWidget
 
 from maskfits.imagedata import safe_span
-from maskfits.theme import current_theme, theme_manager
+from maskfits.theme import current_theme, on_theme_changed
 from maskfits.widgets import RoundButton
 
 SAMPLE_TARGET = 500_000
@@ -264,7 +264,7 @@ class CutsHistogram(QWidget):
         entries.addStretch(1)
         layout.addLayout(entries)
 
-        theme_manager().theme_changed.connect(lambda _t: self.canvas.update())
+        on_theme_changed(self, self.canvas.update)
         self._set_sample(data)
 
     @staticmethod

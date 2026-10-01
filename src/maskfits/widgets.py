@@ -44,7 +44,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from maskfits.theme import current_theme, theme_manager
+from maskfits.theme import current_theme, on_theme_changed
 
 _HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
@@ -187,7 +187,7 @@ class RoundSlider(QWidget):
         self.setFixedHeight(2 * self._RADIUS + 6)
         self.setMinimumWidth(60)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        theme_manager().theme_changed.connect(lambda _t: self.update())
+        on_theme_changed(self, self.update)
 
     def _clamp(self, value: float) -> float:
         value = max(self._lo, min(value, self._hi))
@@ -416,7 +416,7 @@ class SidebarToggle(QWidget):
         self._hovering = False
         self._pressed = False
         self._collapsed = False
-        theme_manager().theme_changed.connect(lambda _t: self.update())
+        on_theme_changed(self, self.update)
 
     def set_collapsed(self, collapsed: bool) -> None:
         """Only flips which way the chevron points - the caller (gui.
@@ -505,7 +505,7 @@ class HexColorPicker(QWidget):
         self._swatch.clicked.connect(self._pick)
         layout.addWidget(self._swatch)
 
-        theme_manager().theme_changed.connect(lambda _t: self._update_swatch())
+        on_theme_changed(self, self._update_swatch)
         self._update_swatch()
 
     def value(self) -> Optional[str]:

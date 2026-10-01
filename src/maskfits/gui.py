@@ -81,7 +81,7 @@ from maskfits.masking import (
 from maskfits.settings import Settings, format_mask_filename, load_settings
 from maskfits.settings_window import SettingsWindow
 from maskfits.shortcuts import SHORTCUT_ACTIONS, effective_keys
-from maskfits.theme import current_theme, detect_os_light_mode, theme_manager
+from maskfits.theme import current_theme, detect_os_light_mode, on_theme_changed, theme_manager
 from maskfits.update_check import GITHUB_REPO_URL, UpdateCheckWorker, check_for_updates, get_clone_url
 from maskfits.update_dialog import show_update_dialog
 from maskfits.widgets import RoundButton, RoundedPanel, RoundSlider, SegmentedControl, SidebarToggle, ThemeToggle
@@ -256,7 +256,7 @@ class ImageCanvas(QWidget):
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        theme_manager().theme_changed.connect(lambda _t: self.update())
+        on_theme_changed(self, self.update)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         self.app.canvas_w, self.app.canvas_h = self.width(), self.height()
@@ -323,7 +323,7 @@ class MagnifierWidget(QWidget):
         super().__init__(parent)
         self.app = app
         self.setFixedSize(PAN_W, PAN_H)
-        theme_manager().theme_changed.connect(lambda _t: self.update())
+        on_theme_changed(self, self.update)
 
     def paintEvent(self, event) -> None:  # noqa: N802
         theme = current_theme()
