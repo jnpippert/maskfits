@@ -97,6 +97,11 @@ RADIUS_MIN = 0.5  # small enough to mask a single pixel
 # longest pause between two activations still treated as the same hold - it
 # has to cover the OS's initial key-repeat delay.
 HOLD_MAX_FACTOR = 3.0
+# Center cross geometry, in screen px: gap from the center to each arm, arm
+# length, and line width (the outline adds 1px on each side).
+CROSS_GAP = 5.0
+CROSS_ARM = 14.0
+CROSS_WIDTH = 2.0
 STATUS_SUCCESS_MS = 1500  # how long a success status message stays green
 HOLD_RAMP_S = 1.5
 HOLD_GAP_S = 0.6
@@ -368,6 +373,9 @@ class MagnifierWidget(QWidget):
         norm = np.clip((crop - entry.lowcut) / span, 0, 1)
         norm = np.where(np.isnan(crop), 0.12, norm)
         rgb = app._scale_and_color(norm)
+        inside = np.zeros((MAG_SIZE, MAG_SIZE), dtype=bool)
+        inside[max(sy0 - y0, 0):max(sy1 - y0, 0), max(sx0 - x0, 0):max(sx1 - x0, 0)] = True
+        app._paint_blank(rgb, crop, within=inside)  # not the padding past the image edge
         app._tint_masked(rgb, mask_crop)
         rgb = np.ascontiguousarray(rgb[::-1])  # same bottom-up flip as render()
 
@@ -725,19 +733,29 @@ class MaskFitsApp(QMainWindow):
         - also apply the live-appliable ones to the currently running
         session, so Save visibly does something instead of only affecting
         the next launch. The theme itself was already live-previewed by the
-        dialog as the user edited it; Save just means "keep what's showing"."""
+        dialog as the user edited it; Save just means "keep what's showing".
+        The session-level choices (colormap, cut levels, scale, tool, zoom)
+        are only touched if that particular default was changed in the
+        dialog - saving an unrelated setting must not reset, say, a colormap
+        picked from the menu back to the default."""
+        previous = self.settings
         self.settings = settings
         self._theme_key = settings.theme
         self._refresh_theme_toggle()
         self.export_dir_mode = settings.export_dir
         self._default_bin_factor = settings.bin_factor if settings.bin_enabled else None
         self._default_smooth_sigma = settings.smooth_sigma if settings.smooth_enabled else None
-        self.set_colormap(settings.colormap)
-        self.set_stretch(settings.stretch)
-        self.set_scale_function(settings.scale)
-        self.set_tool(settings.mode)
-        self.zoom_mult = max(min(settings.zoom, ZOOM_MULT_MAX), ZOOM_MULT_MIN)
-        self._update_zoom_label()
+        if settings.colormap != previous.colormap:
+            self.set_colormap(settings.colormap)
+        if settings.stretch != previous.stretch:
+            self.set_stretch(settings.stretch)
+        if settings.scale != previous.scale:
+            self.set_scale_function(settings.scale)
+        if settings.mode != previous.mode:
+            self.set_tool(settings.mode)
+        if settings.zoom != previous.zoom:
+            self.zoom_mult = max(min(settings.zoom, ZOOM_MULT_MAX), ZOOM_MULT_MIN)
+            self._update_zoom_label()
         self._rebuild_shortcuts()
         self.render()
 
@@ -2190,6 +2208,7 @@ class MaskFitsApp(QMainWindow):
         norm = np.nan_to_num(norm, nan=0.0)
         rgb = self._scale_and_color(norm)
 
+        self._paint_blank(rgb, crop)
         self._tint_masked(rgb, mask_crop)
 
         if (self._auto_mask_preview is not None and self._auto_mask_entry is entry
@@ -2241,6 +2260,18 @@ class MaskFitsApp(QMainWindow):
         gray = (stretched * 255).astype(np.uint8)
         return self._active_lut()[gray]
 
+    def _paint_blank(self, rgb: np.ndarray, values: np.ndarray, within: Optional[np.ndarray] = None) -> None:
+        """Paints Settings.blank_color over every pixel of `rgb` whose
+        displayed value is exactly 0 or NaN (no-op when the setting is off)
+        - before the mask tint, so a mask still shows on top of it."""
+        color = self.settings.blank_color
+        if not color:
+            return
+        blank = np.isnan(values) | (values == 0)
+        if within is not None:
+            blank &= within
+        rgb[blank] = [int(color[i:i + 2], 16) for i in (1, 3, 5)]
+
     def _mask_tint(self) -> tuple[int, int, int]:
         return mask_tint_for(self.colormap, self._active_lut(), current_theme().accent)
 
@@ -2288,27 +2319,44 @@ class MaskFitsApp(QMainWindow):
             self._paint_line_preview(painter, cx, cy)
 
     def _paint_center_cross(self, painter: QPainter) -> None:
-        """A small crosshair marking the image's exact center (nx/2, ny/2
-        in image pixel coordinates, the same point reset_zoom() re-centers
-        the view on) - toggled by the K hotkey, to help judge how well a
-        source is centered in the frame. Colored via _center_cross_color()
-        - the inverse of whatever's actually displayed there right now
-        (colormap AND mask tint included) - rather than a fixed color, so
-        it can never blend into a same-colored mask covering the center
-        the way a flat tint (even the mask's own color) eventually would."""
+        """A crosshair marking the image's exact center (nx/2, ny/2 in
+        image pixel coordinates, the same point reset_zoom() re-centers the
+        view on) - toggled by the K hotkey, to help judge how well a source
+        is centered in the frame. Four arms with a gap in the middle (the
+        center itself stays visible), each drawn as a colored line over a
+        wider outline of the opposite tone - so it stays readable on any
+        background, including one that happens to match the line color."""
         ny, nx = self.image.data.shape
         cx, cy = self.img_to_canvas(nx / 2.0, ny / 2.0)
-        half = 9.0
-        pen = QPen(QColor(*self._center_cross_color()), 1.5)
-        painter.setPen(pen)
-        painter.drawLine(QPointF(cx - half, cy), QPointF(cx + half, cy))
-        painter.drawLine(QPointF(cx, cy - half), QPointF(cx, cy + half))
+        color = self._center_cross_color()
+        outline = (0, 0, 0) if self._luminance(color) >= 128 else (255, 255, 255)
+        gap, length = CROSS_GAP, CROSS_ARM
+        arms = [
+            (QPointF(cx - gap - length, cy), QPointF(cx - gap, cy)),
+            (QPointF(cx + gap, cy), QPointF(cx + gap + length, cy)),
+            (QPointF(cx, cy - gap - length), QPointF(cx, cy - gap)),
+            (QPointF(cx, cy + gap), QPointF(cx, cy + gap + length)),
+        ]
+        for rgb, width in ((outline, CROSS_WIDTH + 2.0), (color, CROSS_WIDTH)):
+            pen = QPen(QColor(*rgb), width)
+            pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+            painter.setPen(pen)
+            for start, end in arms:
+                painter.drawLine(start, end)
+
+    @staticmethod
+    def _luminance(rgb: tuple[int, int, int]) -> float:
+        return 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
 
     def _center_cross_color(self) -> tuple[int, int, int]:
-        """The exact inverse (255-r, 255-g, 255-b) of the average displayed
-        color (colormap-mapped, then mask-tinted the same way render() does)
-        over the central 15x15 image pixels - guarantees contrast against
-        whatever's actually there, mask or no mask, any colormap."""
+        """Settings.cross_color if set; otherwise white or black, whichever
+        contrasts with the average displayed color (colormap-mapped, then
+        blank/mask-tinted the same way render() does) over the central
+        15x15 image pixels. Not the plain inverse: on mid-gray that is just
+        another mid-gray."""
+        custom = self.settings.cross_color
+        if custom:
+            return tuple(int(custom[i:i + 2], 16) for i in (1, 3, 5))
         image = self.image
         entry = self.entry
         ny, nx = image.data.shape
@@ -2321,9 +2369,10 @@ class MaskFitsApp(QMainWindow):
         span = safe_span(entry.lowcut, entry.highcut)
         norm = np.nan_to_num(np.clip((crop - entry.lowcut) / span, 0, 1), nan=0.0)
         rgb = self._scale_and_color(norm)
+        self._paint_blank(rgb, crop)
         self._tint_masked(rgb, mask_crop)
         avg = rgb.reshape(-1, 3).mean(axis=0)
-        return (int(255 - avg[0]), int(255 - avg[1]), int(255 - avg[2]))
+        return (0, 0, 0) if self._luminance(avg) >= 128 else (255, 255, 255)
 
     def _toggle_center_cross(self) -> None:
         self.show_center_cross = not self.show_center_cross

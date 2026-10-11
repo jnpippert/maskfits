@@ -11,6 +11,7 @@ to load_settings/save_settings instead of the real user-wide one).
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -66,10 +67,22 @@ class Settings:
     zoom: float = 1.0
     # Hex string ("#rrggbb") or None to use the built-in crimson accent.
     accent_color: Optional[str] = None
+    # Hex string ("#rrggbb") painted over every pixel whose value is exactly
+    # 0 or NaN (typically no-data areas), or None to draw them through the
+    # colormap like any other pixel.
+    blank_color: Optional[str] = None
+    # Hex string ("#rrggbb") for the center cross (K hotkey), or None to
+    # pick black or white automatically, whichever contrasts with the image
+    # under it.
+    cross_color: Optional[str] = None
     # Only actions the user has actually rebound, as {action_id: [key, ...]}
     # - see maskfits.shortcuts. Anything not present here still uses that
     # action's own default key(s).
     shortcuts: dict[str, list[str]] = field(default_factory=dict)
+
+
+def is_hex_color(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", value) is not None
 
 
 def is_valid_export_filename_format(fmt: str, *, forbidden: tuple[str, ...] = ()) -> bool:
@@ -128,6 +141,8 @@ def load_settings(store: Optional[QSettings] = None) -> Settings:
         "export_filename_format_cube", defaults.export_filename_format_cube, type=str
     )
     accent = s.value("accent_color", "", type=str)
+    blank = s.value("blank_color", "", type=str)
+    cross = s.value("cross_color", "", type=str)
     # A custom theme's name is a valid `theme` value too, alongside the
     # three built-ins - checked here (rather than a static THEME_CHOICES
     # list) so a persisted custom-theme selection survives a reload; a name
@@ -163,6 +178,8 @@ def load_settings(store: Optional[QSettings] = None) -> Settings:
         ),
         zoom=s.value("zoom", defaults.zoom, type=float),
         accent_color=accent or None,
+        blank_color=blank if is_hex_color(blank) else None,
+        cross_color=cross if is_hex_color(cross) else None,
         shortcuts=_load_shortcuts(s),
     )
 
@@ -195,5 +212,7 @@ def save_settings(settings: Settings, store: Optional[QSettings] = None) -> None
     s.setValue("export_filename_format_cube", settings.export_filename_format_cube)
     s.setValue("zoom", settings.zoom)
     s.setValue("accent_color", settings.accent_color or "")
+    s.setValue("blank_color", settings.blank_color or "")
+    s.setValue("cross_color", settings.cross_color or "")
     s.setValue("shortcuts_json", json.dumps(settings.shortcuts))
     s.sync()

@@ -102,6 +102,8 @@ class SettingsWindow(QDialog):
         self.export_filename_format_cube = settings.export_filename_format_cube
         self.zoom = settings.zoom
         self.accent_color = settings.accent_color
+        self.blank_color = settings.blank_color
+        self.cross_color = settings.cross_color
         self.shortcuts: dict[str, list[str]] = dict(settings.shortcuts)
 
         self._build()
@@ -151,6 +153,8 @@ class SettingsWindow(QDialog):
                           self._on_smooth_sigma_changed, enabled_checkbox=True, checked=self.smooth_enabled,
                           on_toggled=self._on_smooth_enabled_changed)
         self._accent_row(layout)
+        self._blank_picker = self._optional_color_row(layout, "zero/NaN pixel color", "blank_color", "off")
+        self._cross_picker = self._optional_color_row(layout, "center cross color", "cross_color", "auto")
         self._shortcuts_row(layout)
 
         layout.addSpacing(10)
@@ -472,6 +476,22 @@ class SettingsWindow(QDialog):
         self.accent_color = value or None
         theme_manager().set_accent(self.accent_color)
 
+    # ------------------------------------------------------ optional colors
+
+    def _optional_color_row(self, layout: QVBoxLayout, label: str, attr: str, placeholder: str) -> HexColorPicker:
+        """A hex color picker + Reset for an Optional[str] setting stored on
+        self.<attr> - empty means "use the default behavior" (named by
+        `placeholder`). Applied to the image on Save, not live-previewed."""
+        row = self._row_label(layout, label)
+        picker = HexColorPicker(getattr(self, attr), allow_empty=True, placeholder=placeholder)
+        picker.colorChanged.connect(lambda value: setattr(self, attr, value or None))
+        row.addWidget(picker)
+        reset_btn = RoundButton("Reset")
+        reset_btn.clicked.connect(lambda: picker.setValue(None))
+        row.addWidget(reset_btn)
+        layout.addLayout(row)
+        return picker
+
     # ----------------------------------------------------------- shortcuts
 
     def _shortcuts_row(self, layout: QVBoxLayout) -> None:
@@ -561,6 +581,8 @@ class SettingsWindow(QDialog):
             ),
             zoom=self.zoom,
             accent_color=self.accent_color,
+            blank_color=self.blank_color,
+            cross_color=self.cross_color,
             shortcuts=self.shortcuts,
         )
 
