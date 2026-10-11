@@ -5,11 +5,12 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import time
 from typing import Optional
 
 import numpy as np
 from astropy.io import fits
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -91,6 +92,14 @@ MAG_BLOCK = 6
 PAN_W = PAN_H = MAG_SIZE * MAG_BLOCK
 MAX_SHAPE_SIZE = 500
 RADIUS_MIN = 0.5  # small enough to mask a single pixel
+# Holding a shape hotkey (size/thickness, ellipticity, angle) ramps its step
+# from 1x up to HOLD_MAX_FACTOR over HOLD_RAMP_S seconds. HOLD_GAP_S is the
+# longest pause between two activations still treated as the same hold - it
+# has to cover the OS's initial key-repeat delay.
+HOLD_MAX_FACTOR = 3.0
+STATUS_SUCCESS_MS = 1500  # how long a success status message stays green
+HOLD_RAMP_S = 1.5
+HOLD_GAP_S = 0.6
 SIDEBAR_W = 380  # fixed - see MaskFitsApp._toggle_sidebar's docstring for why
 SIDEBAR_TOGGLE_W = 10
 ZOOM_STEP = 1.25
@@ -511,6 +520,10 @@ class MaskFitsApp(QMainWindow):
         self._auto_mask_entry: Optional[Entry] = None
         self._auto_mask_preview: Optional[np.ndarray] = None
 
+        self._hold_state: Optional[tuple[str, float, float]] = None  # (key, started, last)
+        self._status_timer = QTimer(self)
+        self._status_timer.setSingleShot(True)
+        self._status_timer.timeout.connect(lambda: self._set_status_state(""))
         self._build_ui()
         self._build_shortcuts()
         self._rebuild_tool_options()
@@ -1334,11 +1347,18 @@ class MaskFitsApp(QMainWindow):
         """Set the bottom status bar text, optionally tinted green (theme's
         `green` token) as a quick "this succeeded" visual cue - e.g. after a
         mask export - so the user doesn't have to read the message to know
-        it worked. Always routes through here (never self.status.setText
-        directly) so the green tint never lingers on an unrelated later
-        message."""
+        it worked. The tint fades back to the normal text color after
+        STATUS_SUCCESS_MS (the message itself stays). Always routes through
+        here (never self.status.setText directly) so the green tint never
+        lingers on an unrelated later message."""
         self.status.setText(text)
-        state = "success" if success else ""
+        self._set_status_state("success" if success else "")
+        if success:
+            self._status_timer.start(STATUS_SUCCESS_MS)
+        else:
+            self._status_timer.stop()
+
+    def _set_status_state(self, state: str) -> None:
         if self.status.property("state") != state:
             self.status.setProperty("state", state)
             style = self.status.style()
@@ -1884,8 +1904,27 @@ class MaskFitsApp(QMainWindow):
             return self._unbin_mask_cached(entry)
         return entry.image.mask
 
+    def keyReleaseEvent(self, event) -> None:  # noqa: N802
+        # A real (non-auto-repeat) key release ends the hold, so quick
+        # separate taps never accelerate - only a key actually held down.
+        # Reaches here from any child that doesn't consume key releases.
+        if not event.isAutoRepeat():
+            self._hold_state = None
+        super().keyReleaseEvent(event)
+
+    def _hold_factor(self, key: str) -> float:
+        """Step multiplier for a shape hotkey: 1x on a fresh press, ramping
+        linearly to HOLD_MAX_FACTOR the longer the same key stays held."""
+        now = time.monotonic()
+        state = self._hold_state
+        if state is None or state[0] != key or now - state[2] > HOLD_GAP_S:
+            self._hold_state = (key, now, now)
+            return 1.0
+        self._hold_state = (key, state[1], now)
+        return 1.0 + (HOLD_MAX_FACTOR - 1.0) * min((now - state[1]) / HOLD_RAMP_S, 1.0)
+
     def _adjust_shape_size(self, direction: int) -> None:
-        step = max(1, round(5 / self.zoom_mult))
+        step = max(1, round(5 / self.zoom_mult * self._hold_factor(f"size{direction}")))
         if self.tool == "ellipse":
             self.radius = max(RADIUS_MIN, min(self.radius + direction * step, MAX_SHAPE_SIZE))
         elif self.tool == "line":
@@ -1913,14 +1952,16 @@ class MaskFitsApp(QMainWindow):
     def _adjust_ellipticity(self, direction: int) -> None:
         if self.tool != "ellipse":
             return
-        self.ellipticity = max(0, min(self.ellipticity + direction * 2, 90))
+        step = round(2 * self._hold_factor(f"ellipticity{direction}"))
+        self.ellipticity = max(0, min(self.ellipticity + direction * step, 90))
         self._sync_tool_option_widgets()
         self._refresh_active_preview()
 
     def _adjust_angle(self, direction: int) -> None:
         if self.tool != "ellipse":
             return
-        self.angle = max(-180, min(self.angle + direction * 2, 180))
+        step = round(2 * self._hold_factor(f"angle{direction}"))
+        self.angle = max(-180, min(self.angle + direction * step, 180))
         self._sync_tool_option_widgets()
         self._refresh_active_preview()
 
@@ -2291,7 +2332,10 @@ class MaskFitsApp(QMainWindow):
     def _paint_ellipse_preview(self, painter: QPainter, cx: float, cy: float) -> None:
         a, b, angle = self._current_round_params()
         disp_a, disp_b = a * self.zoom, b * self.zoom
-        pts = ellipse_polygon_points(cx, cy, disp_a, disp_b, angle)
+        # -angle: the mask rotates in image coordinates (y up), but this
+        # polygon is built in screen coordinates (y down) - same angle
+        # there would draw the mirror image of what a click masks.
+        pts = ellipse_polygon_points(cx, cy, disp_a, disp_b, -angle)
         poly = QPolygonF([QPointF(pts[i], pts[i + 1]) for i in range(0, len(pts), 2)])
         tint = self._mask_tint()
         fill = QColor(*tint)
@@ -2336,7 +2380,7 @@ class MaskFitsApp(QMainWindow):
             ix, iy = self._cursor_img_pos
             cx, cy = to_widget(ix, iy)
             a, b, angle = self._current_round_params()
-            pts = ellipse_polygon_points(cx, cy, a * scale, b * scale, angle)
+            pts = ellipse_polygon_points(cx, cy, a * scale, b * scale, -angle)  # see _paint_ellipse_preview
             poly = QPolygonF([QPointF(pts[i], pts[i + 1]) for i in range(0, len(pts), 2)])
             painter.drawPolygon(poly)
         elif self._line_anchor is not None:
