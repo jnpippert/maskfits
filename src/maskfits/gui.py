@@ -79,6 +79,8 @@ from maskfits.masking import (
     line_band_polygon_points,
     line_mask,
 )
+from maskfits.region_export_window import RegionExportWindow
+from maskfits.regions import write_region_file
 from maskfits.settings import Settings, format_mask_filename, load_settings
 from maskfits.settings_window import SettingsWindow
 from maskfits.shortcuts import SHORTCUT_ACTIONS, effective_keys
@@ -522,6 +524,7 @@ class MaskFitsApp(QMainWindow):
         # image + manual mask, but not written into the real mask until the
         # user confirms in AutoMaskWindow.
         self._auto_mask_window: Optional[AutoMaskWindow] = None
+        self._region_window: Optional[RegionExportWindow] = None
         self._settings_window: Optional[SettingsWindow] = None
         self._hotkeys_window: Optional[HotkeysWindow] = None
         self._update_check_worker: Optional[UpdateCheckWorker] = None
@@ -551,6 +554,8 @@ class MaskFitsApp(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         if self._auto_mask_window is not None:
             self._auto_mask_window.close()
+        if self._region_window is not None:
+            self._region_window.close()
         if self._settings_window is not None:
             self._settings_window.close()
         if self._hotkeys_window is not None:
@@ -625,6 +630,7 @@ class MaskFitsApp(QMainWindow):
         file_menu.addAction("Open...", self.open_files)
         file_menu.addAction("Export Mask", self.export_mask)
         file_menu.addAction("Save Mask As...", self.export_mask_as)
+        file_menu.addAction("Save as DS9 Region...", self.export_region)
         file_menu.addSeparator()
         file_menu.addAction("Quit", self.close)
 
@@ -2053,6 +2059,52 @@ class MaskFitsApp(QMainWindow):
             return
         self._build_mask_hdu(entry).writeto(out_path, overwrite=True)
         self._set_status(f"exported mask to {out_path}", success=True)
+
+    def export_region(self) -> None:
+        """File -> Save as DS9 Region... - opens the options window (color,
+        image vs. WCS coordinates, output path defaulting to the working
+        directory). The file is written by _write_region when it's saved."""
+        entry = self.entry
+        if entry.image is None or entry.path is None:
+            QMessageBox.warning(self, "maskfits", "No image loaded to export regions for.")
+            return
+        if self._region_window is not None:
+            self._region_window.raise_()
+            self._region_window.activateWindow()
+            return
+        default_path = os.path.join(os.getcwd(), f"mask_{self._mask_stem(entry.path)}.reg")
+        dialog = RegionExportWindow(default_path, entry.image.wcs is not None, self)
+        dialog.export_requested.connect(self._write_region)
+        dialog.finished.connect(self._clear_region_window)
+        self._region_window = dialog
+        dialog.show()
+
+    def _clear_region_window(self, _result=None) -> None:
+        self._region_window = None
+
+    def _write_region(self, path: str, color: str, coords: str) -> None:
+        entry = self.entry
+        if entry.image is None:
+            return
+        # Same orientation/resolution as the exported mask FITS: the file's
+        # own, not the transposed (portrait) or binned in-memory one.
+        full_res_mask = self._full_res_mask(entry)
+        mask = full_res_mask.T if entry.image.rotated else full_res_mask
+        if not mask.any():
+            QMessageBox.warning(self, "maskfits", "The mask is empty - there are no regions to save.")
+            return
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        QApplication.processEvents()
+        try:
+            count = write_region_file(path, mask, color=color, coords=coords, wcs=entry.image.wcs)
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "maskfits", f"Could not save the region file:\n{exc}")
+            return
+        finally:
+            self.unsetCursor()
+        self._set_status(f"exported {count} region{'s' if count != 1 else ''} to {path}", success=True)
+        if self._region_window is not None:
+            self._region_window.accept()
 
     # ---------------------------------------------------------- auto mask
 
