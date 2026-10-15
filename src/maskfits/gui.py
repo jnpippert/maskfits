@@ -16,6 +16,7 @@ from PySide6.QtGui import (
     QActionGroup,
     QCloseEvent,
     QColor,
+    QCursor,
     QIcon,
     QImage,
     QKeySequence,
@@ -104,6 +105,7 @@ HOLD_MAX_FACTOR = 3.0
 CROSS_GAP = 5.0
 CROSS_ARM = 14.0
 CROSS_WIDTH = 2.0
+CURSOR_POLL_MS = 30  # see MaskFitsApp._poll_cursor
 STATUS_SUCCESS_MS = 1500  # how long a success status message stays green
 HOLD_RAMP_S = 1.5
 HOLD_GAP_S = 0.6
@@ -535,6 +537,9 @@ class MaskFitsApp(QMainWindow):
         self._status_timer = QTimer(self)
         self._status_timer.setSingleShot(True)
         self._status_timer.timeout.connect(lambda: self._set_status_state(""))
+        self._cursor_timer = QTimer(self)
+        self._cursor_timer.timeout.connect(self._poll_cursor)
+        self._cursor_timer.start(CURSOR_POLL_MS)
         self._build_ui()
         self._build_shortcuts()
         self._rebuild_tool_options()
@@ -2562,6 +2567,27 @@ class MaskFitsApp(QMainWindow):
             self.readout["DEC"].setText("")
 
         self._refresh_active_preview()
+
+    def _poll_cursor(self) -> None:
+        """Feeds the cursor position to _on_motion without waiting for a
+        mouse-move event. On macOS, Qt only delivers plain (no button held)
+        mouse moves to the *active* app, and an app launched by another
+        application may never become active - clicks still arrive, so
+        masking works, but the shape outline, magnifier and readouts never
+        update. A cursor already resting on the image at startup likewise
+        produces no move event. Only acts while the cursor is over the
+        canvas itself (not one of this app's own windows on top of it), and
+        leaves the last position alone outside it, so the outline keeps
+        showing while the sidebar sliders are adjusted."""
+        if not self.isVisible() or self.image is None:
+            return
+        global_pos = QCursor.pos()
+        if QApplication.widgetAt(global_pos) is not self.canvas:
+            return
+        pos = self.canvas.mapFromGlobal(global_pos)
+        last = self._cursor_canvas_pos
+        if last is None or (int(last[0]), int(last[1])) != (pos.x(), pos.y()):
+            self._on_motion(float(pos.x()), float(pos.y()))
 
     def _on_button(self, cx: float, cy: float, erase: bool) -> None:
         if self.image is None:
