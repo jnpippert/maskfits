@@ -69,6 +69,8 @@ from maskfits.imagedata import (
     minmax_cuts,
     percentile_cuts,
     safe_span,
+    sb_calibration,
+    surface_brightness,
     zscale_cuts,
 )
 from maskfits.layouts import FlowLayout
@@ -85,7 +87,7 @@ from maskfits.regions import write_region_file
 from maskfits.settings import Settings, format_mask_filename, load_settings
 from maskfits.settings_window import SettingsWindow
 from maskfits.shortcuts import SHORTCUT_ACTIONS, effective_keys
-from maskfits.theme import current_theme, detect_os_light_mode, on_theme_changed, theme_manager
+from maskfits.theme import current_theme, detect_os_light_mode, hex_to_rgb, on_theme_changed, theme_manager
 from maskfits.update_check import GITHUB_REPO_URL, UpdateCheckWorker, check_for_updates, get_clone_url
 from maskfits.update_dialog import show_update_dialog
 from maskfits.widgets import RoundButton, RoundedPanel, RoundSlider, SegmentedControl, SidebarToggle, ThemeToggle
@@ -745,9 +747,9 @@ class MaskFitsApp(QMainWindow):
         session, so Save visibly does something instead of only affecting
         the next launch. The theme itself was already live-previewed by the
         dialog as the user edited it; Save just means "keep what's showing".
-        The session-level choices (colormap, cut levels, scale, tool, zoom)
-        are only touched if that particular default was changed in the
-        dialog - saving an unrelated setting must not reset, say, a colormap
+        The session-level choices (colormap, cut levels, scale, tool, zoom,
+        smooth sigma / bin factor) are only touched if that particular
+        default was changed in the dialog - saving an unrelated setting must not reset, say, a colormap
         picked from the menu back to the default."""
         previous = self.settings
         self.settings = settings
@@ -756,6 +758,20 @@ class MaskFitsApp(QMainWindow):
         self.export_dir_mode = settings.export_dir
         self._default_bin_factor = settings.bin_factor if settings.bin_enabled else None
         self._default_smooth_sigma = settings.smooth_sigma if settings.smooth_enabled else None
+        if (settings.smooth_sigma, settings.smooth_enabled) != (previous.smooth_sigma, previous.smooth_enabled):
+            self.smooth_sigma_entry.setText(self._fmt(settings.smooth_sigma))
+            if self.entry.image is not None:
+                if self.entry.is_smoothed:
+                    self._apply_sigma_entry()
+                elif settings.smooth_enabled:
+                    self._toggle_smoothing()
+        if (settings.bin_factor, settings.bin_enabled) != (previous.bin_factor, previous.bin_enabled):
+            self.bin_factor_entry.setText(str(settings.bin_factor))
+            if self.entry.image is not None:
+                if self.entry.is_binned:
+                    self._apply_bin_entry()
+                elif settings.bin_enabled:
+                    self._toggle_binning()
         if settings.colormap != previous.colormap:
             self.set_colormap(settings.colormap)
         if settings.stretch != previous.stretch:
@@ -935,7 +951,9 @@ class MaskFitsApp(QMainWindow):
 
         self.smooth_button = RoundButton("Smooth", checkable=True)
         self.smooth_button.clicked.connect(self._toggle_smoothing)
-        self.smooth_sigma_entry = QLineEdit("2")
+        # Starts at the Settings default even when that default is off -
+        # it is the value Smooth/Bin will use, not whether they are on.
+        self.smooth_sigma_entry = QLineEdit(self._fmt(self.settings.smooth_sigma))
         self.smooth_sigma_entry.setFixedWidth(44)
         self.smooth_sigma_entry.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.smooth_sigma_entry.editingFinished.connect(self._apply_sigma_entry)
@@ -943,7 +961,7 @@ class MaskFitsApp(QMainWindow):
 
         self.bin_button = RoundButton("Bin", checkable=True)
         self.bin_button.clicked.connect(self._toggle_binning)
-        self.bin_factor_entry = QLineEdit("4")
+        self.bin_factor_entry = QLineEdit(str(self.settings.bin_factor))
         self.bin_factor_entry.setFixedWidth(44)
         self.bin_factor_entry.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.bin_factor_entry.editingFinished.connect(self._apply_bin_entry)
@@ -1037,6 +1055,13 @@ class MaskFitsApp(QMainWindow):
         self.cuts_histogram = CutsHistogram(np.array([0.0, 1.0]), 0.0, 1.0, bins=40)
         self.cuts_histogram.cuts_applied.connect(self._on_histogram_apply)
         layout.addWidget(self.cuts_histogram)
+        # Surface brightness of the two cut levels - only shown when the
+        # image has a zero point and pixel scale (see sb_calibration).
+        self.sb_cuts_label = QLabel("")
+        self.sb_cuts_label.setProperty("dim", True)
+        self.sb_cuts_label.hide()
+        layout.addWidget(self.sb_cuts_label)
+        self.cuts_histogram.cuts_changed.connect(lambda _lo, _hi: self._update_sb_cuts_label())
 
         alpha_label = QLabel(f"Mask opacity: {self.mask_alpha}%")
         alpha_label.setProperty("dim", True)
@@ -1266,6 +1291,7 @@ class MaskFitsApp(QMainWindow):
         self.counter_label.setText(f"{self.index + 1}/{len(self.entries)}")
         self._sync_isopy_cuts()
         self._update_cuts_display()
+        self._update_sb_cuts_label()
         self._update_smooth_button()
         self._update_bin_button()
         self._set_status(f"loaded {entry.path}" if entry.path else "new file")
@@ -1397,6 +1423,26 @@ class MaskFitsApp(QMainWindow):
     @staticmethod
     def _fmt(value: float) -> str:
         return f"{value:.4g}"
+
+    def _sb_calibration(self) -> Optional[tuple[float, float]]:
+        image = self.image
+        return None if image is None else sb_calibration(image.header, image.wcs)
+
+    def _sb_text(self, flux: float, calibration: tuple[float, float]) -> str:
+        sb = surface_brightness(flux, *calibration)
+        return "-\u221e" if sb is None else f"{sb:.2f}"
+
+    def _update_sb_cuts_label(self) -> None:
+        """SB of the current lowcut/highcut under the histogram - follows
+        the histogram's own values, so it updates live during a drag."""
+        calibration = self._sb_calibration()
+        if calibration is None:
+            self.sb_cuts_label.hide()
+            return
+        lo = self._sb_text(self.cuts_histogram.vmin, calibration)
+        hi = self._sb_text(self.cuts_histogram.vmax, calibration)
+        self.sb_cuts_label.setText(f"SB lowcut: {lo}   highcut: {hi}  mag/arcsec\u00b2")
+        self.sb_cuts_label.show()
 
     def _update_cuts_display(self) -> None:
         if self.image is not None:
@@ -2330,6 +2376,9 @@ class MaskFitsApp(QMainWindow):
         rgb[blank] = [int(color[i:i + 2], 16) for i in (1, 3, 5)]
 
     def _mask_tint(self) -> tuple[int, int, int]:
+        custom = self.settings.mask_colors.get(self.colormap)
+        if custom:
+            return hex_to_rgb(custom)
         return mask_tint_for(self.colormap, self._active_lut(), current_theme().accent)
 
     def _auto_mask_tint(self) -> tuple[int, int, int]:
@@ -2546,7 +2595,12 @@ class MaskFitsApp(QMainWindow):
 
         image = self.image
         if image is not None and 0 <= iy_i < image.data.shape[0] and 0 <= ix_i < image.data.shape[1]:
-            self.readout["value"].setText(self._fmt(float(image.data[iy_i, ix_i])))
+            flux = float(image.data[iy_i, ix_i])
+            text = self._fmt(flux)
+            calibration = self._sb_calibration()
+            if calibration is not None:
+                text += f"  (SB {self._sb_text(flux, calibration)})"
+            self.readout["value"].setText(text)
         else:
             self.readout["value"].setText("")
 

@@ -186,24 +186,73 @@ ISOPY_DEFAULT_ZP = 30.0
 ISOPY_DEFAULT_PXSCALE = 1.0
 
 
-def _pixel_scale_arcsec(header: "fits.Header", wcs: Optional[WCS]) -> float:
-    """Pixel scale in arcsec/pixel: the header's own PXSCALE keyword if
-    present (assumed already in arcsec/pixel), else derived from a celestial
-    WCS if there is one, else the default (1.0 "/px)."""
-    pxscale = header.get("PXSCALE")
-    if pxscale is not None:
+# Header keywords that commonly hold the photometric zero point (mag) and
+# the pixel scale (arcsec/pixel), checked in this order.
+ZP_KEYWORDS = ("ZP", "ZEROPT", "ZEROPOINT", "ZPT", "MAGZP", "MAGZPT", "MAGZERO", "PHOTZP")
+PXSCALE_KEYWORDS = ("PXSCALE", "PIXSCALE", "PIXSCAL", "PIXSCAL1", "PIXELSCL", "PIXELSCALE", "SECPIX", "SECPIX1")
+
+
+def _header_float(header: "fits.Header", keywords: tuple[str, ...]) -> Optional[float]:
+    for key in keywords:
         try:
-            return abs(float(pxscale))
-        except (TypeError, ValueError):
-            pass
+            value = float(header[key])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if np.isfinite(value):
+            return value
+    return None
+
+
+def header_zeropoint(header: "fits.Header") -> Optional[float]:
+    """The photometric zero point (mag) from the first of ZP_KEYWORDS
+    present in the header, or None."""
+    return _header_float(header, ZP_KEYWORDS)
+
+
+def header_pixel_scale(header: "fits.Header", wcs: Optional[WCS]) -> Optional[float]:
+    """Pixel scale in arcsec/pixel: the first of PXSCALE_KEYWORDS present in
+    the header (assumed already in arcsec/pixel), else derived from a
+    celestial WCS if there is one, else None."""
+    value = _header_float(header, PXSCALE_KEYWORDS)
+    if value is not None and value != 0:
+        return abs(value)
     if wcs is None or not wcs.has_celestial:
-        return ISOPY_DEFAULT_PXSCALE
+        return None
     try:
         from astropy.wcs.utils import proj_plane_pixel_scales
-        scales = proj_plane_pixel_scales(wcs.celestial)
-        return abs(float(np.mean(scales))) * 3600.0
+        scale = abs(float(np.mean(proj_plane_pixel_scales(wcs.celestial)))) * 3600.0
     except Exception:
-        return ISOPY_DEFAULT_PXSCALE
+        return None
+    return scale if np.isfinite(scale) and scale > 0 else None
+
+
+def _pixel_scale_arcsec(header: "fits.Header", wcs: Optional[WCS]) -> float:
+    """header_pixel_scale, or the IsoPy default (1.0 "/px) if unknown."""
+    scale = header_pixel_scale(header, wcs)
+    return scale if scale is not None else ISOPY_DEFAULT_PXSCALE
+
+
+def sb_calibration(header: "fits.Header", wcs: Optional[WCS]) -> Optional[tuple[float, float]]:
+    """(zero point, pixel scale in arcsec/pixel) if both are known for this
+    image - see header_zeropoint/header_pixel_scale - else None. No
+    defaults: a surface brightness is only shown when it's real."""
+    zp = header_zeropoint(header)
+    if zp is None:
+        return None
+    pxscale = header_pixel_scale(header, wcs)
+    if pxscale is None:
+        return None
+    return zp, pxscale
+
+
+def surface_brightness(flux: float, zp: float, pxscale: float) -> Optional[float]:
+    """Surface brightness in mag/arcsec^2 of a pixel value, or None where it
+    is undefined (zero, negative or non-finite flux). Binning averages
+    pixels and smoothing preserves flux per pixel, so the original pixel
+    scale applies to the displayed data either way."""
+    if not np.isfinite(flux) or flux <= 0:
+        return None
+    return float(zp - 2.5 * np.log10(flux / pxscale**2))
 
 
 def isopy_cuts_and_stops(header: "fits.Header", wcs: Optional[WCS]) -> tuple[float, float, list[float]]:
@@ -220,12 +269,12 @@ def isopy_cuts_and_stops(header: "fits.Header", wcs: Optional[WCS]) -> tuple[flo
     included, so reproducing that second stretch here would be redundant
     rather than more faithful.
 
-    ZP comes from the header's ZP keyword (default 30.0 if absent). Pixel
-    scale comes from the header's own PXSCALE keyword if present, else from
-    `wcs` in arcsec/pixel, else the default (1.0 "/px) - see
-    _pixel_scale_arcsec.
+    ZP comes from the header (see header_zeropoint; default 30.0 if
+    absent). Pixel scale comes from the header if present, else from `wcs`
+    in arcsec/pixel, else the default (1.0 "/px) - see header_pixel_scale.
     """
-    zp = float(header.get("ZP", ISOPY_DEFAULT_ZP))
+    zp = header_zeropoint(header)
+    zp = ISOPY_DEFAULT_ZP if zp is None else zp
     pxscale = _pixel_scale_arcsec(header, wcs)
 
     minflux = 10 ** (-0.4 * (ISOPY_MAX_SB - zp)) * pxscale**2

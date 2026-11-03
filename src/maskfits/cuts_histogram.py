@@ -217,6 +217,9 @@ class CutsHistogram(QWidget):
     """
 
     cuts_applied = Signal(float, float)
+    # Every change of the displayed cut values, including each step of a
+    # handle drag (cuts_applied only fires on release / a typed entry).
+    cuts_changed = Signal(float, float)
 
     def __init__(self, data: np.ndarray, lowcut: float, highcut: float, *, bins: int = 40,
                  parent: Optional[QWidget] = None):
@@ -284,6 +287,7 @@ class CutsHistogram(QWidget):
         self.vmin, self.vmax = lowcut, highcut
         self._lo_entry.setText(self._fmt(lowcut))
         self._hi_entry.setText(self._fmt(highcut))
+        self.cuts_changed.emit(self.vmin, self.vmax)
         self.canvas.ensure_bars(*self.compute_disp_range(), force=True)
         self.canvas.update()
 
@@ -326,6 +330,7 @@ class CutsHistogram(QWidget):
             self._lo_entry.setText(self._fmt(lowcut))
         if from_entry != "hi":
             self._hi_entry.setText(self._fmt(highcut))
+        self.cuts_changed.emit(self.vmin, self.vmax)
 
     def _on_lo_entry(self) -> None:
         try:

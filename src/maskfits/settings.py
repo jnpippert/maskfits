@@ -79,6 +79,10 @@ class Settings:
     # - see maskfits.shortcuts. Anything not present here still uses that
     # action's own default key(s).
     shortcuts: dict[str, list[str]] = field(default_factory=dict)
+    # Custom mask overlay color per colormap, {colormap name: "#rrggbb"} -
+    # only the ones the user set; any other colormap keeps its automatic
+    # color (see colormaps.mask_tint_for).
+    mask_colors: dict[str, str] = field(default_factory=dict)
 
 
 def is_hex_color(value: object) -> bool:
@@ -181,7 +185,24 @@ def load_settings(store: Optional[QSettings] = None) -> Settings:
         blank_color=blank if is_hex_color(blank) else None,
         cross_color=cross if is_hex_color(cross) else None,
         shortcuts=_load_shortcuts(s),
+        mask_colors=_load_mask_colors(s),
     )
+
+
+def sanitize_mask_colors(raw: object) -> dict[str, str]:
+    """Keeps only {known colormap name: valid "#rrggbb"} entries - drops a
+    colormap that no longer exists or a malformed color from a hand-edited
+    or older settings file."""
+    if not isinstance(raw, dict):
+        return {}
+    return {name: color for name, color in raw.items() if name in COLORMAP_NAMES and is_hex_color(color)}
+
+
+def _load_mask_colors(s: QSettings) -> dict[str, str]:
+    try:
+        return sanitize_mask_colors(json.loads(s.value("mask_colors_json", "", type=str) or "{}"))
+    except ValueError:
+        return {}
 
 
 def _load_shortcuts(s: QSettings) -> dict[str, list[str]]:
@@ -215,4 +236,5 @@ def save_settings(settings: Settings, store: Optional[QSettings] = None) -> None
     s.setValue("blank_color", settings.blank_color or "")
     s.setValue("cross_color", settings.cross_color or "")
     s.setValue("shortcuts_json", json.dumps(settings.shortcuts))
+    s.setValue("mask_colors_json", json.dumps(settings.mask_colors))
     s.sync()

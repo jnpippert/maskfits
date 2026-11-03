@@ -43,6 +43,7 @@ from maskfits.settings import (
 from maskfits.shortcuts_window import ShortcutsWindow
 from maskfits.theme import detect_os_light_mode, theme_manager
 from maskfits.theme_editor_window import ThemeEditorWindow
+from maskfits.mask_colors_window import MaskColorsWindow
 from maskfits.widgets import HexColorPicker, RoundButton, RoundSlider, SegmentedControl
 
 MODE_OPTIONS = [("ellipse", "Ellipse"), ("line", "Satellite")]
@@ -86,6 +87,7 @@ class SettingsWindow(QDialog):
         self._saved = False
         self._theme_editor: Optional[ThemeEditorWindow] = None
         self._shortcuts_window: Optional[ShortcutsWindow] = None
+        self._mask_colors_window: Optional[MaskColorsWindow] = None
 
         self.theme = settings.theme
         self.mode = settings.mode
@@ -105,6 +107,7 @@ class SettingsWindow(QDialog):
         self.blank_color = settings.blank_color
         self.cross_color = settings.cross_color
         self.shortcuts: dict[str, list[str]] = dict(settings.shortcuts)
+        self.mask_colors: dict[str, str] = dict(settings.mask_colors)
 
         self._build()
         self._center_on_parent()
@@ -155,6 +158,7 @@ class SettingsWindow(QDialog):
         self._accent_row(layout)
         self._blank_picker = self._optional_color_row(layout, "zero/NaN pixel color", "blank_color", "off")
         self._cross_picker = self._optional_color_row(layout, "center cross color", "cross_color", "auto")
+        self._mask_colors_row(layout)
         self._shortcuts_row(layout)
 
         layout.addSpacing(10)
@@ -492,6 +496,32 @@ class SettingsWindow(QDialog):
         layout.addLayout(row)
         return picker
 
+    # --------------------------------------------------------- mask colors
+
+    def _mask_colors_row(self, layout: QVBoxLayout) -> None:
+        row = self._row_label(layout, "mask colors")
+        edit_btn = RoundButton("Edit Mask Colors...")
+        edit_btn.clicked.connect(self._edit_mask_colors)
+        row.addWidget(edit_btn)
+        layout.addLayout(row)
+
+    def _edit_mask_colors(self) -> None:
+        if self._mask_colors_window is not None:
+            self._mask_colors_window.raise_()
+            self._mask_colors_window.activateWindow()
+            return
+        editor = MaskColorsWindow(self.mask_colors, self)
+        editor.mask_colors_saved.connect(self._on_mask_colors_saved)
+        editor.finished.connect(self._clear_mask_colors_window)
+        self._mask_colors_window = editor
+        editor.show()
+
+    def _clear_mask_colors_window(self, _result=None) -> None:
+        self._mask_colors_window = None
+
+    def _on_mask_colors_saved(self, colors: dict) -> None:
+        self.mask_colors = colors
+
     # ----------------------------------------------------------- shortcuts
 
     def _shortcuts_row(self, layout: QVBoxLayout) -> None:
@@ -584,6 +614,7 @@ class SettingsWindow(QDialog):
             blank_color=self.blank_color,
             cross_color=self.cross_color,
             shortcuts=self.shortcuts,
+            mask_colors=self.mask_colors,
         )
 
     def _save(self) -> None:
@@ -625,6 +656,8 @@ class SettingsWindow(QDialog):
             self._theme_editor.close()
         if self._shortcuts_window is not None:
             self._shortcuts_window.close()
+        if self._mask_colors_window is not None:
+            self._mask_colors_window.close()
         if not self._saved:
             self._revert_preview()
         super().closeEvent(event)

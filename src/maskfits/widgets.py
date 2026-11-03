@@ -487,6 +487,7 @@ class HexColorPicker(QWidget):
         super().__init__(parent)
         self._allow_empty = allow_empty
         self._value: Optional[str] = initial or None
+        self._empty_color: Optional[str] = None
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -514,6 +515,12 @@ class HexColorPicker(QWidget):
     def setValue(self, hex_color: Optional[str]) -> None:  # noqa: N802 - matches Qt naming convention
         self._entry.setText(hex_color or "")
 
+    def set_empty_color(self, hex_color: Optional[str]) -> None:
+        """The color the swatch shows while the field is empty (default:
+        the theme accent) - e.g. whatever "auto" currently resolves to."""
+        self._empty_color = hex_color
+        self._update_swatch()
+
     def _on_text_changed(self, text: str) -> None:
         text = text.strip()
         if not text:
@@ -530,14 +537,14 @@ class HexColorPicker(QWidget):
 
     def _update_swatch(self) -> None:
         theme = current_theme()
-        color = self._value or theme.accent
+        color = self._value or self._empty_color or theme.accent
         self._swatch.setStyleSheet(
             f"QPushButton {{ background-color: {color}; border: 1px solid {theme.panel_border}; "
             f"border-radius: 5px; }}"
         )
 
     def _pick(self) -> None:
-        initial = QColor(self._value or current_theme().accent)
+        initial = QColor(self._value or self._empty_color or current_theme().accent)
         # Two things needed fixing here, not just one:
         # 1. Parent to the top-level window (SettingsWindow/ThemeEditorWindow),
         #    not just this HexColorPicker child widget - a non-toplevel parent

@@ -84,6 +84,10 @@ def hex_to_rgb(color: str) -> tuple[int, int, int]:
     return int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
 
 
+def rgb_to_hex(rgb: tuple[int, int, int]) -> str:
+    return "#{:02x}{:02x}{:02x}".format(*rgb)
+
+
 def detect_os_light_mode() -> bool:
     """Best-effort read of the OS-wide light/dark preference, used to pick the
     app's initial theme (Settings.theme == "system") so it opens matching the
