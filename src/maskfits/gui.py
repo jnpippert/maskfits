@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import sys
 import threading
 import time
@@ -2867,4 +2868,34 @@ def run_gui(paths: list[str], zoom: Optional[float] = None, mode: Optional[str] 
     window.raise_()
     window.activateWindow()
     window.start_background_update_check()
-    return app.exec()
+    return _exec_with_sigint_handling(app)
+
+
+SIGINT_EXIT_CODE = 130  # 128 + SIGINT, the shell's own convention
+SIGINT_WAKEUP_MS = 200
+SIGINT_MESSAGE = "maskfits: shutdown by keyboard input (Ctrl+C)"
+
+
+def _exec_with_sigint_handling(app: QApplication) -> int:
+    """Runs the Qt event loop so that Ctrl+C in the launching console shuts
+    the app down with a message instead of being ignored. Python only runs
+    signal handlers when it gets control back from Qt's C++ event loop, so a
+    no-op timer hands control back every SIGINT_WAKEUP_MS. A second Ctrl+C
+    during shutdown kills the process the default way. The previous handler
+    is restored afterwards."""
+
+    def on_sigint(_signum, _frame) -> None:
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        print(f"\n{SIGINT_MESSAGE}", file=sys.stderr, flush=True)
+        app.closeAllWindows()
+        app.exit(SIGINT_EXIT_CODE)
+
+    previous = signal.signal(signal.SIGINT, on_sigint)
+    wakeup = QTimer()
+    wakeup.timeout.connect(lambda: None)
+    wakeup.start(SIGINT_WAKEUP_MS)
+    try:
+        return app.exec()
+    finally:
+        wakeup.stop()
+        signal.signal(signal.SIGINT, previous)
