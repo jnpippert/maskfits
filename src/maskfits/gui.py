@@ -101,6 +101,12 @@ MAG_SIZE = 31
 MAG_BLOCK = 6
 PAN_W = PAN_H = MAG_SIZE * MAG_BLOCK
 MAX_SHAPE_SIZE = 500
+# Shape tool starting values - also what Reset Shape returns to (sizes in
+# full-resolution pixels).
+DEFAULT_RADIUS = 40.0
+DEFAULT_ELLIPTICITY = 0
+DEFAULT_ANGLE = 0
+DEFAULT_THICKNESS = 15
 RADIUS_MIN = 0.5  # small enough to mask a single pixel
 # Holding a shape hotkey (size/thickness, ellipticity, angle) ramps its step
 # from 1x up to HOLD_MAX_FACTOR over HOLD_RAMP_S seconds. HOLD_GAP_S is the
@@ -483,10 +489,10 @@ class MaskFitsApp(QMainWindow):
         self.mask_alpha = 100
         self.show_center_cross = False
         self.tool = self.settings.mode
-        self.ellipticity = 0
-        self.angle = 0
-        self.radius = 40.0
-        self.thickness = 15
+        self.ellipticity = DEFAULT_ELLIPTICITY
+        self.angle = DEFAULT_ANGLE
+        self.radius = DEFAULT_RADIUS
+        self.thickness = DEFAULT_THICKNESS
         self.line_style = "segment"
         # Session defaults from Settings (Help -> Settings): applied to each
         # entry the first time it's displayed with no binning/smoothing of
@@ -1020,7 +1026,9 @@ class MaskFitsApp(QMainWindow):
         auto_mask_btn.clicked.connect(self.open_auto_mask)
         reset_btn = RoundButton("Reset Mask")
         reset_btn.clicked.connect(self.reset_mask)
-        layout.addWidget(self._chunk(auto_mask_btn, reset_btn))
+        self.reset_shape_button = RoundButton("Reset Shape")
+        self.reset_shape_button.clicked.connect(self.reset_shape)
+        layout.addWidget(self._chunk(auto_mask_btn, reset_btn, self.reset_shape_button))
 
         export_btn = RoundButton("Export Mask", accent=True)
         export_btn.clicked.connect(self.export_mask)
@@ -1211,6 +1219,25 @@ class MaskFitsApp(QMainWindow):
             self._line_style_control.valueChanged.connect(self._on_line_style_changed)
             style_layout.addWidget(self._line_style_control)
             self.tool_options_layout.addWidget(style_box)
+
+    def reset_shape(self) -> None:
+        """Reset Shape (toolbar button / Backspace): the active tool's shape back to
+        its starting values - radius, ellipticity and angle for the ellipse,
+        thickness for the satellite line (its line style isn't a size, so it
+        stays). While binned the sizes are scaled the way binning scales
+        them (see _rescale_view_for_bin_change), so the shape covers the
+        same area of sky as a freshly started one."""
+        factor = self.entry.bin_factor if self.entry.is_binned else 1
+        if self.tool == "ellipse":
+            self.radius = max(min(DEFAULT_RADIUS / factor, MAX_SHAPE_SIZE), RADIUS_MIN)
+            self.ellipticity = DEFAULT_ELLIPTICITY
+            self.angle = DEFAULT_ANGLE
+        elif self.tool == "line":
+            self.thickness = max(min(int(round(DEFAULT_THICKNESS / factor)), MAX_SHAPE_SIZE), 1)
+        else:
+            return
+        self._sync_tool_option_widgets()
+        self._refresh_active_preview()
 
     @staticmethod
     def _clear_layout(layout) -> None:
@@ -2046,6 +2073,18 @@ class MaskFitsApp(QMainWindow):
             return self._unbin_mask_cached(entry)
         return entry.image.mask
 
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        """A click that lands on nothing interactive - the cube spectrum
+        panel, the magnifier, empty panel space, a label - ends text
+        editing: those widgets don't take focus themselves, so a text box
+        typed into before kept it, and with it muted every hotkey (see
+        _guarded). Leaving the box applies its value, same as Enter. Clicks
+        on the image already take focus (ImageCanvas's ClickFocus)."""
+        focused = QApplication.focusWidget()
+        if isinstance(focused, QLineEdit) and focused.window() is self:
+            focused.clearFocus()
+        super().mousePressEvent(event)
+
     def keyReleaseEvent(self, event) -> None:  # noqa: N802
         # A real (non-auto-repeat) key release ends the hold, so quick
         # separate taps never accelerate - only a key actually held down.
@@ -2819,6 +2858,7 @@ class MaskFitsApp(QMainWindow):
             "reset_mask": (self.reset_mask, True),
             "grow_shape": (lambda: self._adjust_shape_size(1), True),
             "shrink_shape": (lambda: self._adjust_shape_size(-1), True),
+            "reset_shape": (self.reset_shape, True),
             "cycle_colormap": (self._cycle_colormap, True),
             "invert_colormap": (lambda: self._invert_action.trigger(), True),
             "toggle_smooth": (self._toggle_smoothing, True),

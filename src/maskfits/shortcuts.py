@@ -31,6 +31,7 @@ SHORTCUT_ACTIONS: list[ShortcutAction] = [
     ShortcutAction("reset_mask", "Reset Mask", ("R",)),
     ShortcutAction("grow_shape", "Grow Shape Size", ("E",)),
     ShortcutAction("shrink_shape", "Shrink Shape Size", ("W",)),
+    ShortcutAction("reset_shape", "Reset Shape", ("Backspace",)),
     ShortcutAction("cycle_colormap", "Cycle Colormap", ("C",)),
     ShortcutAction("invert_colormap", "Invert Colormap", ("I",)),
     ShortcutAction("toggle_smooth", "Smooth Image (current sigma)", ("S",)),
