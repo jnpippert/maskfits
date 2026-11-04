@@ -1291,7 +1291,10 @@ class MaskFitsApp(QMainWindow):
             self.smooth_sigma_entry.setText(self._fmt(self._default_smooth_sigma))
             self._toggle_smoothing()
 
-    def load_current(self, reset_view: bool = False) -> None:
+    def load_current(self, reset_view: bool = False, apply_defaults: bool = True) -> None:
+        """apply_defaults=False skips the Settings default bin/smooth - for
+        an extension switch, which carries the current state over instead
+        (see _carry_processing)."""
         entry = self.entry
         try:
             entry.ensure_loaded(self.stretch)
@@ -1302,7 +1305,8 @@ class MaskFitsApp(QMainWindow):
         if entry.image is not None and reset_view:
             self.reset_zoom()
 
-        self._apply_session_defaults(entry)
+        if apply_defaults:
+            self._apply_session_defaults(entry)
 
         self.filename_label.setText(os.path.basename(entry.path) if entry.path else "noname")
         self._update_extension_picker()
@@ -1547,6 +1551,7 @@ class MaskFitsApp(QMainWindow):
         entry = self.entry
         if entry.path is None or ext == entry.ext:
             return
+        bin_factor, sigma = self._carry_processing()
         carry_mask = carry_shape = carry_rotated = None
         if entry.image is not None:
             full_res_mask = self._unbin_mask_cached(entry) if entry.is_binned else entry.image.mask
@@ -1570,15 +1575,44 @@ class MaskFitsApp(QMainWindow):
         # the user's current zoom/pan is worth keeping (it's exactly the
         # framing they were just looking at, e.g. to compare the same
         # region across a science frame and its weight map).
-        self.load_current(reset_view=False)
+        self.load_current(reset_view=False, apply_defaults=False)
         new_image = entry.image
         if (carry_mask is not None and new_image is not None
                 and new_image.data.shape == carry_shape and new_image.rotated == carry_rotated):
             new_image.mask = carry_mask
         if new_image is not None:
             entry.lowcut, entry.highcut = saved_lowcut, saved_highcut
+            status = self.status.text()
+            self._restore_processing(bin_factor, sigma)
+            self._set_status(status)
             self._update_cuts_display()
             self.render()
+
+    def _carry_processing(self) -> tuple[Optional[int], Optional[float]]:
+        """For a slice/extension switch: the current bin factor and smooth
+        sigma (None where off), with binning then turned off - which puts
+        the view, mask and shape sizes back into full-resolution pixels.
+        Without that, the new full-resolution data was shown through a view
+        still in binned coordinates, i.e. zoomed in by the bin factor. Pair
+        with _restore_processing after the switch."""
+        entry = self.entry
+        bin_factor = entry.bin_factor if entry.is_binned else None
+        sigma = entry.smooth_sigma if entry.is_smoothed else None
+        if entry.is_binned:
+            self._toggle_binning()
+        return bin_factor, sigma
+
+    def _restore_processing(self, bin_factor: Optional[int], sigma: Optional[float]) -> None:
+        """Re-applies what _carry_processing saved to the newly shown data."""
+        entry = self.entry
+        if entry.image is None:
+            return
+        if sigma is not None and not entry.is_smoothed:
+            self.smooth_sigma_entry.setText(self._fmt(sigma))
+            self._toggle_smoothing()
+        if bin_factor is not None and not entry.is_binned:
+            self.bin_factor_entry.setText(str(bin_factor))
+            self._toggle_binning()
 
     def switch_slice(self, index: int) -> None:
         """Cube slice navigation (the slice slider/entry, cube-only) -
@@ -1595,11 +1629,13 @@ class MaskFitsApp(QMainWindow):
         index = max(0, min(index, image.cube.shape[0] - 1))
         if index == image.slice_index:
             return
-        carry_mask = (self._unbin_mask_cached(entry) if entry.is_binned else image.mask).copy()
+        bin_factor, sigma = self._carry_processing()
+        carry_mask = image.mask.copy()
         self._release_mask()
         image.slice_index = index
         image.data = image.cube[index]
         image.mask = carry_mask
+        self._restore_processing(bin_factor, sigma)
         self._sync_slice_controls()
         self.spectrum_view.set_marker(index)
         self._update_cuts_display()
