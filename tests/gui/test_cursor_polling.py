@@ -2,7 +2,9 @@
 readouts follow the cursor even when no mouse-move events arrive (macOS
 only delivers plain mouse moves to the active app, and an app launched by
 another application may never become active; a cursor already resting on
-the image at startup also sends none)."""
+the image at startup also sends none) - but only while maskfits is the
+active app, so the cursor moving over another app in front of it doesn't
+move anything in the background."""
 
 import os
 
@@ -112,3 +114,58 @@ def test_does_nothing_without_an_image(qapp, cursor):
     win._poll_cursor()
 
     assert win._cursor_canvas_pos is None
+
+
+# ------------------------------------------------------- another app in front
+
+
+@pytest.fixture
+def inactive(monkeypatch):
+    """Pretends another application is in front."""
+    from PySide6.QtCore import Qt
+
+    state = {"value": Qt.ApplicationState.ApplicationInactive}
+    monkeypatch.setattr(QApplication, "applicationState", staticmethod(lambda: state["value"]))
+    return state
+
+
+def test_does_not_follow_the_cursor_while_another_app_is_in_front(win, cursor, inactive):
+    cursor(win.canvas.mapToGlobal(QPoint(200, 150)))
+    win._poll_cursor()
+    assert win._cursor_canvas_pos is None
+
+
+def test_follows_again_once_maskfits_is_back_in_front(win, cursor, inactive):
+    from PySide6.QtCore import Qt
+
+    cursor(win.canvas.mapToGlobal(QPoint(200, 150)))
+    win._poll_cursor()
+    inactive["value"] = Qt.ApplicationState.ApplicationActive
+    win._poll_cursor()
+    assert win._cursor_canvas_pos == (200.0, 150.0)
+
+
+def test_a_click_on_the_image_while_inactive_turns_it_back_on(win, cursor, inactive):
+    """The launched-by-another-app case: clicks arrive although macOS never
+    makes maskfits the active app."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    QTest.mouseClick(win.canvas, Qt.MouseButton.MiddleButton, Qt.KeyboardModifier.NoModifier, QPoint(10, 10))
+    cursor(win.canvas.mapToGlobal(QPoint(200, 150)))
+    win._poll_cursor()
+    assert win._cursor_canvas_pos == (200.0, 150.0)
+
+
+def test_leaving_the_window_ends_that_until_the_next_click(win, cursor, inactive):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    QTest.mouseClick(win.canvas, Qt.MouseButton.MiddleButton, Qt.KeyboardModifier.NoModifier, QPoint(10, 10))
+    cursor(win.canvas.mapToGlobal(QPoint(200, 150)))
+    win._poll_cursor()
+    cursor(win.frameGeometry().bottomRight() + QPoint(50, 50))  # outside the window
+    win._poll_cursor()
+    cursor(win.canvas.mapToGlobal(QPoint(220, 160)))  # back over the image, no new click
+    win._poll_cursor()
+    assert win._cursor_canvas_pos == (200.0, 150.0)

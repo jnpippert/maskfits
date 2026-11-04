@@ -124,8 +124,8 @@ HOLD_RAMP_S = 1.5
 HOLD_GAP_S = 0.6
 # Holding Left/Right in a cube: (seconds held, slices per step) - linear in
 # between, flat after the last point. 1 -> 5 over the first 2 s, then on to
-# 10 by 5 s.
-SLICE_HOLD_RAMP = ((0.0, 1.0), (2.0, 5.0), (5.0, 10.0))
+# 10 by 3 s.
+SLICE_HOLD_RAMP = ((0.0, 1.0), (2.0, 5.0), (3.0, 10.0))
 SIDEBAR_W = 380  # fixed - see MaskFitsApp._toggle_sidebar's docstring for why
 SIDEBAR_TOGGLE_W = 10
 ZOOM_STEP = 1.25
@@ -316,6 +316,8 @@ class ImageCanvas(QWidget):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         self.setFocus()
+        if QApplication.applicationState() != Qt.ApplicationState.ApplicationActive:
+            self.app._clicked_while_inactive = True  # see MaskFitsApp._poll_cursor
         pos = event.position()
         if event.button() == Qt.MouseButton.LeftButton:
             if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -554,6 +556,7 @@ class MaskFitsApp(QMainWindow):
         self._status_timer = QTimer(self)
         self._status_timer.setSingleShot(True)
         self._status_timer.timeout.connect(lambda: self._set_status_state(""))
+        self._clicked_while_inactive = False  # see _poll_cursor
         self._cursor_timer = QTimer(self)
         self._cursor_timer.timeout.connect(self._poll_cursor)
         self._cursor_timer.start(CURSOR_POLL_MS)
@@ -2756,10 +2759,24 @@ class MaskFitsApp(QMainWindow):
         produces no move event. Only acts while the cursor is over the
         canvas itself (not one of this app's own windows on top of it), and
         leaves the last position alone outside it, so the outline keeps
-        showing while the sidebar sliders are adjusted."""
+        showing while the sidebar sliders are adjusted.
+
+        Only while maskfits is the active app: widgetAt() only knows this
+        app's own windows, so with another app in front (say a browser over
+        the image) the cursor moving over that app still moved the outline
+        and the cube spectrum in the background. The one exception is the
+        never-activated case above: a click on the image while inactive
+        turns polling back on until the cursor leaves this window."""
         if not self.isVisible() or self.image is None:
             return
         global_pos = QCursor.pos()
+        if QApplication.applicationState() == Qt.ApplicationState.ApplicationActive:
+            self._clicked_while_inactive = False
+        elif not self._clicked_while_inactive:
+            return
+        elif not self.frameGeometry().contains(global_pos):
+            self._clicked_while_inactive = False
+            return
         if QApplication.widgetAt(global_pos) is not self.canvas:
             return
         pos = self.canvas.mapFromGlobal(global_pos)

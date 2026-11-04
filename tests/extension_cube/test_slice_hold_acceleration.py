@@ -1,5 +1,5 @@
 """Holding Left/Right in a cube steps through slices faster: 1 slice per
-step, ramping to 5 after 2 seconds of holding and on to 10 after 5; a key
+step, ramping to 5 after 2 seconds of holding and on to 10 after 3; a key
 release resets it."""
 
 import os
@@ -51,7 +51,7 @@ RAMP_S = 2.0  # seconds to 5x
 
 
 def test_limits():
-    assert SLICE_HOLD_RAMP == ((0.0, 1.0), (2.0, 5.0), (5.0, 10.0))
+    assert SLICE_HOLD_RAMP == ((0.0, 1.0), (2.0, 5.0), (3.0, 10.0))
 
 
 def _step_after(win, clock, seconds, press=None):
@@ -65,15 +65,15 @@ def _step_after(win, clock, seconds, press=None):
     return abs(win.image.slice_index - before)
 
 
-def test_reaches_ten_slices_per_step_after_five_seconds(win, clock):
-    assert _step_after(win, clock, 5.0) == 10
+def test_reaches_ten_slices_per_step_after_three_seconds(win, clock):
+    assert _step_after(win, clock, 3.0) == 10
 
 
 def test_second_stage_ramps_from_five_to_ten(win, clock):
-    assert _step_after(win, clock, 3.8) == 8  # 5 + 1.8 / 3 * 5 = 8
+    assert _step_after(win, clock, 2.6) == 8  # 5 + 0.6 / 1 * 5 = 8
 
 
-def test_stays_at_ten_past_five_seconds(qapp, tmp_path, clock):
+def test_stays_at_ten_after_that(qapp, tmp_path, clock):
     path = tmp_path / "big.fits"
     fits.PrimaryHDU(np.zeros((6000, 4, 4), dtype=np.float32)).writeto(path)
     win = MaskFitsApp([str(path)], settings=Settings())
