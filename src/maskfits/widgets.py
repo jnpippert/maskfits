@@ -289,6 +289,119 @@ class RoundSlider(QWidget):
         self.sliderReleased.emit()
 
 
+class RangeSlider(QWidget):
+    """RoundSlider's look with two handles on one track: a lower and an
+    upper value (lower <= upper always), the track between them filled.
+    Dragging picks the handle nearest the click; when both sit on the same
+    spot, the side of the click decides (left = lower, right = upper)."""
+
+    valuesChanged = Signal(float, float)
+
+    _RADIUS = RoundSlider._RADIUS
+
+    def __init__(self, lo: float, hi: float, lower: float, upper: float, *, integer: bool = False,
+                 parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._lo, self._hi, self._integer = lo, hi, integer
+        self._lower = self._clamp(min(lower, upper))
+        self._upper = self._clamp(max(lower, upper))
+        self._dragging: Optional[str] = None  # "lower" / "upper"
+        self.setFixedHeight(2 * self._RADIUS + 6)
+        self.setMinimumWidth(60)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        on_theme_changed(self, self.update)
+
+    def _clamp(self, value: float) -> float:
+        value = max(self._lo, min(value, self._hi))
+        return float(int(round(value))) if self._integer else value
+
+    def values(self) -> tuple[float, float]:
+        return self._lower, self._upper
+
+    def setValues(self, lower: float, upper: float) -> None:  # noqa: N802 - matches Qt naming convention
+        lower, upper = self._clamp(lower), self._clamp(upper)
+        if lower > upper:
+            lower, upper = upper, lower
+        if (lower, upper) != (self._lower, self._upper):
+            self._lower, self._upper = lower, upper
+            self.update()
+            self.valuesChanged.emit(lower, upper)
+
+    def setEnabled(self, enabled: bool) -> None:  # noqa: N802
+        super().setEnabled(enabled)
+        self.update()
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return QSize(120, self.height())
+
+    def _track_rect(self) -> QRectF:
+        inset = self._RADIUS + 2  # same inset as RoundSlider - handles never clipped
+        h = 6
+        return QRectF(inset, (self.height() - h) / 2, max(self.width() - 2 * inset, 1), h)
+
+    def _x_for(self, value: float, track: QRectF) -> float:
+        span = self._hi - self._lo
+        frac = (value - self._lo) / span if span else 0.0
+        return track.left() + track.width() * min(max(frac, 0.0), 1.0)
+
+    def _x_to_value(self, x: float) -> float:
+        track = self._track_rect()
+        frac = min(max((x - track.left()) / max(track.width(), 1), 0.0), 1.0)
+        return self._lo + frac * (self._hi - self._lo)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        theme = current_theme()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        track = self._track_rect()
+        radius = track.height() / 2
+        enabled = self.isEnabled()
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(theme.panel_border if not enabled else theme.track))
+        painter.drawRoundedRect(track, radius, radius)
+
+        x_lower, x_upper = self._x_for(self._lower, track), self._x_for(self._upper, track)
+        if x_upper > x_lower:
+            painter.setBrush(QColor(theme.text_dim if not enabled else theme.accent))
+            painter.drawRoundedRect(QRectF(x_lower, track.top(), x_upper - x_lower, track.height()), radius, radius)
+
+        cy = track.center().y()
+        painter.setPen(QPen(QColor(theme.text_dim if not enabled else theme.accent), 2))
+        painter.setBrush(QColor(theme.text))
+        for x in (x_lower, x_upper):
+            painter.drawEllipse(QPointF(x, cy), self._RADIUS, self._RADIUS)
+
+    def _handle_for(self, x: float) -> str:
+        track = self._track_rect()
+        x_lower, x_upper = self._x_for(self._lower, track), self._x_for(self._upper, track)
+        if x_lower == x_upper:
+            return "upper" if x >= x_upper else "lower"
+        return "lower" if abs(x - x_lower) <= abs(x - x_upper) else "upper"
+
+    def _drag_to(self, x: float) -> None:
+        value = self._x_to_value(x)
+        if self._dragging == "lower":
+            self.setValues(min(value, self._upper), self._upper)
+        else:
+            self.setValues(self._lower, max(value, self._lower))
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if not self.isEnabled() or event.button() != Qt.MouseButton.LeftButton:
+            return
+        x = event.position().x()
+        self._dragging = self._handle_for(x)
+        self._drag_to(x)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._dragging is not None:
+            self._drag_to(event.position().x())
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = None
+
+
 LOGO_PATH = os.path.join(os.path.dirname(__file__), "assets", "icon.png")
 
 # Emoji offered for a custom theme's toolbar icon (alongside the maskfits

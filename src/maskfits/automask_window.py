@@ -17,8 +17,6 @@ from PySide6.QtGui import QCloseEvent, QColor, QKeyEvent, QPainter, QPainterPath
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
-    QFileDialog,
-    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -32,17 +30,18 @@ from maskfits.automask import (
     background_stats,
     expand_mask,
     filter_by_group_size,
+    filter_by_shape,
     fit_gaussian_to_histogram,
-    neural_network_mask,
     sigma_clip_mask,
     valid_pixels,
 )
-from maskfits.theme import current_theme, on_theme_changed
-from maskfits.widgets import RoundButton, RoundSlider, SegmentedControl
+from maskfits.theme import DARK, LIGHT, current_theme, on_theme_changed
+from maskfits.widgets import RangeSlider, RoundButton, RoundSlider, SegmentedControl
 
 if TYPE_CHECKING:
     from maskfits.gui import Entry, MaskFitsApp
 
+GROUP_SIZE_MIN, GROUP_SIZE_MAX = 1, 500  # px
 HIST_W = 420
 HIST_H = 140
 HIST_BINS = 60
@@ -153,22 +152,24 @@ class AutoMaskWindow(QDialog):
         self.setWindowTitle("Auto Mask")
         self.setModal(False)
 
-        self.bg_method = "constant"
-        self.error_method = "sigma"
+        self.bg_method = "median"
         self.cleanup_kappa = 4.0
         self.cleanup_iterations = 10
         self.kappa = 5.0
-        self.max_group_size_enabled = True
+        # Off by default: keep every flagged region, whatever its size.
+        self.group_size_enabled = False
+        self.min_group_size = 1
         self.max_group_size = 50
-        self.expand_px = 5
+        self.expand_px = 2
+        # None, "lines" or "circles" - see automask.filter_by_shape.
+        self.shape_filter: Optional[str] = None
 
         self._preview: Optional[np.ndarray] = None
-        self.nn_model_path: Optional[str] = None
         self._resolved = False
 
         self._build()
         self._apply()
-        on_theme_changed(self, self._style_confirm_button)
+        on_theme_changed(self, self._style_action_buttons)
 
         self._center_on_parent()
 
@@ -200,10 +201,8 @@ class AutoMaskWindow(QDialog):
         layout.addSpacing(2)
         layout.addWidget(desc)
 
-        self._method_row(layout, "background method", [(m, m.capitalize()) for m in BG_METHODS],
+        self._method_row(layout, "background", [(m, m.capitalize()) for m in BG_METHODS],
                           self.bg_method, self._on_bg_method_changed)
-        self._method_row(layout, "background error", [("sigma", "Sigma"), ("sem", "SEM")],
-                          self.error_method, self._on_error_method_changed)
         self._slider_row(layout, "clean-up κ  (background isolation)", self.cleanup_kappa, 0.5, 10.0,
                           on_change=self._on_cleanup_kappa_changed)
         self._slider_row(layout, "clean-up iterations", self.cleanup_iterations, 1, 20, integer=True,
@@ -231,8 +230,8 @@ class AutoMaskWindow(QDialog):
         # not the background estimate the histogram is showing.
         self._slider_row(layout, "mask κ  (threshold above background)", self.kappa, 0.5, 20.0,
                           on_change=self._on_kappa_changed)
-        self._slider_row(layout, "max group size  (px, drops larger flagged regions)", self.max_group_size,
-                          1, 500, integer=True, enabled_checkbox=True, on_change=self._on_max_group_size_changed)
+        self._group_size_row(layout)
+        self._shape_row(layout)
         self._slider_row(layout, "expand  (pad each flagged region, px)", self.expand_px, 0, 20, integer=True,
                           on_change=self._on_expand_changed)
 
@@ -240,8 +239,6 @@ class AutoMaskWindow(QDialog):
         self.stats_label.setWordWrap(True)
         layout.addSpacing(8)
         layout.addWidget(self.stats_label)
-
-        self._build_nn_section(layout)
 
         layout.addSpacing(4)
         btn_row = QHBoxLayout()
@@ -254,76 +251,22 @@ class AutoMaskWindow(QDialog):
         btn_row.addWidget(confirm_btn)
         layout.addLayout(btn_row)
         self._confirm_btn = confirm_btn
-        self._style_confirm_button()
+        self._discard_btn = discard_btn
+        self._style_action_buttons()
 
-    def _style_confirm_button(self) -> None:
-        theme = current_theme()
+    def _style_action_buttons(self) -> None:
+        """Confirm/Discard always use the built-in dark/light theme's green
+        and red (whichever mode is active), never a custom theme's - they
+        must stay recognizable as accept/reject whatever the palette."""
+        base = LIGHT if current_theme().mode == "light" else DARK
         self._confirm_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {theme.green}; color: white; }}"
-            f"QPushButton:hover {{ background-color: {theme.green}; }}"
+            f"QPushButton {{ background-color: {base.green}; color: white; }}"
+            f"QPushButton:hover {{ background-color: {base.green}; }}"
         )
-
-    def _build_nn_section(self, layout: QVBoxLayout) -> None:
-        """Forward-looking hook, not functional yet: lets a model file be
-        picked and wires an "apply" button through to
-        automask.neural_network_mask, which currently just raises
-        NotImplementedError - so the interface (pick a model, apply it, merge
-        its output the same way as the threshold preview) is in place for a
-        real model to be dropped into later without any GUI changes."""
-        divider = QFrame()
-        divider.setFrameShape(QFrame.Shape.HLine)
-        layout.addSpacing(2)
-        layout.addWidget(divider)
-        layout.addSpacing(8)
-
-        caption = QLabel("Neural network masking (future / experimental):")
-        caption.setProperty("dim", True)
-        layout.addWidget(caption)
-
-        row = QHBoxLayout()
-        self.nn_model_label = QLabel("no model loaded")
-        self.nn_model_label.setProperty("dim", True)
-        row.addWidget(self.nn_model_label, 1)
-        load_btn = RoundButton("Load Model...")
-        load_btn.clicked.connect(self._load_nn_model)
-        row.addWidget(load_btn)
-        layout.addSpacing(4)
-        layout.addLayout(row)
-
-        nn_btn_row = QHBoxLayout()
-        apply_btn = RoundButton("Apply NN Mask")
-        apply_btn.clicked.connect(self._apply_nn)
-        nn_btn_row.addWidget(apply_btn)
-        nn_btn_row.addStretch(1)
-        layout.addSpacing(6)
-        layout.addLayout(nn_btn_row)
-
-        self.nn_status_label = QLabel()
-        self.nn_status_label.setWordWrap(True)
-        self.nn_status_label.setFixedWidth(HIST_W)
-        self.nn_status_label.setProperty("dim", True)
-        layout.addSpacing(4)
-        layout.addWidget(self.nn_status_label)
-
-    def _load_nn_model(self) -> None:
-        path, _filter = QFileDialog.getOpenFileName(self, "Load a masking model")
-        if not path:
-            return
-        self.nn_model_path = path
-        self.nn_model_label.setText(path.rsplit("/", 1)[-1])
-
-    def _apply_nn(self) -> None:
-        if not self.nn_model_path:
-            self.nn_status_label.setText("Load a model file first.")
-            return
-        try:
-            preview = neural_network_mask(self.data, self.nn_model_path)
-        except NotImplementedError as exc:
-            self.nn_status_label.setText(str(exc))
-            return
-        self._preview = preview
-        self.app.set_auto_mask_preview(self.entry, preview)
-        self.nn_status_label.setText(f"NN mask applied: {int(preview.sum()):,} px flagged.")
+        self._discard_btn.setStyleSheet(
+            f"QPushButton {{ background-color: {base.danger}; color: white; }}"
+            f"QPushButton:hover {{ background-color: {base.danger_hover}; }}"
+        )
 
     @staticmethod
     def _legend_swatch(layout: QHBoxLayout, color: str, label: str) -> None:
@@ -354,19 +297,83 @@ class AutoMaskWindow(QDialog):
         layout.addSpacing(10)
         layout.addLayout(row)
 
-    def _slider_row(self, layout: QVBoxLayout, label: str, value: float, lo: float, hi: float, *,
-                     integer: bool = False, enabled_checkbox: bool = False, on_change=None) -> None:
+    def _group_size_row(self, layout: QVBoxLayout) -> None:
+        """Optional size window for flagged regions: a checkbox (the limits
+        only apply while checked - see _apply()), min and max entries, and a
+        two-handle slider for both."""
         row = QHBoxLayout()
-        checkbox: Optional[QCheckBox] = None
-        if enabled_checkbox:
-            # An optional on/off switch for this parameter - the constraint
-            # only applies while checked (see _apply()); the slider/entry
-            # stay interactive either way, they just have no effect while
-            # unchecked.
-            checkbox = QCheckBox()
-            checkbox.setChecked(self.max_group_size_enabled)
-            checkbox.toggled.connect(self._on_max_group_size_enabled_changed)
+        self.group_size_checkbox = QCheckBox()
+        self.group_size_checkbox.setChecked(self.group_size_enabled)
+        self.group_size_checkbox.toggled.connect(self._on_group_size_enabled_changed)
+        row.addWidget(self.group_size_checkbox)
+        lbl = QLabel("group size  (px, keeps flagged regions within this range):")
+        lbl.setProperty("dim", True)
+        row.addWidget(lbl)
+        row.addStretch(1)
+        entries = []
+        for value in (self.min_group_size, self.max_group_size):
+            entry = QLineEdit(str(value))
+            entry.setFixedWidth(48)
+            entry.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            entries.append(entry)
+        self.min_group_entry, self.max_group_entry = entries
+        row.addWidget(self.min_group_entry)
+        dash = QLabel("\u2013")
+        dash.setProperty("dim", True)
+        row.addWidget(dash)
+        row.addWidget(self.max_group_entry)
+        layout.addSpacing(10)
+        layout.addLayout(row)
+
+        self.group_size_slider = RangeSlider(GROUP_SIZE_MIN, GROUP_SIZE_MAX, self.min_group_size,
+                                             self.max_group_size, integer=True)
+        self.group_size_slider.setFixedWidth(HIST_W)
+        layout.addWidget(self.group_size_slider)
+
+        def apply_entries() -> None:
+            lower, upper = self.group_size_slider.values()
+            try:
+                lower = float(self.min_group_entry.text())
+                upper = float(self.max_group_entry.text())
+            except ValueError:
+                pass
+            self.group_size_slider.setValues(lower, upper)
+            sync_entries(*self.group_size_slider.values())
+
+        def sync_entries(lower: float, upper: float) -> None:
+            self.min_group_entry.setText(str(int(lower)))
+            self.max_group_entry.setText(str(int(upper)))
+
+        self.min_group_entry.editingFinished.connect(apply_entries)
+        self.max_group_entry.editingFinished.connect(apply_entries)
+        self.group_size_slider.valuesChanged.connect(sync_entries)
+        self.group_size_slider.valuesChanged.connect(self._on_group_size_changed)
+
+    def _shape_row(self, layout: QVBoxLayout) -> None:
+        """"Satellites" / "Galaxies & Stars": keep only the elongated
+        (trail, spike, plane) or only the round flagged regions. Ticking one
+        unticks the other; both unticked keeps every shape."""
+        row = QHBoxLayout()
+        self.shape_checkboxes: dict[str, QCheckBox] = {}
+        tooltips = {
+            "lines": "Keep only regions at least 3x longer than wide (satellite trails, spikes, planes).",
+            "circles": "Keep only regions rounder than that (stars, galaxies).",
+        }
+        for value, text in (("lines", "Satellites"), ("circles", "Galaxies && Stars")):
+            checkbox = QCheckBox(text)
+            checkbox.setToolTip(tooltips[value])
+            checkbox.toggled.connect(lambda checked, v=value: self._on_shape_toggled(v, checked))
+            if self.shape_checkboxes:
+                row.addSpacing(16)
             row.addWidget(checkbox)
+            self.shape_checkboxes[value] = checkbox
+        row.addStretch(1)
+        layout.addSpacing(10)
+        layout.addLayout(row)
+
+    def _slider_row(self, layout: QVBoxLayout, label: str, value: float, lo: float, hi: float, *,
+                     integer: bool = False, on_change=None) -> None:
+        row = QHBoxLayout()
         lbl = QLabel(f"{label}:")
         lbl.setProperty("dim", True)
         row.addWidget(lbl)
@@ -409,10 +416,6 @@ class AutoMaskWindow(QDialog):
         self.bg_method = v
         self._apply()
 
-    def _on_error_method_changed(self, v: str) -> None:
-        self.error_method = v
-        self._apply()
-
     def _on_cleanup_kappa_changed(self, v: float) -> None:
         self.cleanup_kappa = v
         self._apply()
@@ -425,12 +428,25 @@ class AutoMaskWindow(QDialog):
         self.kappa = v
         self._apply()
 
-    def _on_max_group_size_changed(self, v: float) -> None:
-        self.max_group_size = int(v)
+    def _on_group_size_changed(self, lower: float, upper: float) -> None:
+        self.min_group_size, self.max_group_size = int(lower), int(upper)
+        if self.group_size_enabled:
+            self._apply()
+
+    def _on_group_size_enabled_changed(self, checked: bool) -> None:
+        self.group_size_enabled = checked
         self._apply()
 
-    def _on_max_group_size_enabled_changed(self, checked: bool) -> None:
-        self.max_group_size_enabled = checked
+    def _on_shape_toggled(self, value: str, checked: bool) -> None:
+        if checked:
+            for other, checkbox in self.shape_checkboxes.items():
+                if other != value and checkbox.isChecked():
+                    checkbox.blockSignals(True)
+                    checkbox.setChecked(False)
+                    checkbox.blockSignals(False)
+            self.shape_filter = value
+        elif self.shape_filter == value:
+            self.shape_filter = None
         self._apply()
 
     def _on_expand_changed(self, v: float) -> None:
@@ -447,14 +463,18 @@ class AutoMaskWindow(QDialog):
         # in the image.
         valid = valid_pixels(data) & ~self.existing_mask
         kept = sigma_clip_mask(data, valid, self.cleanup_kappa, max_iter=self.cleanup_iterations)
-        bg, bg_err = background_stats(data, kept, self.error_method)
+        bg, bg_err = background_stats(data, kept, self.bg_method)
         preview = auto_mask_preview(data, valid, bg, bg_err, self.kappa)
         threshold = bg + self.kappa * bg_err
         # Group-size filtering runs on the RAW flagged regions, before expand
         # pads them - padding first would inflate every group's size and
         # defeat the point of keeping only compact, point-like sources.
-        max_group_size = self.max_group_size if self.max_group_size_enabled else 0
-        preview = filter_by_group_size(preview, max_group_size)
+        if self.group_size_enabled:
+            preview = filter_by_group_size(preview, max_size=self.max_group_size, min_size=self.min_group_size)
+        # Shape is judged on the raw flags too - expand would round off a
+        # thin streak's ends and width.
+        if self.shape_filter is not None:
+            preview = filter_by_shape(preview, self.shape_filter)
         # Expansion only pads the FINAL flagged regions - it has no bearing
         # on background isolation, so it's applied after everything the
         # histogram/stats below are about.

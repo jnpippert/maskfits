@@ -7,7 +7,6 @@ from maskfits.automask import (
     expand_mask,
     filter_by_group_size,
     fit_gaussian_to_histogram,
-    neural_network_mask,
     sigma_clip_mask,
     valid_pixels,
 )
@@ -44,28 +43,65 @@ def test_sigma_clip_mask_zero_kappa_is_a_noop():
     assert np.array_equal(kept, valid)
 
 
-def test_background_stats_sigma_vs_sem():
+def test_background_stats_median_and_std():
     data = _background_with_source()
     valid = valid_pixels(data)
     kept = sigma_clip_mask(data, valid, kappa=3.0)
-    bg, sigma_err = background_stats(data, kept, "sigma")
-    _, sem_err = background_stats(data, kept, "sem")
+    bg, err = background_stats(data, kept, "median")
+    assert bg == pytest.approx(float(np.median(data[kept])))
     assert bg == pytest.approx(100.0, abs=1.0)
-    assert sem_err < sigma_err  # SEM = sigma / sqrt(n), always <= sigma for n > 1
-    assert sem_err == pytest.approx(sigma_err / np.sqrt(int(kept.sum())), rel=1e-6)
+    assert err == pytest.approx(float(data[kept].std()))
+
+
+def test_background_stats_defaults_to_median():
+    data = _background_with_source()
+    kept = valid_pixels(data)
+    assert background_stats(data, kept) == background_stats(data, kept, "median")
+
+
+def test_background_stats_mode_is_the_peak_bin_center():
+    from maskfits.automask import MODE_BINS
+
+    # Skewed background: a long tail of faint sources pulls the median up,
+    # the mode stays at the true sky level.
+    rng = np.random.default_rng(7)
+    sky = rng.normal(100.0, 2.0, 50000)
+    tail = 100.0 + rng.exponential(15.0, 20000)
+    data = np.concatenate([sky, tail])
+    kept = np.ones(data.shape, dtype=bool)
+
+    mode, err = background_stats(data, kept, "mode")
+    median, _ = background_stats(data, kept, "median")
+
+    counts, edges = np.histogram(data, bins=MODE_BINS, range=(data.min(), data.max()))
+    peak = int(np.argmax(counts))
+    assert mode == pytest.approx((edges[peak] + edges[peak + 1]) / 2)
+    assert abs(mode - 100.0) < abs(median - 100.0)
+    assert err == pytest.approx(float(data.std()))
+
+
+def test_background_stats_mode_of_a_constant_image():
+    data = np.full((10, 10), 42.0)
+    assert background_stats(data, np.ones((10, 10), dtype=bool), "mode") == (42.0, 0.0)
+
+
+def test_background_stats_rejects_an_unknown_method():
+    with pytest.raises(ValueError):
+        background_stats(np.ones((3, 3)), np.ones((3, 3), dtype=bool), "mean")
 
 
 def test_background_stats_empty_kept_returns_zero():
     data = np.zeros((5, 5))
     kept = np.zeros((5, 5), dtype=bool)
-    assert background_stats(data, kept, "sigma") == (0.0, 0.0)
+    assert background_stats(data, kept, "median") == (0.0, 0.0)
+    assert background_stats(data, kept, "mode") == (0.0, 0.0)
 
 
 def test_auto_mask_preview_flags_only_bright_source():
     data = _background_with_source()
     valid = valid_pixels(data)
     kept = sigma_clip_mask(data, valid, kappa=3.0)
-    bg, err = background_stats(data, kept, "sigma")
+    bg, err = background_stats(data, kept)
     preview = auto_mask_preview(data, valid, bg, err, kappa=5.0)
     assert preview[25:35, 25:35].all()
     # Background-only region should be essentially unflagged.
@@ -108,11 +144,6 @@ def test_expand_mask_zero_radius_is_a_noop():
     expanded = expand_mask(mask, radius=0)
     assert np.array_equal(expanded, mask)
     assert expanded is mask  # explicitly returns the same object, not a copy
-
-
-def test_neural_network_mask_is_an_unimplemented_placeholder():
-    with pytest.raises(NotImplementedError):
-        neural_network_mask(np.zeros((3, 3)), "some/model/path")
 
 
 def test_fit_gaussian_to_histogram_recovers_known_parameters():
@@ -174,3 +205,138 @@ def test_filter_by_group_size_disabled_at_zero():
 def test_filter_by_group_size_empty_mask_is_a_noop():
     mask = np.zeros((5, 5), dtype=bool)
     assert not filter_by_group_size(mask, max_size=10).any()
+
+
+def test_filter_by_group_size_min_drops_small_groups():
+    mask = np.zeros((30, 30), dtype=bool)
+    mask[5, 5] = True  # 1px
+    mask[10:13, 10:13] = True  # 9px
+    mask[20:26, 20:26] = True  # 36px
+    filtered = filter_by_group_size(mask, min_size=5)
+    assert not filtered[5, 5]
+    assert filtered[10:13, 10:13].all()
+    assert filtered[20:26, 20:26].all()
+
+
+def test_filter_by_group_size_keeps_only_the_range():
+    mask = np.zeros((30, 30), dtype=bool)
+    mask[5, 5] = True  # 1px
+    mask[10:13, 10:13] = True  # 9px
+    mask[20:26, 20:26] = True  # 36px
+    filtered = filter_by_group_size(mask, max_size=10, min_size=5)
+    assert not filtered[5, 5]
+    assert filtered[10:13, 10:13].all()
+    assert not filtered[20:26, 20:26].any()
+
+
+def test_filter_by_group_size_range_bounds_are_inclusive():
+    mask = np.zeros((20, 20), dtype=bool)
+    mask[5:8, 5:8] = True  # exactly 9px
+    assert filter_by_group_size(mask, max_size=9, min_size=9)[5:8, 5:8].all()
+
+
+def test_filter_by_group_size_min_of_one_or_less_is_no_lower_limit():
+    mask = np.zeros((10, 10), dtype=bool)
+    mask[2, 2] = True
+    assert np.array_equal(filter_by_group_size(mask, min_size=1), mask)
+    assert np.array_equal(filter_by_group_size(mask, min_size=0), mask)
+
+
+def test_filter_by_group_size_counts_pixels_on_the_image_border():
+    # Gap-closing can erode border pixels; they must still belong to their
+    # group instead of being dropped as "background".
+    mask = np.zeros((20, 20), dtype=bool)
+    mask[0, 0:3] = True  # a 3px group on the top edge
+    assert filter_by_group_size(mask, max_size=10)[0, 0:3].all()
+
+
+# ------------------------------------------------------------------ shape
+
+
+def _scene():
+    """A round blob, a thin slanted streak and a small square, well apart."""
+    from maskfits.automask import _bridged_groups  # noqa: F401 - imported for the tests below
+
+    mask = np.zeros((200, 200), dtype=bool)
+    yy, xx = np.mgrid[:200, :200]
+    mask |= (xx - 50) ** 2 + (yy - 50) ** 2 <= 12 ** 2
+    mask |= np.abs((yy - 150) - 0.3 * (xx - 100)) <= 2
+    mask[180:184, 10:14] = True
+    return mask
+
+
+def test_group_elongation_round_vs_streak():
+    from maskfits.automask import _bridged_groups, group_elongation
+
+    labeled, num = _bridged_groups(_scene())
+    elongation = group_elongation(labeled, num)
+    round_blob = elongation[labeled[50, 50]]
+    streak = elongation[labeled[150, 100]]
+    square = elongation[labeled[181, 11]]
+    assert round_blob == pytest.approx(1.0, abs=0.05)
+    assert square == pytest.approx(1.0, abs=0.05)
+    assert streak > 20
+
+
+def test_group_elongation_of_a_bar_is_its_length_to_width_ratio():
+    from maskfits.automask import group_elongation
+    from scipy.ndimage import label
+
+    mask = np.zeros((40, 80), dtype=bool)
+    mask[10:14, 10:70] = True  # 60 x 4 bar
+    labeled, num = label(mask)
+    assert group_elongation(labeled, num)[1] == pytest.approx(15.0, rel=1e-6)
+
+
+def test_group_elongation_single_pixel_is_round():
+    from maskfits.automask import group_elongation
+    from scipy.ndimage import label
+
+    mask = np.zeros((5, 5), dtype=bool)
+    mask[2, 2] = True
+    labeled, num = label(mask)
+    assert group_elongation(labeled, num)[1] == pytest.approx(1.0)
+
+
+def test_filter_by_shape_lines_keeps_only_the_streak():
+    from maskfits.automask import filter_by_shape
+
+    mask = _scene()
+    lines = filter_by_shape(mask, "lines")
+    assert lines[150, 100] and not lines[50, 50] and not lines[181, 11]
+    assert not (lines & ~mask).any()  # never adds pixels
+
+
+def test_filter_by_shape_circles_drops_only_the_streak():
+    from maskfits.automask import filter_by_shape
+
+    mask = _scene()
+    circles = filter_by_shape(mask, "circles")
+    assert not circles[150, 100] and circles[50, 50] and circles[181, 11]
+
+
+def test_filter_by_shape_modes_are_complementary():
+    from maskfits.automask import filter_by_shape
+
+    mask = np.random.default_rng(4).random((60, 60)) < 0.08
+    lines, circles = filter_by_shape(mask, "lines"), filter_by_shape(mask, "circles")
+    assert not (lines & circles).any()
+    assert np.array_equal(lines | circles, mask)
+
+
+def test_filter_by_shape_treats_a_fragmented_streak_as_one_line():
+    from maskfits.automask import filter_by_shape
+
+    # A 4px-wide trail with ~45% of its pixels lost to noise - dozens of
+    # separate specks before the gap-closing step bridges them.
+    mask = np.zeros((40, 200), dtype=bool)
+    mask[18:22, 10:190] = True
+    mask &= np.random.default_rng(5).random(mask.shape) > 0.45
+    assert np.array_equal(filter_by_shape(mask, "lines"), mask)
+
+
+def test_filter_by_shape_rejects_an_unknown_mode():
+    from maskfits.automask import filter_by_shape
+
+    with pytest.raises(ValueError):
+        filter_by_shape(np.ones((3, 3), dtype=bool), "squares")

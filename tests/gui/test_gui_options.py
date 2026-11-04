@@ -210,14 +210,19 @@ def _run_cli_and_capture_window(cli_main, argv, monkeypatch):
     than just taking the first MaskFitsApp instance found - close() hides a
     window but does not destroy it, so an earlier test's (closed) window
     would otherwise still be sitting in topLevelWidgets() and could be
-    picked up by mistake instead of the one this call just created."""
-    before = {id(w) for w in QApplication.topLevelWidgets()}
+    picked up by mistake instead of the one this call just created.
+
+    `before` holds the widgets themselves, not their id()s: an id is only
+    unique while its object is alive, and a wrapper from that listing can be
+    freed right away - the new window could then reuse its id and be
+    skipped (an intermittent StopIteration)."""
+    before = list(QApplication.topLevelWidgets())
     captured = {}
 
     def fake_exec(self):
         captured["window"] = next(
             w for w in QApplication.topLevelWidgets()
-            if isinstance(w, MaskFitsApp) and id(w) not in before
+            if isinstance(w, MaskFitsApp) and not any(w is old for old in before)
         )
         return 0
 

@@ -35,7 +35,7 @@ SHORTCUT_ACTIONS: list[ShortcutAction] = [
     ShortcutAction("invert_colormap", "Invert colormap", ("I",)),
     ShortcutAction("toggle_smooth", "Smooth image (current sigma)", ("S",)),
     ShortcutAction("toggle_bin", "Bin image (current factor)", ("B",)),
-    ShortcutAction("reset_zoom", "Reset zoom", ("Ctrl+R",)),
+    ShortcutAction("reset_zoom", "Reset zoom", ("Space",)),
     ShortcutAction("toggle_center_cross", "Toggle center cross", ("K",)),
     ShortcutAction("toggle_tool", "Switch tool (ellipse / satellite)", ("Tab",)),
     ShortcutAction("quick_export", "Quick export mask", ("Ctrl+S",)),
