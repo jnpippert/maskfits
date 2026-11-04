@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -46,6 +47,8 @@ from maskfits.theme_editor_window import ThemeEditorWindow
 from maskfits.mask_colors_window import MaskColorsWindow
 from maskfits.widgets import HexColorPicker, RoundButton, RoundSlider, SegmentedControl
 
+# Settings window tabs, in order (shown capitalized).
+SETTINGS_TABS = ("view", "style", "file", "tools")
 MODE_OPTIONS = [("ellipse", "Ellipse"), ("line", "Satellite")]
 SCALE_OPTIONS = [(name, name.capitalize()) for name in STRETCH_NAMES]
 # Cut-levels algorithm (the app's own "Scale" menu: Min/Max, ZScale, then a
@@ -139,27 +142,61 @@ class SettingsWindow(QDialog):
         layout.addSpacing(2)
         layout.addWidget(desc)
 
-        self._theme_row(layout)
-        self._segment_row(layout, "Default Mode", MODE_OPTIONS, self.mode, self._on_mode_changed)
-        self._combo_row(layout, "Default Colormap", COLORMAP_NAMES, self.colormap, self._on_colormap_changed)
-        self._labeled_combo_row(layout, "Default Cut Levels", STRETCH_OPTIONS, self.stretch,
+        # Tabs (a segmented control over a stacked page per category), so the
+        # window is only as tall as its largest category, not all of them.
+        tab_row = QHBoxLayout()
+        tab_row.addStretch(1)
+        self.tab_control = SegmentedControl([(key, key.capitalize()) for key in SETTINGS_TABS], SETTINGS_TABS[0])
+        tab_row.addWidget(self.tab_control)
+        tab_row.addStretch(1)
+        layout.addSpacing(12)
+        layout.addLayout(tab_row)
+        self.tab_pages: dict[str, QWidget] = {}
+        self.pages = QStackedWidget()
+        page_layouts: dict[str, QVBoxLayout] = {}
+        for key in SETTINGS_TABS:
+            page = QWidget()
+            page_layout = QVBoxLayout(page)
+            page_layout.setContentsMargins(0, 0, 0, 0)
+            page_layout.setSpacing(0)
+            self.tab_pages[key] = page
+            page_layouts[key] = page_layout
+            self.pages.addWidget(page)
+        self.tab_control.valueChanged.connect(lambda key: self.pages.setCurrentWidget(self.tab_pages[key]))
+        layout.addSpacing(4)
+        layout.addWidget(self.pages)
+
+        view = page_layouts["view"]
+        self._combo_row(view, "Default Colormap", COLORMAP_NAMES, self.colormap, self._on_colormap_changed)
+        self._labeled_combo_row(view, "Default Cut Levels", STRETCH_OPTIONS, self.stretch,
                                  self._on_stretch_changed)
-        self._segment_row(layout, "Default Scale", SCALE_OPTIONS, self.scale, self._on_scale_changed)
-        self._segment_row(layout, "Export Directory", EXPORT_DIR_OPTIONS, self.export_dir,
-                           self._on_export_dir_changed)
-        self._export_filename_rows(layout)
-        self._slider_row(layout, "Default Zoom", self.zoom, ZOOM_MIN, ZOOM_MAX, self._on_zoom_changed)
-        self._slider_row(layout, "Default Bin Factor", self.bin_factor, BIN_FACTOR_MIN, BIN_FACTOR_MAX,
+        self._segment_row(view, "Default Scale", SCALE_OPTIONS, self.scale, self._on_scale_changed)
+        self._slider_row(view, "Default Zoom", self.zoom, ZOOM_MIN, ZOOM_MAX, self._on_zoom_changed)
+        self._slider_row(view, "Default Bin Factor", self.bin_factor, BIN_FACTOR_MIN, BIN_FACTOR_MAX,
                           self._on_bin_factor_changed, integer=True, enabled_checkbox=True,
                           checked=self.bin_enabled, on_toggled=self._on_bin_enabled_changed)
-        self._slider_row(layout, "Default Smooth Sigma", self.smooth_sigma, SMOOTH_SIGMA_MIN, SMOOTH_SIGMA_MAX,
+        self._slider_row(view, "Default Smooth Sigma", self.smooth_sigma, SMOOTH_SIGMA_MIN, SMOOTH_SIGMA_MAX,
                           self._on_smooth_sigma_changed, enabled_checkbox=True, checked=self.smooth_enabled,
                           on_toggled=self._on_smooth_enabled_changed)
-        self._accent_row(layout)
-        self._blank_picker = self._optional_color_row(layout, "Zero/NaN Pixel Color", "blank_color", "Off")
-        self._cross_picker = self._optional_color_row(layout, "Center Cross Color", "cross_color", "Auto")
-        self._mask_colors_row(layout)
-        self._shortcuts_row(layout)
+
+        style = page_layouts["style"]
+        self._theme_row(style)
+        self._accent_row(style)
+        self._mask_colors_row(style)
+        self._blank_picker = self._optional_color_row(style, "Zero/NaN Pixel Color", "blank_color", "Off")
+        self._cross_picker = self._optional_color_row(style, "Center Cross Color", "cross_color", "Auto")
+
+        file = page_layouts["file"]
+        self._segment_row(file, "Export Directory", EXPORT_DIR_OPTIONS, self.export_dir,
+                           self._on_export_dir_changed)
+        self._export_filename_rows(file)
+
+        tools = page_layouts["tools"]
+        self._segment_row(tools, "Default Mode", MODE_OPTIONS, self.mode, self._on_mode_changed)
+        self._shortcuts_row(tools)
+
+        for page_layout in page_layouts.values():
+            page_layout.addStretch(1)
 
         layout.addSpacing(10)
         btn_row = QHBoxLayout()
