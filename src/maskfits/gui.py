@@ -122,10 +122,10 @@ CURSOR_POLL_MS = 30  # see MaskFitsApp._poll_cursor
 STATUS_SUCCESS_MS = 1500  # how long a success status message stays green
 HOLD_RAMP_S = 1.5
 HOLD_GAP_S = 0.6
-# Holding Left/Right in a cube: slices per step ramps from 1 up to this many
-# over SLICE_HOLD_RAMP_S seconds.
-SLICE_HOLD_MAX_FACTOR = 5.0
-SLICE_HOLD_RAMP_S = 2.0
+# Holding Left/Right in a cube: (seconds held, slices per step) - linear in
+# between, flat after the last point. 1 -> 5 over the first 2 s, then on to
+# 10 by 5 s.
+SLICE_HOLD_RAMP = ((0.0, 1.0), (2.0, 5.0), (5.0, 10.0))
 SIDEBAR_W = 380  # fixed - see MaskFitsApp._toggle_sidebar's docstring for why
 SIDEBAR_TOGGLE_W = 10
 ZOOM_STEP = 1.25
@@ -1809,9 +1809,11 @@ class MaskFitsApp(QMainWindow):
             self.load_current(reset_view=True)
 
     def _slice_step(self, direction: int) -> int:
-        """Slices per Left/Right press in a cube: 1, ramping up to
-        SLICE_HOLD_MAX_FACTOR while the key is held (see _hold_factor)."""
-        return max(1, round(self._hold_factor(f"slice{direction}", SLICE_HOLD_MAX_FACTOR, SLICE_HOLD_RAMP_S)))
+        """Slices per Left/Right press in a cube: 1, speeding up while the
+        key is held - see SLICE_HOLD_RAMP."""
+        seconds, factors = zip(*SLICE_HOLD_RAMP)
+        held = self._held_seconds(f"slice{direction}")
+        return max(1, round(float(np.interp(held, seconds, factors))))
 
     def next_image(self) -> None:
         """Right-arrow hotkey - see prev_image."""
@@ -2102,17 +2104,21 @@ class MaskFitsApp(QMainWindow):
             self._hold_state = None
         super().keyReleaseEvent(event)
 
-    def _hold_factor(self, key: str, max_factor: float = HOLD_MAX_FACTOR, ramp_s: float = HOLD_RAMP_S) -> float:
-        """Step multiplier for a held hotkey: 1x on a fresh press, ramping
-        linearly to `max_factor` over `ramp_s` seconds of the same key
-        staying held (defaults: the shape hotkeys' ramp)."""
+    def _held_seconds(self, key: str) -> float:
+        """How long `key`'s hotkey has been held: 0 on a fresh press (a new
+        key, a pause longer than HOLD_GAP_S, or after a real key release)."""
         now = time.monotonic()
         state = self._hold_state
         if state is None or state[0] != key or now - state[2] > HOLD_GAP_S:
             self._hold_state = (key, now, now)
-            return 1.0
+            return 0.0
         self._hold_state = (key, state[1], now)
-        return 1.0 + (max_factor - 1.0) * min((now - state[1]) / ramp_s, 1.0)
+        return now - state[1]
+
+    def _hold_factor(self, key: str) -> float:
+        """Step multiplier for a held shape hotkey: 1x on a fresh press,
+        ramping linearly to HOLD_MAX_FACTOR over HOLD_RAMP_S seconds."""
+        return 1.0 + (HOLD_MAX_FACTOR - 1.0) * min(self._held_seconds(key) / HOLD_RAMP_S, 1.0)
 
     def _adjust_shape_size(self, direction: int) -> None:
         step = max(1, round(5 / self.zoom_mult * self._hold_factor(f"size{direction}")))
