@@ -26,21 +26,21 @@ class ShortcutAction:
 SHORTCUT_ACTIONS: list[ShortcutAction] = [
     ShortcutAction("undo", "Undo", ("Ctrl+Z", "U")),
     ShortcutAction("redo", "Redo", ("Ctrl+Shift+Z", "Y")),
-    ShortcutAction("prev_image", "Previous image", ("Left",)),
-    ShortcutAction("next_image", "Next image", ("Right",)),
-    ShortcutAction("reset_mask", "Reset mask", ("R",)),
-    ShortcutAction("grow_shape", "Grow shape size", ("E",)),
-    ShortcutAction("shrink_shape", "Shrink shape size", ("W",)),
-    ShortcutAction("cycle_colormap", "Cycle colormap", ("C",)),
-    ShortcutAction("invert_colormap", "Invert colormap", ("I",)),
-    ShortcutAction("toggle_smooth", "Smooth image (current sigma)", ("S",)),
-    ShortcutAction("toggle_bin", "Bin image (current factor)", ("B",)),
-    ShortcutAction("reset_zoom", "Reset zoom", ("Space",)),
-    ShortcutAction("toggle_center_cross", "Toggle center cross", ("K",)),
-    ShortcutAction("toggle_tool", "Switch tool (ellipse / satellite)", ("Tab",)),
-    ShortcutAction("quick_export", "Quick export mask", ("Ctrl+S",)),
-    ShortcutAction("prev_extension", "Previous FITS extension", ("Down",)),
-    ShortcutAction("next_extension", "Next FITS extension", ("Up",)),
+    ShortcutAction("prev_image", "Previous Image", ("Left",)),
+    ShortcutAction("next_image", "Next Image", ("Right",)),
+    ShortcutAction("reset_mask", "Reset Mask", ("R",)),
+    ShortcutAction("grow_shape", "Grow Shape Size", ("E",)),
+    ShortcutAction("shrink_shape", "Shrink Shape Size", ("W",)),
+    ShortcutAction("cycle_colormap", "Cycle Colormap", ("C",)),
+    ShortcutAction("invert_colormap", "Invert Colormap", ("I",)),
+    ShortcutAction("toggle_smooth", "Smooth Image (current sigma)", ("S",)),
+    ShortcutAction("toggle_bin", "Bin Image (current factor)", ("B",)),
+    ShortcutAction("reset_zoom", "Reset Zoom", ("Space",)),
+    ShortcutAction("toggle_center_cross", "Toggle Center Cross", ("K",)),
+    ShortcutAction("toggle_tool", "Switch Tool (ellipse / satellite)", ("Tab",)),
+    ShortcutAction("quick_export", "Quick Export Mask", ("Ctrl+S",)),
+    ShortcutAction("prev_extension", "Previous FITS Extension", ("Down",)),
+    ShortcutAction("next_extension", "Next FITS Extension", ("Up",)),
     ShortcutAction("digit_1", "Hotkey 1 (ellipticity- / satellite style 1)", ("1",)),
     ShortcutAction("digit_2", "Hotkey 2 (ellipticity+ / satellite style 2)", ("2",)),
     ShortcutAction("digit_3", "Hotkey 3 (angle- / satellite style 3)", ("3",)),
@@ -49,7 +49,7 @@ SHORTCUT_ACTIONS: list[ShortcutAction] = [
     # (what ShortcutCapture actually produces when the user re-binds
     # something to Escape), so a fresh capture and this default compare
     # equal as plain strings, not just as equivalent QKeySequence objects.
-    ShortcutAction("cancel_line", "Cancel a pending line click", ("Esc",)),
+    ShortcutAction("cancel_line", "Cancel Pending Line Click", ("Esc",)),
 ]
 
 SHORTCUT_ACTIONS_BY_ID: dict[str, ShortcutAction] = {a.id: a for a in SHORTCUT_ACTIONS}

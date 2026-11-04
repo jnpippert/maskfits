@@ -26,7 +26,7 @@ class RegionExportWindow(QDialog):
 
     def __init__(self, default_path: str, has_wcs: bool, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self.setWindowTitle("Save as DS9 Region")
+        self.setWindowTitle("Save As DS9 Region")
         # Non-modal, like the other option windows - a modal dialog that
         # opens a second (file) dialog hits a Cocoa modal-nesting bug.
         self.setModal(False)
@@ -57,16 +57,18 @@ class RegionExportWindow(QDialog):
         desc.setFixedWidth(PATH_WIDTH + 80)
         layout.addWidget(desc)
 
-        row = self._row(layout, "color")
+        row = self._row(layout, "Color")
         self.color_combo = QComboBox()
-        self.color_combo.addItems(DS9_COLORS + [CUSTOM_COLOR])
-        self.color_combo.currentTextChanged.connect(self._on_color_choice)
+        # Shown capitalized; the item data is DS9's own lowercase keyword.
+        for name in DS9_COLORS + [CUSTOM_COLOR]:
+            self.color_combo.addItem(name.capitalize(), name)
+        self.color_combo.currentIndexChanged.connect(self._on_color_choice)
         row.addWidget(self.color_combo)
         self.custom_color = HexColorPicker("#00ff00")
         self.custom_color.hide()
         row.addWidget(self.custom_color)
 
-        row = self._row(layout, "coordinates")
+        row = self._row(layout, "Coordinates")
         self.coords_control = SegmentedControl([("image", "Image (x, y)"), ("wcs", "WCS (fk5)")], "image")
         row.addWidget(self.coords_control)
         if not self._has_wcs:
@@ -74,7 +76,7 @@ class RegionExportWindow(QDialog):
             wcs_button.setEnabled(False)
             wcs_button.setToolTip("This image has no WCS")
 
-        row = self._row(layout, "file", stretch=False)
+        row = self._row(layout, "File", stretch=False)
         self.path_entry = QLineEdit(default_path)
         self.path_entry.setMinimumWidth(PATH_WIDTH)
         row.addWidget(self.path_entry, 1)
@@ -106,11 +108,11 @@ class RegionExportWindow(QDialog):
         layout.addLayout(row)
         return row
 
-    def _on_color_choice(self, choice: str) -> None:
-        self.custom_color.setVisible(choice == CUSTOM_COLOR)
+    def _on_color_choice(self, _index: int) -> None:
+        self.custom_color.setVisible(self.color_combo.currentData() == CUSTOM_COLOR)
 
     def color(self) -> str:
-        choice = self.color_combo.currentText()
+        choice = self.color_combo.currentData()
         return (self.custom_color.value() or "green") if choice == CUSTOM_COLOR else choice
 
     def coords(self) -> str:

@@ -642,7 +642,7 @@ class MaskFitsApp(QMainWindow):
         file_menu.addAction("Open...", self.open_files)
         file_menu.addAction("Export Mask", self.export_mask)
         file_menu.addAction("Save Mask As...", self.export_mask_as)
-        file_menu.addAction("Save as DS9 Region...", self.export_region)
+        file_menu.addAction("Save As DS9 Region...", self.export_region)
         file_menu.addSeparator()
         file_menu.addAction("Quit", self.close)
 
@@ -1047,6 +1047,8 @@ class MaskFitsApp(QMainWindow):
         self.readout: dict[str, QLabel] = {}
         readout_row = QHBoxLayout()
         readout_row.setSpacing(0)
+        # The readout key doubles as its label, capitalized except for the
+        # x/y coordinate symbols.
         for keys in (("x", "y", "value"), ("RA", "DEC", "shape")):
             half = QWidget()
             half.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
@@ -1056,7 +1058,8 @@ class MaskFitsApp(QMainWindow):
             grid.setVerticalSpacing(2)
             grid.setColumnStretch(1, 1)
             for row_i, key in enumerate(keys):
-                grid.addWidget(self._dim_label(f"{key}:"), row_i, 0)
+                label = key if key in ("x", "y") else key[0].upper() + key[1:]
+                grid.addWidget(self._dim_label(f"{label}:"), row_i, 0)
                 lbl = QLabel("")
                 lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
                 grid.addWidget(lbl, row_i, 1)
@@ -1079,7 +1082,7 @@ class MaskFitsApp(QMainWindow):
         layout.addWidget(self.sb_cuts_label)
         self.cuts_histogram.cuts_changed.connect(lambda _lo, _hi: self._update_sb_cuts_label())
 
-        alpha_label = QLabel(f"Mask opacity: {self.mask_alpha}%")
+        alpha_label = QLabel(f"Mask Opacity: {self.mask_alpha}%")
         alpha_label.setProperty("dim", True)
         self._alpha_label = alpha_label
         layout.addWidget(alpha_label)
@@ -1458,7 +1461,7 @@ class MaskFitsApp(QMainWindow):
             return
         lo = self._sb_text(self.cuts_histogram.vmin, calibration)
         hi = self._sb_text(self.cuts_histogram.vmax, calibration)
-        self.sb_cuts_label.setText(f"SB lowcut: {lo}   highcut: {hi}  mag/arcsec\u00b2")
+        self.sb_cuts_label.setText(f"SB Lowcut: {lo}   Highcut: {hi}  mag/arcsec\u00b2")
         self.sb_cuts_label.show()
 
     def _update_cuts_display(self) -> None:

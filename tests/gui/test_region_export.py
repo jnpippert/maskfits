@@ -66,7 +66,7 @@ def _corners(line):
 
 def test_file_menu_has_the_action(qapp, tmp_path):
     win = _window(tmp_path)
-    assert "Save as DS9 Region..." in [a.text() for a in win.findChildren(QAction)]
+    assert "Save As DS9 Region..." in [a.text() for a in win.findChildren(QAction)]
 
 
 def test_default_path_is_the_working_directory(qapp, tmp_path, monkeypatch):
@@ -102,11 +102,11 @@ def test_wcs_option_is_disabled_without_a_wcs(qapp):
 def test_color_choices_and_custom_hex(qapp):
     dialog = RegionExportWindow("/tmp/x.reg", has_wcs=False)
     assert dialog.color() == "green"
-    dialog.color_combo.setCurrentText("magenta")
+    dialog.color_combo.setCurrentText("Magenta")
     assert dialog.color() == "magenta"
     assert dialog.custom_color.isHidden()
 
-    dialog.color_combo.setCurrentText("custom")
+    dialog.color_combo.setCurrentText("Custom")
     assert not dialog.custom_color.isHidden()
     dialog.custom_color.setValue("#ff8800")
     assert dialog.color() == "#ff8800"
@@ -128,7 +128,7 @@ def test_cancelled_browse_keeps_the_path(qapp, monkeypatch):
 
 def test_save_emits_the_chosen_options(qapp):
     dialog = RegionExportWindow("/tmp/x.reg", has_wcs=True)
-    dialog.color_combo.setCurrentText("red")
+    dialog.color_combo.setCurrentText("Red")
     dialog.coords_control._buttons["wcs"].click()
     received = []
     dialog.export_requested.connect(lambda *args: received.append(args))
@@ -154,7 +154,7 @@ def test_saving_writes_one_polygon_per_group_and_closes_the_window(qapp, tmp_pat
     out = tmp_path / "out.reg"
     win.export_region()
     win._region_window.path_entry.setText(str(out))
-    win._region_window.color_combo.setCurrentText("cyan")
+    win._region_window.color_combo.setCurrentText("Cyan")
 
     win._region_window._save()
 

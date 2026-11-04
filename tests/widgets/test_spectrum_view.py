@@ -39,7 +39,9 @@ def test_titles(qapp):
     view.set_axis(_axis("frequency", "GHz"), "")
     assert view.x_title() == "ν [GHz]"
     view.set_axis(_axis("slice", ""), "")
-    assert view.x_title() == "slice"
+    assert view.x_title() == "Slice"
+    view.set_axis(_axis("energy", "keV"), "")
+    assert view.x_title() == "Energy [keV]"
 
 
 def test_nice_ticks():

@@ -18,11 +18,11 @@ from maskfits.widgets import RoundButton
 # Mouse-button/wheel interactions - hardcoded into ImageCanvas's own event
 # handlers, not backed by a rebindable action the way keyboard shortcuts are.
 MOUSE_ENTRIES = [
-    ("Left-click / drag", "Paint mask with the current tool"),
-    ("Right-click / drag", "Erase mask"),
-    ("Middle-click", "Cancel a pending line start point, or redo (satellite mode only)"),
-    ("Ctrl + left-click drag", "Pan the view"),
-    ("Mouse wheel", "Zoom in / out"),
+    ("Left-Click / Drag", "Paint mask with the current tool"),
+    ("Right-Click / Drag", "Erase mask"),
+    ("Middle-Click", "Cancel a pending line start point, or redo (satellite mode only)"),
+    ("Ctrl + Left-Click Drag", "Pan the view"),
+    ("Mouse Wheel", "Zoom in / out"),
 ]
 
 LABEL_WIDTH = 170

@@ -44,7 +44,7 @@ def nice_ticks(lo: float, hi: float, target: int = TARGET_TICKS) -> list[float]:
 
 
 # Axis symbol per spectral quantity (see imagedata.SpectralAxis.quantity).
-QUANTITY_SYMBOLS = {"wavelength": "\u03bb", "frequency": "\u03bd", "velocity": "v", "slice": "slice"}
+QUANTITY_SYMBOLS = {"wavelength": "\u03bb", "frequency": "\u03bd", "velocity": "v", "slice": "Slice"}
 ANGSTROM_SPELLINGS = {"angstrom", "angstroms", "aa", "a", "\u00e5"}
 
 
@@ -92,7 +92,7 @@ class SpectrumView(QWidget):
         if self.axis is None:
             return ""
         quantity = self.axis.quantity
-        return axis_title(QUANTITY_SYMBOLS.get(quantity, quantity), self.axis.unit)
+        return axis_title(QUANTITY_SYMBOLS.get(quantity, quantity.capitalize()), self.axis.unit)
 
     def y_title(self) -> str:
         return axis_title("Flux", self.flux_unit)

@@ -56,7 +56,7 @@ def test_cut_levels_show_their_surface_brightness(qapp, tmp_path):
     win = _window(tmp_path, {"MAGZP": 30.0, "PIXSCALE": 1.0})
     win.cuts_histogram.set_cuts(1.0, 100.0)
     assert not win.sb_cuts_label.isHidden()
-    assert win.sb_cuts_label.text() == "SB lowcut: 30.00   highcut: 25.00  mag/arcsec²"
+    assert win.sb_cuts_label.text() == "SB Lowcut: 30.00   Highcut: 25.00  mag/arcsec²"
 
 
 def test_undefined_surface_brightness_shows_minus_infinity(qapp, tmp_path):
@@ -64,16 +64,16 @@ def test_undefined_surface_brightness_shows_minus_infinity(qapp, tmp_path):
     _hover(win)
     assert win.readout["value"].text() == "-3  (SB -\u221e)"
     win.cuts_histogram.set_cuts(-5.0, 100.0)
-    assert win.sb_cuts_label.text().startswith("SB lowcut: -\u221e ")
+    assert win.sb_cuts_label.text().startswith("SB Lowcut: -\u221e ")
 
 
 def test_cut_label_updates_live_while_dragging(qapp, tmp_path):
     """set_cuts is what each step of a histogram handle drag calls."""
     win = _window(tmp_path, {"ZP": 30.0, "PXSCALE": 1.0})
     win.cuts_histogram.set_cuts(1.0, 10.0)
-    assert "highcut: 27.50" in win.sb_cuts_label.text()
+    assert "Highcut: 27.50" in win.sb_cuts_label.text()
     win.cuts_histogram.set_cuts(1.0, 100.0)
-    assert "highcut: 25.00" in win.sb_cuts_label.text()
+    assert "Highcut: 25.00" in win.sb_cuts_label.text()
 
 
 def test_label_hides_again_for_an_uncalibrated_next_image(qapp, tmp_path):

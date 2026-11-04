@@ -201,11 +201,11 @@ class AutoMaskWindow(QDialog):
         layout.addSpacing(2)
         layout.addWidget(desc)
 
-        self._method_row(layout, "background", [(m, m.capitalize()) for m in BG_METHODS],
+        self._method_row(layout, "Background", [(m, m.capitalize()) for m in BG_METHODS],
                           self.bg_method, self._on_bg_method_changed)
-        self._slider_row(layout, "clean-up κ  (background isolation)", self.cleanup_kappa, 0.5, 10.0,
+        self._slider_row(layout, "Clean-Up κ  (background isolation)", self.cleanup_kappa, 0.5, 10.0,
                           on_change=self._on_cleanup_kappa_changed)
-        self._slider_row(layout, "clean-up iterations", self.cleanup_iterations, 1, 20, integer=True,
+        self._slider_row(layout, "Clean-Up Iterations", self.cleanup_iterations, 1, 20, integer=True,
                           on_change=self._on_cleanup_iterations_changed)
 
         self.hist_canvas = _AutoMaskHistCanvas(self)
@@ -218,21 +218,21 @@ class AutoMaskWindow(QDialog):
         legend = QHBoxLayout()
         legend.setSpacing(0)
         theme = current_theme()
-        self._legend_swatch(legend, theme.text_dim, "background (kept after clipping)")
-        self._legend_swatch(legend, theme.blue, "gaussian fit")
-        self._legend_swatch(legend, theme.green, "background")
-        self._legend_swatch(legend, theme.warning, "mask threshold")
+        self._legend_swatch(legend, theme.text_dim, "Background (kept after clipping)")
+        self._legend_swatch(legend, theme.blue, "Gaussian Fit")
+        self._legend_swatch(legend, theme.green, "Background")
+        self._legend_swatch(legend, theme.warning, "Mask Threshold")
         legend.addStretch(1)
         layout.addLayout(legend)
 
         # The threshold/expand knobs live below the histogram, separate from
         # the clean-up block above it - they shape the FINAL flagged mask,
         # not the background estimate the histogram is showing.
-        self._slider_row(layout, "mask κ  (threshold above background)", self.kappa, 0.5, 20.0,
+        self._slider_row(layout, "Mask κ  (threshold above background)", self.kappa, 0.5, 20.0,
                           on_change=self._on_kappa_changed)
         self._group_size_row(layout)
         self._shape_row(layout)
-        self._slider_row(layout, "expand  (pad each flagged region, px)", self.expand_px, 0, 20, integer=True,
+        self._slider_row(layout, "Expand  (pad each flagged region, px)", self.expand_px, 0, 20, integer=True,
                           on_change=self._on_expand_changed)
 
         self.stats_label = QLabel()
@@ -306,7 +306,7 @@ class AutoMaskWindow(QDialog):
         self.group_size_checkbox.setChecked(self.group_size_enabled)
         self.group_size_checkbox.toggled.connect(self._on_group_size_enabled_changed)
         row.addWidget(self.group_size_checkbox)
-        lbl = QLabel("group size  (px, keeps flagged regions within this range):")
+        lbl = QLabel("Group Size  (px, keeps flagged regions within this range):")
         lbl.setProperty("dim", True)
         row.addWidget(lbl)
         row.addStretch(1)
@@ -486,8 +486,8 @@ class AutoMaskWindow(QDialog):
         total = data.size
         pct = 100.0 * flagged / total if total else 0.0
         self.stats_label.setText(
-            f"background: {bg:.4g}    error: {bg_err:.4g}    threshold: {threshold:.4g}\n"
-            f"flagged: {flagged:,} px ({pct:.2f}%)    background pixels used: {int(kept.sum()):,}"
+            f"Background: {bg:.4g}    Error: {bg_err:.4g}    Threshold: {threshold:.4g}\n"
+            f"Flagged: {flagged:,} px ({pct:.2f}%)    Background Pixels Used: {int(kept.sum()):,}"
         )
         self.hist_canvas.set_data(data[kept], bg, threshold)
         self.app.set_auto_mask_preview(self.entry, preview)

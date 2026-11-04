@@ -243,7 +243,7 @@ class CutsHistogram(QWidget):
 
         entries = QHBoxLayout()
         entries.setSpacing(6)
-        lo_label = QLabel("lowcut:")
+        lo_label = QLabel("Lowcut:")
         lo_label.setProperty("dim", True)
         entries.addWidget(lo_label)
         self._lo_entry = QLineEdit(self._fmt(lowcut))
@@ -252,7 +252,7 @@ class CutsHistogram(QWidget):
         self._lo_entry.editingFinished.connect(self._on_lo_entry)
         entries.addWidget(self._lo_entry)
 
-        hi_label = QLabel("highcut:")
+        hi_label = QLabel("Highcut:")
         hi_label.setProperty("dim", True)
         entries.addWidget(hi_label)
         self._hi_entry = QLineEdit(self._fmt(highcut))

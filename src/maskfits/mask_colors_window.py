@@ -117,7 +117,7 @@ class MaskColorsWindow(QDialog):
             row.addLayout(column)
             row.addStretch(1)
 
-            picker = HexColorPicker(self.mask_colors.get(name), allow_empty=True, placeholder="auto")
+            picker = HexColorPicker(self.mask_colors.get(name), allow_empty=True, placeholder="Auto")
             picker.set_empty_color(rgb_to_hex(auto_mask_color(name)))
             picker.colorChanged.connect(lambda value, n=name: self._on_color_changed(n, value))
             row.addWidget(picker, 0, Qt.AlignmentFlag.AlignBottom)

@@ -55,7 +55,7 @@ SCALE_OPTIONS = [(name, name.capitalize()) for name in STRETCH_NAMES]
 STRETCH_OPTIONS = [("minmax", "Min/Max"), ("zscale", "ZScale")] + [
     (f"pct{p}", f"{p}%") for p in PERCENTILE_PRESETS
 ]
-EXPORT_DIR_OPTIONS = [("file_parent", "File's folder"), ("cwd", "Working directory")]
+EXPORT_DIR_OPTIONS = [("file_parent", "File's Folder"), ("cwd", "Working Directory")]
 BUILTIN_THEME_LABELS = [("system", "System"), ("dark", "Dark"), ("light", "Light")]
 
 BIN_FACTOR_MIN, BIN_FACTOR_MAX = 2, 20
@@ -140,24 +140,24 @@ class SettingsWindow(QDialog):
         layout.addWidget(desc)
 
         self._theme_row(layout)
-        self._segment_row(layout, "default mode", MODE_OPTIONS, self.mode, self._on_mode_changed)
-        self._combo_row(layout, "default colormap", COLORMAP_NAMES, self.colormap, self._on_colormap_changed)
-        self._labeled_combo_row(layout, "default cut levels", STRETCH_OPTIONS, self.stretch,
+        self._segment_row(layout, "Default Mode", MODE_OPTIONS, self.mode, self._on_mode_changed)
+        self._combo_row(layout, "Default Colormap", COLORMAP_NAMES, self.colormap, self._on_colormap_changed)
+        self._labeled_combo_row(layout, "Default Cut Levels", STRETCH_OPTIONS, self.stretch,
                                  self._on_stretch_changed)
-        self._segment_row(layout, "default scale", SCALE_OPTIONS, self.scale, self._on_scale_changed)
-        self._segment_row(layout, "export directory", EXPORT_DIR_OPTIONS, self.export_dir,
+        self._segment_row(layout, "Default Scale", SCALE_OPTIONS, self.scale, self._on_scale_changed)
+        self._segment_row(layout, "Export Directory", EXPORT_DIR_OPTIONS, self.export_dir,
                            self._on_export_dir_changed)
         self._export_filename_rows(layout)
-        self._slider_row(layout, "default zoom", self.zoom, ZOOM_MIN, ZOOM_MAX, self._on_zoom_changed)
-        self._slider_row(layout, "default bin factor", self.bin_factor, BIN_FACTOR_MIN, BIN_FACTOR_MAX,
+        self._slider_row(layout, "Default Zoom", self.zoom, ZOOM_MIN, ZOOM_MAX, self._on_zoom_changed)
+        self._slider_row(layout, "Default Bin Factor", self.bin_factor, BIN_FACTOR_MIN, BIN_FACTOR_MAX,
                           self._on_bin_factor_changed, integer=True, enabled_checkbox=True,
                           checked=self.bin_enabled, on_toggled=self._on_bin_enabled_changed)
-        self._slider_row(layout, "default smooth sigma", self.smooth_sigma, SMOOTH_SIGMA_MIN, SMOOTH_SIGMA_MAX,
+        self._slider_row(layout, "Default Smooth Sigma", self.smooth_sigma, SMOOTH_SIGMA_MIN, SMOOTH_SIGMA_MAX,
                           self._on_smooth_sigma_changed, enabled_checkbox=True, checked=self.smooth_enabled,
                           on_toggled=self._on_smooth_enabled_changed)
         self._accent_row(layout)
-        self._blank_picker = self._optional_color_row(layout, "zero/NaN pixel color", "blank_color", "off")
-        self._cross_picker = self._optional_color_row(layout, "center cross color", "cross_color", "auto")
+        self._blank_picker = self._optional_color_row(layout, "Zero/NaN Pixel Color", "blank_color", "Off")
+        self._cross_picker = self._optional_color_row(layout, "Center Cross Color", "cross_color", "Auto")
         self._mask_colors_row(layout)
         self._shortcuts_row(layout)
 
@@ -261,7 +261,7 @@ class SettingsWindow(QDialog):
     # ---------------------------------------------------------------- theme
 
     def _theme_row(self, layout: QVBoxLayout) -> None:
-        row = self._row_label(layout, "theme")
+        row = self._row_label(layout, "Theme")
         self._theme_combo = QComboBox()
         self._theme_combo.currentIndexChanged.connect(self._on_theme_combo_changed)
         row.addWidget(self._theme_combo)
@@ -385,9 +385,9 @@ class SettingsWindow(QDialog):
     # every format but its own - and optional even there, the user may
     # accept that leaving it out makes exports collide on one filename.
     _EXPORT_FORMAT_ROWS = (
-        ("", "quick export filename", ("$EXT", "$SLICE")),
-        ("_multi", "quick export filename (multi-ext)", ("$SLICE",)),
-        ("_cube", "quick export filename (cube)", ("$EXT",)),
+        ("", "Quick Export Filename", ("$EXT", "$SLICE")),
+        ("_multi", "Quick Export Filename (multi-ext)", ("$SLICE",)),
+        ("_cube", "Quick Export Filename (cube)", ("$EXT",)),
     )
 
     def _export_filename_rows(self, layout: QVBoxLayout) -> None:
@@ -458,12 +458,12 @@ class SettingsWindow(QDialog):
         row_widget = QWidget()
         row = QHBoxLayout(row_widget)
         row.setContentsMargins(0, 0, 0, 0)
-        lbl = QLabel("accent color:")
+        lbl = QLabel("Accent Color:")
         lbl.setProperty("dim", True)
         row.addWidget(lbl)
         row.addStretch(1)
 
-        self._accent_picker = HexColorPicker(self.accent_color, allow_empty=True, placeholder="default")
+        self._accent_picker = HexColorPicker(self.accent_color, allow_empty=True, placeholder="Default")
         self._accent_picker.colorChanged.connect(self._on_accent_changed)
         row.addWidget(self._accent_picker)
 
@@ -499,7 +499,7 @@ class SettingsWindow(QDialog):
     # --------------------------------------------------------- mask colors
 
     def _mask_colors_row(self, layout: QVBoxLayout) -> None:
-        row = self._row_label(layout, "mask colors")
+        row = self._row_label(layout, "Mask Colors")
         edit_btn = RoundButton("Edit Mask Colors...")
         edit_btn.clicked.connect(self._edit_mask_colors)
         row.addWidget(edit_btn)
@@ -525,7 +525,7 @@ class SettingsWindow(QDialog):
     # ----------------------------------------------------------- shortcuts
 
     def _shortcuts_row(self, layout: QVBoxLayout) -> None:
-        row = self._row_label(layout, "keyboard shortcuts")
+        row = self._row_label(layout, "Keyboard Shortcuts")
         edit_btn = RoundButton("Edit Keyboard Shortcuts...")
         edit_btn.clicked.connect(self._edit_shortcuts)
         row.addWidget(edit_btn)
