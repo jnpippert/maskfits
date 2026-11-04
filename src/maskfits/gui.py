@@ -7,6 +7,7 @@ import signal
 import sys
 import threading
 import time
+import warnings
 from typing import Optional
 
 import numpy as np
@@ -69,6 +70,8 @@ from maskfits.imagedata import (
     load_fits_image,
     minmax_cuts,
     percentile_cuts,
+    cube_spectral_axis,
+    header_flux_unit,
     safe_span,
     sb_calibration,
     surface_brightness,
@@ -86,6 +89,7 @@ from maskfits.masking import (
 from maskfits.region_export_window import RegionExportWindow
 from maskfits.regions import write_region_file
 from maskfits.settings import Settings, format_mask_filename, load_settings
+from maskfits.spectrum_view import SpectrumView
 from maskfits.settings_window import SettingsWindow
 from maskfits.shortcuts import SHORTCUT_ACTIONS, effective_keys
 from maskfits.theme import current_theme, detect_os_light_mode, hex_to_rgb, on_theme_changed, theme_manager
@@ -897,8 +901,19 @@ class MaskFitsApp(QMainWindow):
         self.sidebar_toggle.clicked.connect(self._toggle_sidebar)
         body.addWidget(self.sidebar_toggle)
 
-        self.canvas = ImageCanvas(self, body_widget)
-        body.addWidget(self.canvas, 1)
+        # The image, with the cube spectrum panel (cubes only) below it -
+        # its own column, so the panel spans the image's width and not the
+        # sidebar's.
+        image_column = QWidget(body_widget)
+        column = QVBoxLayout(image_column)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(6)
+        self.canvas = ImageCanvas(self, image_column)
+        column.addWidget(self.canvas, 1)
+        self.spectrum_view = SpectrumView(image_column)
+        self.spectrum_view.hide()
+        column.addWidget(self.spectrum_view)
+        body.addWidget(image_column, 1)
 
         status_panel = RoundedPanel(central, mode="hug")
         root_layout.addWidget(status_panel)
@@ -1288,6 +1303,7 @@ class MaskFitsApp(QMainWindow):
 
         self.filename_label.setText(os.path.basename(entry.path) if entry.path else "noname")
         self._update_extension_picker()
+        self._sync_spectrum_view()
         self.readout["shape"].setText(self._shape_text(entry.image))
         self.counter_label.setText(f"{self.index + 1}/{len(self.entries)}")
         self._sync_isopy_cuts()
@@ -1582,6 +1598,7 @@ class MaskFitsApp(QMainWindow):
         image.data = image.cube[index]
         image.mask = carry_mask
         self._sync_slice_controls()
+        self.spectrum_view.set_marker(index)
         self._update_cuts_display()
         suffix = self._cube_slice_label(image)
         self._set_status(f"slice {index + 1}/{image.cube.shape[0]}{f' ({suffix})' if suffix else ''}")
@@ -1591,45 +1608,55 @@ class MaskFitsApp(QMainWindow):
     def _cube_slice_label(image: FitsImage) -> str:
         """The current slice's position along the cube's third axis (e.g.
         "r 6165 Angstrom" for an SDSS-band cube, "4686 Angstrom" for a
-        linear wavelength cube) - empty string if the header doesn't
-        describe that axis at all, since not every cube extension will.
-
-        Two conventions, checked in order:
-        - Per-slice WAVE<i>/BAND<i> keywords (e.g. WAVE0/BAND0, WAVE1/
-          BAND1, ...) - for a handful of discrete, unevenly-spaced bands
-          (SDSS ugriz's central wavelengths aren't evenly spaced, so a
-          single linear axis can't describe them). No CUNIT3 keyword
-          accompanies this convention in practice, so it defaults to
-          Angstrom - the only unit this app's own cube generators use it
-          for; not a general assumption for arbitrary WAVE<i> data.
-        - Standard FITS linear WCS axis (CRVAL3/CDELT3/CRPIX3/CUNIT3):
-          pixel i (0-based) is CRVAL3 + (i - (CRPIX3-1))*CDELT3.
-        """
-        header = image.header
+        wavelength axis) - empty when the header doesn't describe the axis.
+        See imagedata.cube_spectral_axis."""
+        axis = cube_spectral_axis(image.header, image.cube.shape[0])
+        if axis.quantity == "slice":
+            return ""
         index = image.slice_index
+        text = f"{axis.values[index]:.6g} {axis.unit}".strip()
+        band = axis.labels[index]
+        return f"{band} {text}" if band else text
 
-        wave_key = f"WAVE{index}"
-        if wave_key in header:
-            try:
-                value = float(header[wave_key])
-            except (TypeError, ValueError):
-                return ""
-            band = str(header.get(f"BAND{index}", "")).strip()
-            unit = str(header.get("CUNIT3", "Angstrom")).strip()
-            text = f"{value:.6g} {unit}".strip()
-            return f"{band} {text}".strip() if band else text
+    # ------------------------------------------------------- cube spectrum
 
-        if "CRVAL3" not in header or "CDELT3" not in header:
-            return ""
-        try:
-            crval3 = float(header["CRVAL3"])
-            cdelt3 = float(header["CDELT3"])
-            crpix3 = float(header.get("CRPIX3", 1))
-        except (TypeError, ValueError):
-            return ""
-        value = crval3 + (index - (crpix3 - 1)) * cdelt3
-        unit = str(header.get("CUNIT3", "")).strip()
-        return f"{value:.6g} {unit}".strip()
+    def _sync_spectrum_view(self) -> None:
+        """Shows the spectrum panel (below the image) only while a cube is
+        loaded, set up for that cube's spectral axis and flux unit."""
+        image = self.image
+        if image is None or image.cube is None:
+            self.spectrum_view.hide()
+            return
+        self.spectrum_view.set_axis(cube_spectral_axis(image.header, image.cube.shape[0]),
+                                    header_flux_unit(image.header))
+        self.spectrum_view.set_marker(image.slice_index)
+        self.spectrum_view.show()
+        self._update_spectrum()
+
+    def _cursor_spectrum(self) -> Optional[np.ndarray]:
+        """The cube's values along its third axis at the cursor's pixel -
+        the mean over the pixel's bin block while binned, so it matches what
+        the image shows. None off the image."""
+        image = self.image
+        if image is None or image.cube is None or self._cursor_img_pos is None:
+            return None
+        ix, iy = (int(np.floor(v)) for v in self._cursor_img_pos)
+        factor = self.entry.bin_factor if self.entry.is_binned else 1
+        _n, ny, nx = image.cube.shape
+        x0, y0 = ix * factor, iy * factor
+        if not (0 <= x0 < nx and 0 <= y0 < ny):
+            return None
+        block = image.cube[:, y0:y0 + factor, x0:x0 + factor]
+        if factor == 1:
+            return np.asarray(block[:, 0, 0], dtype=float)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)  # an all-NaN block is fine
+            return np.nanmean(block, axis=(1, 2))
+
+    def _update_spectrum(self) -> None:
+        if not self.spectrum_view.isVisibleTo(self):
+            return
+        self.spectrum_view.set_spectrum(self._cursor_spectrum())
 
     def prev_extension(self) -> None:
         """Down-arrow hotkey - steps to the previous entry in
@@ -2611,7 +2638,8 @@ class MaskFitsApp(QMainWindow):
                 if self.entry.is_binned:
                     factor = self.entry.bin_factor
                     wcs_ix, wcs_iy = wcs_ix * factor, wcs_iy * factor
-                sky = image.wcs.pixel_to_world(wcs_ix, wcs_iy)
+                # .celestial: a cube's WCS has a third (spectral) axis too.
+                sky = image.wcs.celestial.pixel_to_world(wcs_ix, wcs_iy)
                 self.readout["RA"].setText(sky.ra.to_string(unit="hourangle", sep=":", precision=2))
                 self.readout["DEC"].setText(sky.dec.to_string(sep=":", precision=1, alwayssign=True))
             except Exception:
@@ -2621,6 +2649,7 @@ class MaskFitsApp(QMainWindow):
             self.readout["RA"].setText("")
             self.readout["DEC"].setText("")
 
+        self._update_spectrum()
         self._refresh_active_preview()
 
     def _poll_cursor(self) -> None:

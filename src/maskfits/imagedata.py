@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
+from astropy import units as u
 from astropy.io import fits
 from astropy.visualization import AsinhStretch, LinearStretch, LogStretch, ZScaleInterval
 from astropy.wcs import WCS, FITSFixedWarning
@@ -184,6 +185,97 @@ ISOPY_MIN_SB = 22.0
 ISOPY_MAX_SB = 27.0
 ISOPY_DEFAULT_ZP = 30.0
 ISOPY_DEFAULT_PXSCALE = 1.0
+
+
+# CTYPE3 prefix -> what the cube's third axis measures.
+_SPECTRAL_QUANTITIES = {"WAVE": "wavelength", "AWAV": "wavelength", "FREQ": "frequency",
+                        "ENER": "energy", "WAVN": "wavenumber", "VRAD": "velocity",
+                        "VOPT": "velocity", "VELO": "velocity", "ZOPT": "redshift"}
+
+
+@dataclass(frozen=True)
+class SpectralAxis:
+    """Where each slice of a cube sits along its third axis.
+
+    `values` has one entry per slice; `quantity` names the axis
+    ("wavelength", "frequency", ... or "slice" when the header doesn't
+    describe it); `labels` are per-slice band names (e.g. "u", "g") when
+    the header gives them, else empty strings."""
+
+    values: np.ndarray
+    quantity: str
+    unit: str
+    labels: tuple[str, ...]
+
+
+def cube_spectral_axis(header: "fits.Header", n_slices: int) -> SpectralAxis:
+    """The cube's spectral axis from its header. Checked in order:
+    - Per-slice WAVE<i>/BAND<i> keywords (0-based i) - for a few discrete,
+      unevenly spaced bands (e.g. SDSS ugriz). Unit from CUNIT3, else
+      Angstrom. Where only some slices have one, those override the WCS
+      axis below for just those slices.
+    - The cube's third WCS axis (CTYPE3/CRVAL3/CRPIX3/CDELT3 or CD3_3/PC3_3,
+      log axes included) via astropy. WCSLIB hands recognized spectral axes
+      back in SI units (Angstrom -> m), so the values are converted back to
+      the header's own CUNIT3. The quantity comes from CTYPE3,
+      case-insensitively (real data uses e.g. "Wave", which astropy itself
+      doesn't recognize as spectral).
+    Otherwise just the 1-based slice numbers."""
+    labels = tuple(str(header.get(f"BAND{i}", "")).strip() for i in range(n_slices))
+    waves = [_header_float(header, (f"WAVE{i}",)) for i in range(n_slices)]
+    if n_slices and all(w is not None for w in waves):
+        unit = str(header.get("CUNIT3", "Angstrom")).strip()
+        return SpectralAxis(np.array(waves, dtype=float), "wavelength", unit, labels)
+    axis = _wcs_spectral_axis(header, n_slices, labels)
+    if any(w is not None for w in waves):
+        values = axis.values.copy()
+        for i, wave in enumerate(waves):
+            if wave is not None:
+                values[i] = wave
+        unit = str(header.get("CUNIT3", "Angstrom")).strip()
+        return SpectralAxis(values, "wavelength", unit, labels)
+    return axis
+
+
+def _wcs_spectral_axis(header: "fits.Header", n_slices: int, labels: tuple[str, ...]) -> SpectralAxis:
+    slices = SpectralAxis(np.arange(1, n_slices + 1, dtype=float), "slice", "", labels)
+    if "CRVAL3" not in header and "CTYPE3" not in header:
+        return slices
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            axis = WCS(header).sub([3])
+            values = np.asarray(axis.pixel_to_world_values(np.arange(n_slices)), dtype=float)
+        wcs_unit = axis.wcs.cunit[0]
+    except Exception:
+        return slices
+    if values.shape != (n_slices,) or not np.all(np.isfinite(values)):
+        return slices
+
+    unit = str(header.get("CUNIT3", "")).strip()
+    if unit:
+        try:
+            values = (values * wcs_unit).to_value(u.Unit(unit))
+        except (ValueError, TypeError, u.UnitsError):
+            unit = wcs_unit.to_string()
+    elif wcs_unit != u.dimensionless_unscaled:
+        unit = wcs_unit.to_string()
+    ctype = str(header.get("CTYPE3", "")).strip().upper()
+    quantity = _SPECTRAL_QUANTITIES.get(ctype[:4], "wavelength" if unit else "slice")
+    return SpectralAxis(values, quantity, unit, labels)
+
+
+FLUX_UNIT_KEYWORDS = ("BUNIT", "FLUXUNIT")
+
+
+def header_flux_unit(header: "fits.Header") -> str:
+    """The data's flux unit as the header states it (BUNIT, else
+    FLUXUNIT), or "" when it doesn't say - never guessed."""
+    for key in FLUX_UNIT_KEYWORDS:
+        value = str(header.get(key, "")).strip()
+        if value:
+            return value
+    return ""
 
 
 # Header keywords that commonly hold the photometric zero point (mag) and

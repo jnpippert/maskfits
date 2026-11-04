@@ -287,7 +287,8 @@ def test_status_omits_the_value_when_the_header_has_no_wave_axis(qapp, tmp_path)
 
 
 def test_cube_slice_label_handles_a_missing_crpix3(qapp, tmp_path):
-    """CRPIX3 is optional per the FITS WCS convention (defaults to 1)."""
+    """CRPIX3 is optional - the FITS WCS standard defaults it to 0.0 (not
+    1), so pixel 3 (the third slice) sits 3 steps past CRVAL3."""
     path = tmp_path / "wave_cube.fits"
     data = np.zeros((3, 8, 8), dtype=np.float32)
     hdr = fits.Header()
@@ -299,7 +300,7 @@ def test_cube_slice_label_handles_a_missing_crpix3(qapp, tmp_path):
 
     win.switch_slice(2)
 
-    assert win.status.text() == "slice 3/3 (5020 Angstrom)"
+    assert win.status.text() == "slice 3/3 (5030 Angstrom)"
 
 
 def _write_band_cube(path, size=16):
