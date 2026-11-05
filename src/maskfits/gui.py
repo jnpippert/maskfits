@@ -94,6 +94,7 @@ from maskfits.settings_window import SettingsWindow
 from maskfits.shortcuts import SHORTCUT_ACTIONS, effective_keys
 from maskfits.welcome import paint_welcome
 from maskfits.theme import current_theme, detect_os_light_mode, hex_to_rgb, on_theme_changed, theme_manager
+from maskfits import __version__
 from maskfits.update_check import GITHUB_REPO_URL, UpdateCheckWorker, check_for_updates, get_clone_url
 from maskfits.update_dialog import show_update_dialog
 from maskfits.widgets import RoundButton, RoundedPanel, RoundSlider, SegmentedControl, SidebarToggle, ThemeToggle
@@ -372,12 +373,7 @@ class MagnifierWidget(QWidget):
         app = self.app
         image = app.image
         if image is None or app._cursor_img_pos is None:
-            painter.setPen(QColor(theme.panel_border))
-            step = 10
-            for x in range(0, self.width(), step):
-                painter.drawLine(x, 0, x, self.height())
-            for y in range(0, self.height(), step):
-                painter.drawLine(0, y, self.width(), y)
+            self._paint_empty_grid(painter, theme)
             return
 
         ny, nx = image.data.shape
@@ -433,8 +429,33 @@ class MagnifierWidget(QWidget):
 
         app._paint_shape_outline(painter, to_widget, block)
 
+    def _paint_empty_grid(self, painter: QPainter, theme) -> None:
+        """No cursor over an image: the MAG_SIZE x MAG_SIZE pixel blocks the
+        zoom view would show, as a closed grid (the outer lines sit on the
+        last pixel row/column so they aren't clipped off)."""
+        block = max(min(self.width(), self.height()) // MAG_SIZE, 1)
+        disp = block * MAG_SIZE
+        ox, oy = (self.width() - disp) // 2, (self.height() - disp) // 2
+        right, bottom = ox + disp - 1, oy + disp - 1
+        painter.setPen(QColor(theme.panel_border))
+        for i in range(MAG_SIZE + 1):
+            x = min(ox + i * block, right)
+            y = min(oy + i * block, bottom)
+            painter.drawLine(x, oy, x, bottom)
+            painter.drawLine(ox, y, right, y)
+
 
 MODE_FLAGS = {"s": "line", "e": "ellipse"}
+
+
+def about_text() -> str:
+    """Help -> About."""
+    return (
+        "Tool to mask FITS images.\n"
+        "Inspired by Johannes Koppenh\u00f6fer's fitsedit.\n\n"
+        "Developed by Jan-Niklas Pippert \u00a9 2026\n\n"
+        f"Version {__version__}"
+    )
 
 
 class MaskFitsApp(QMainWindow):
@@ -716,10 +737,10 @@ class MaskFitsApp(QMainWindow):
 
         help_menu = menubar.addMenu("Help")
         about_action = help_menu.addAction("About", self._show_help)
-        settings_action = help_menu.addAction("Settings...", self._open_settings)
+        settings_action = help_menu.addAction("Settings", self._open_settings)
         update_action = help_menu.addAction("Check New Repo Version...", self._check_repo_version)
         hotkeys_action = help_menu.addAction("Hotkeys", self._show_hotkeys)
-        # On macOS, Qt auto-detects action text like "About"/"Settings..."
+        # On macOS, Qt auto-detects action text like "About"/"Settings"
         # and silently relocates it out of whatever menu it was added to
         # into the application's own menu (top-left, next to the app name)
         # instead of leaving it under Help. NoRole pins all four to
@@ -733,7 +754,7 @@ class MaskFitsApp(QMainWindow):
             # spot too (Cmd+,) - a second action, explicitly given
             # PreferencesRole, gets pulled out of Help into that spot by Qt,
             # so it's reachable from both places rather than picking one.
-            mac_settings_action = QAction("Settings...", self)
+            mac_settings_action = QAction("Settings", self)
             mac_settings_action.triggered.connect(self._open_settings)
             mac_settings_action.setMenuRole(QAction.MenuRole.PreferencesRole)
             help_menu.addAction(mac_settings_action)
@@ -878,21 +899,7 @@ class MaskFitsApp(QMainWindow):
                                 command="pip install --upgrade maskfits")
 
     def _show_help(self) -> None:
-        # The full hotkey list lives in Help -> Hotkeys instead (a live view
-        # against the current Settings-driven bindings, since keyboard
-        # shortcuts are rebindable - a hardcoded copy of them here would go
-        # stale the moment the user rebinds anything).
-        QMessageBox.information(
-            self, "maskfits",
-            "Ellipse mode: stamp shapes sized by the radius, ellipticity, and angle sliders\n"
-            "(ellipticity 0 is a circle)\n\n"
-            "Satellite mode styles:\n"
-            "  Segment - click a start point, click an end point\n"
-            "  Arrow   - click start, click a second point; the trail extends\n"
-            "            past it to the image border\n"
-            "  Line    - click two points; the trail extends to both borders\n\n"
-            "See Help > Hotkeys for the full list of mouse and keyboard controls.",
-        )
+        QMessageBox.about(self, "About maskfits", about_text())
 
     # -------------------------------------------------------------- layout
 
