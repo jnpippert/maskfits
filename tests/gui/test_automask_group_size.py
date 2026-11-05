@@ -218,3 +218,41 @@ def test_confirm_and_discard_follow_the_built_in_light_mode(dialog, restore_them
     restore_theme.set_custom(replace(LIGHT, green="#ff00ff", danger="#00ffff"))
     assert LIGHT.green in dialog._confirm_btn.styleSheet()
     assert LIGHT.danger in dialog._discard_btn.styleSheet()
+
+
+# --------------------------------------------------------- histogram legend
+
+
+def test_legend_sits_below_the_histogram(dialog, qapp):
+    """Regression: the word-wrapped labels' too-small minimum height left
+    the dialog short, the layout squeezed the histogram row, and the fixed-
+    height histogram overflowed into the legend."""
+    from PySide6.QtWidgets import QLabel
+
+    dialog.show()
+    qapp.processEvents()
+    canvas_bottom = dialog.hist_canvas.mapTo(dialog, dialog.hist_canvas.rect().bottomLeft()).y()
+    legend = [label for label in dialog.findChildren(QLabel)
+              if label.text() in ("Gaussian Fit", "Background", "Mask Threshold")]
+    assert len(legend) == 3
+    for label in legend:
+        assert label.parentWidget().mapTo(dialog, label.parentWidget().rect().topLeft()).y() > canvas_bottom
+    assert dialog.hist_canvas.height() == dialog.hist_canvas.sizeHint().height() or dialog.hist_canvas.height() == 140
+
+
+def test_no_kept_after_clipping_legend_entry(dialog):
+    from PySide6.QtWidgets import QLabel
+
+    assert not any("kept after clipping" in label.text() for label in dialog.findChildren(QLabel))
+
+
+def test_default_slider_values(qapp, tmp_path):
+    path = tmp_path / "d.fits"
+    fits.PrimaryHDU(np.zeros((20, 20), dtype=np.float32)).writeto(path)
+    win = MaskFitsApp([str(path)], settings=Settings())
+    win.open_auto_mask()
+    dialog = win._auto_mask_window
+    assert dialog.cleanup_iterations == 10
+    assert dialog.cleanup_kappa == 2.0
+    assert dialog.kappa == 5.0
+    assert dialog.expand_px == 2

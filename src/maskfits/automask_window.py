@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QLineEdit,
     QVBoxLayout,
     QWidget,
@@ -42,6 +43,11 @@ if TYPE_CHECKING:
     from maskfits.gui import Entry, MaskFitsApp
 
 GROUP_SIZE_MIN, GROUP_SIZE_MAX = 1, 500  # px
+# Starting values of the window's sliders.
+DEFAULT_CLEANUP_KAPPA = 2.0
+DEFAULT_CLEANUP_ITERATIONS = 10
+DEFAULT_MASK_KAPPA = 5.0
+DEFAULT_EXPAND_PX = 2
 HIST_W = 420
 HIST_H = 140
 HIST_BINS = 60
@@ -153,14 +159,14 @@ class AutoMaskWindow(QDialog):
         self.setModal(False)
 
         self.bg_method = "median"
-        self.cleanup_kappa = 4.0
-        self.cleanup_iterations = 10
-        self.kappa = 5.0
+        self.cleanup_kappa = DEFAULT_CLEANUP_KAPPA
+        self.cleanup_iterations = DEFAULT_CLEANUP_ITERATIONS
+        self.kappa = DEFAULT_MASK_KAPPA
         # Off by default: keep every flagged region, whatever its size.
         self.group_size_enabled = False
         self.min_group_size = 1
         self.max_group_size = 50
-        self.expand_px = 2
+        self.expand_px = DEFAULT_EXPAND_PX
         # None, "lines" or "circles" - see automask.filter_by_shape.
         self.shape_filter: Optional[str] = None
 
@@ -187,6 +193,12 @@ class AutoMaskWindow(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 12, 16, 16)
         layout.setSpacing(0)
+        # The word-wrapped labels report a smaller minimum height than they
+        # need at their width, so a freely sized dialog came out too short
+        # and the layout squeezed the fixed-height histogram row - the
+        # canvas then overflowed into the legend below it. Sizing the
+        # dialog to exactly its layout's needs avoids that.
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)
 
         title = QLabel("Auto Mask")
         layout.addWidget(title)
@@ -218,7 +230,6 @@ class AutoMaskWindow(QDialog):
         legend = QHBoxLayout()
         legend.setSpacing(0)
         theme = current_theme()
-        self._legend_swatch(legend, theme.text_dim, "Background (kept after clipping)")
         self._legend_swatch(legend, theme.blue, "Gaussian Fit")
         self._legend_swatch(legend, theme.green, "Background")
         self._legend_swatch(legend, theme.warning, "Mask Threshold")
