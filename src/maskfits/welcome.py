@@ -1,5 +1,5 @@
 """The welcome screen painted on the empty image canvas when no file is
-open: the app logo as a faint one-color watermark, the name and author,
+open: the app logo as a faint one-color watermark, the name and version,
 and a few basic keyboard shortcuts drawn as key caps (live bindings, so a
 rebound key shows up here too). See ImageCanvas.paintEvent.
 """
@@ -14,12 +14,13 @@ import numpy as np
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QImage, QKeySequence, QPainter
 
+from maskfits import __version__
 from maskfits.shortcuts import effective_keys
 from maskfits.theme import Theme
 
 ICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "icon.png")
 
-AUTHOR = "Jan-Niklas Pippert"
+TITLE = "maskfits"
 # (label, shortcut action id) - the rows under the logo.
 WELCOME_ROWS = [
     ("Open File", "open_file"),
@@ -95,6 +96,10 @@ def watermark_image(color: QColor, size: int) -> Optional[QImage]:
     return image
 
 
+def title_text() -> str:
+    return f"{TITLE} {__version__}"
+
+
 def paint_welcome(painter: QPainter, rect: QRectF, theme: Theme, shortcuts: dict[str, list[str]]) -> None:
     painter.save()
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -103,15 +108,15 @@ def paint_welcome(painter: QPainter, rect: QRectF, theme: Theme, shortcuts: dict
     title_font.setPointSizeF(base_font.pointSizeF() * 1.9)
     title_font.setWeight(QFont.Weight.DemiBold)
 
-    title_h, author_h, gap = 34.0, 20.0, 26.0
+    title_h, gap = 34.0, 26.0
     rows_h = ROW_H * len(WELCOME_ROWS)
-    text_h = title_h + author_h + gap + rows_h
+    text_h = title_h + gap + rows_h
     logo = min(LOGO_MAX, rect.height() - text_h - 2 * gap - 40, rect.width() * 0.5)
     if logo < LOGO_MIN:
         logo = 0
     total = (logo + gap if logo else 0) + text_h
     if total > rect.height():
-        rows_h, text_h = 0.0, title_h + author_h  # too small: name only
+        rows_h, text_h = 0.0, title_h  # too small: name only
         total = text_h
     y = rect.top() + (rect.height() - total) / 2
 
@@ -123,13 +128,11 @@ def paint_welcome(painter: QPainter, rect: QRectF, theme: Theme, shortcuts: dict
             painter.drawImage(QRectF(rect.center().x() - logo / 2, y, logo, logo), image)
         y += logo + gap
 
-    painter.setFont(title_font)
     painter.setPen(QColor(theme.text_dim))
-    painter.drawText(QRectF(rect.left(), y, rect.width(), title_h), Qt.AlignmentFlag.AlignCenter, "maskfits")
-    y += title_h
+    painter.setFont(title_font)
+    painter.drawText(QRectF(rect.left(), y, rect.width(), title_h), Qt.AlignmentFlag.AlignCenter, title_text())
     painter.setFont(base_font)
-    painter.drawText(QRectF(rect.left(), y, rect.width(), author_h), Qt.AlignmentFlag.AlignCenter, f"by {AUTHOR}")
-    y += author_h + gap
+    y += title_h + gap
 
     if rows_h:
         left = rect.center().x() - ROW_W / 2

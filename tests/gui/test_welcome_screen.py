@@ -143,3 +143,25 @@ def test_menu_actions_open_their_windows(qapp):
     win._menu_shortcut_actions["open_settings"].trigger()
     assert win._settings_window is not None
     win._settings_window.close()
+
+
+def test_title_shows_version_not_author(qapp, monkeypatch):
+    from maskfits import __version__
+    from maskfits import welcome
+
+    assert welcome.title_text() == f"maskfits {__version__}"
+    assert not hasattr(welcome, "AUTHOR")
+    drawn = []
+    real = welcome.QPainter.drawText
+
+    def record(self, *args):
+        drawn.append(args[-1])
+        return real(self, *args)
+
+    monkeypatch.setattr(welcome.QPainter, "drawText", record)
+    win = MaskFitsApp([], settings=Settings())
+    win.resize(1200, 800)
+    win.show()
+    win.canvas.grab()
+    assert f"maskfits {__version__}" in drawn
+    assert not any("Pippert" in str(t) for t in drawn)
