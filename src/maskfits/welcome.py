@@ -31,7 +31,7 @@ WELCOME_ROWS = [
 
 LOGO_MAX = 300
 LOGO_MIN = 64  # below this the logo is dropped rather than shown as a speck
-WATERMARK_ALPHA = 0.07  # strength of the logo against the canvas
+WATERMARK_ALPHA = 0.16  # strength of the logo against the canvas
 ROW_W = 340
 ROW_H = 30
 CAP_H = 22
@@ -39,7 +39,7 @@ CAP_MIN_W = 24
 CAP_GAP = 4
 
 # The icon's dark tile color; anything clearly brighter (the white spiral,
-# the red line) is a feature and is cut out of the watermark.
+# the red line) is a feature - the only part the watermark keeps.
 ICON_TILE_LEVEL = 24
 FEATURE_RAMP = 60
 
@@ -70,8 +70,9 @@ def key_caps(sequence: str, mac: Optional[bool] = None) -> list[str]:
 
 
 def watermark_image(color: QColor, size: int) -> Optional[QImage]:
-    """The app icon as a one-color silhouette: the tile in `color`, its
-    spiral and line cut out - like the editor-logo watermark in VS Code."""
+    """The app icon as a one-color watermark, like the editor logo in VS
+    Code: only the galaxy and the satellite line, in `color` - the rounded
+    tile behind them is left out, so no icon outline shows."""
     key = (color.rgba(), size)
     if key in _watermark_cache:
         return _watermark_cache[key]
@@ -85,7 +86,7 @@ def watermark_image(color: QColor, size: int) -> Optional[QImage]:
     pixels = pixels.reshape(h, w, 4).astype(np.float32)
     brightest = pixels[..., :3].max(axis=2)
     feature = np.clip((brightest - ICON_TILE_LEVEL) / FEATURE_RAMP, 0.0, 1.0)
-    alpha = pixels[..., 3] / 255.0 * (1.0 - feature) * color.alphaF()
+    alpha = pixels[..., 3] / 255.0 * feature * color.alphaF()
     out = np.empty((h, w, 4), dtype=np.uint8)
     out[..., 0], out[..., 1], out[..., 2] = color.red(), color.green(), color.blue()
     out[..., 3] = np.round(alpha * 255).astype(np.uint8)

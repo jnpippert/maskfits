@@ -55,12 +55,16 @@ def test_key_caps():
     assert key_caps("Tab", mac=True) == ["Tab"]
 
 
-def test_watermark_cuts_out_the_logo_features(qapp):
+def test_watermark_keeps_only_galaxy_and_line(qapp):
     image = watermark_image(QColor(255, 255, 255, 40), 128)
     assert image is not None and image.width() == 128
     alphas = {image.pixelColor(x, y).alpha() for x in range(0, 128, 4) for y in range(0, 128, 4)}
-    assert 0 in alphas  # transparent corners and cut-out spiral
     assert max(alphas) <= 40  # never stronger than the requested tint
+    assert max(alphas) >= 35  # the spiral/line strokes are there
+    # Plain tile area (inside the rounded square, away from the spiral and
+    # the line): transparent, so no icon outline shows.
+    assert image.pixelColor(22, 100).alpha() == 0
+    assert image.pixelColor(64, 4).alpha() == 0  # outside the tile too
 
 
 def test_sidebar_folded_when_no_file_and_unfolds_on_open(qapp, tmp_path, monkeypatch):
