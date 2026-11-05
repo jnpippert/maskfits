@@ -24,6 +24,11 @@ class ShortcutAction:
 
 
 SHORTCUT_ACTIONS: list[ShortcutAction] = [
+    # "Ctrl" is Cmd on macOS (Qt maps it). Settings is Ctrl+, rather than
+    # Ctrl+S, which is already Quick Export.
+    ShortcutAction("open_file", "Open File", ("Ctrl+O",)),
+    ShortcutAction("open_settings", "Open Settings", ("Ctrl+,",)),
+    ShortcutAction("show_hotkeys", "Show Keyboard Shortcuts", ("Ctrl+K",)),
     ShortcutAction("undo", "Undo", ("Ctrl+Z", "U")),
     ShortcutAction("redo", "Redo", ("Ctrl+Shift+Z", "Y")),
     ShortcutAction("prev_image", "Previous Image", ("Left",)),
@@ -38,7 +43,7 @@ SHORTCUT_ACTIONS: list[ShortcutAction] = [
     ShortcutAction("toggle_bin", "Bin Image (current factor)", ("B",)),
     ShortcutAction("reset_zoom", "Reset Zoom", ("Space",)),
     ShortcutAction("toggle_center_cross", "Toggle Center Cross", ("K",)),
-    ShortcutAction("toggle_tool", "Switch Tool (ellipse / satellite)", ("Tab",)),
+    ShortcutAction("toggle_tool", "Switch Shape (ellipse / satellite)", ("Tab",)),
     ShortcutAction("quick_export", "Quick Export Mask", ("Ctrl+S",)),
     ShortcutAction("prev_extension", "Previous FITS Extension", ("Down",)),
     ShortcutAction("next_extension", "Next FITS Extension", ("Up",)),

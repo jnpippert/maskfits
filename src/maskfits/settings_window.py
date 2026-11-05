@@ -406,6 +406,14 @@ class SettingsWindow(QDialog):
 
     def _clear_theme_editor(self, _result=None) -> None:
         self._theme_editor = None
+        self._take_focus_back()
+
+    def _take_focus_back(self) -> None:
+        """A sub-window of this one just closed. Without this, macOS hands
+        focus to the main window and Settings drops behind it."""
+        if self.isVisible():
+            self.raise_()
+            self.activateWindow()
 
     def _on_theme_editor_saved(self, name: str) -> None:
         self._reload_theme_combo(select=name)
@@ -555,6 +563,7 @@ class SettingsWindow(QDialog):
 
     def _clear_mask_colors_window(self, _result=None) -> None:
         self._mask_colors_window = None
+        self._take_focus_back()
 
     def _on_mask_colors_saved(self, colors: dict) -> None:
         self.mask_colors = colors
@@ -581,6 +590,7 @@ class SettingsWindow(QDialog):
 
     def _clear_shortcuts_window(self, _result=None) -> None:
         self._shortcuts_window = None
+        self._take_focus_back()
 
     def _on_shortcuts_saved(self, overrides: dict) -> None:
         self.shortcuts = overrides

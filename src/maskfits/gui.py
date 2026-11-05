@@ -92,6 +92,7 @@ from maskfits.settings import Settings, format_mask_filename, load_settings
 from maskfits.spectrum_view import SpectrumView
 from maskfits.settings_window import SettingsWindow
 from maskfits.shortcuts import SHORTCUT_ACTIONS, effective_keys
+from maskfits.welcome import paint_welcome
 from maskfits.theme import current_theme, detect_os_light_mode, hex_to_rgb, on_theme_changed, theme_manager
 from maskfits.update_check import GITHUB_REPO_URL, UpdateCheckWorker, check_for_updates, get_clone_url
 from maskfits.update_dialog import show_update_dialog
@@ -304,6 +305,8 @@ class ImageCanvas(QWidget):
         painter.fillRect(self.rect(), QColor(current_theme().canvas_bg))
         if self.app._base_pixmap is not None:
             painter.drawPixmap(self.app._base_pos, self.app._base_pixmap)
+        if self.app.image is None:
+            paint_welcome(painter, QRectF(self.rect()), current_theme(), self.app.settings.shortcuts)
         self.app._paint_overlays(painter)
         # _paint_overlays may have left a translucent fill brush set (for the
         # ellipse hover preview) - without clearing it, drawRect() below
@@ -536,6 +539,9 @@ class MaskFitsApp(QMainWindow):
         self._undo: Optional[tuple[int, np.ndarray]] = None
         self._redo: Optional[tuple[int, np.ndarray]] = None
         self.sidebar_collapsed = False
+        # True while the sidebar is folded away only because no file is
+        # open (see _sync_sidebar_to_image) - it unfolds again on load.
+        self._sidebar_auto_collapsed = False
 
         self._base_pixmap: Optional[QPixmap] = None
         self._base_pos = QPointF(0, 0)
@@ -652,7 +658,7 @@ class MaskFitsApp(QMainWindow):
         menubar = self.menuBar()
 
         file_menu = menubar.addMenu("File")
-        file_menu.addAction("Open...", self.open_files)
+        open_action = file_menu.addAction("Open...", self.open_files)
         file_menu.addAction("Export Mask", self.export_mask)
         file_menu.addAction("Save Mask As...", self.export_mask_as)
         file_menu.addAction("Save As DS9 Region...", self.export_region)
@@ -730,8 +736,16 @@ class MaskFitsApp(QMainWindow):
             mac_settings_action = QAction("Settings...", self)
             mac_settings_action.triggered.connect(self._open_settings)
             mac_settings_action.setMenuRole(QAction.MenuRole.PreferencesRole)
-            mac_settings_action.setShortcut(QKeySequence("Ctrl+,"))
             help_menu.addAction(mac_settings_action)
+            settings_action = mac_settings_action  # the one that carries the shortcut
+        # Rebindable shortcuts that belong to a menu entry go on the menu
+        # action itself (see _build_shortcuts), so the menu shows the key.
+        # Only one action per id: two with the same key would be ambiguous.
+        self._menu_shortcut_actions: dict[str, QAction] = {
+            "open_file": open_action,
+            "open_settings": settings_action,
+            "show_hotkeys": hotkeys_action,
+        }
 
     def _open_settings(self) -> None:
         if self._settings_window is not None:
@@ -946,9 +960,24 @@ class MaskFitsApp(QMainWindow):
         just hides the sidebar entirely rather than shrinking it, so
         nothing in it (buttons, the histogram, the cut-level boxes) is ever
         at risk of being clipped."""
-        self.sidebar_collapsed = not self.sidebar_collapsed
-        self.sidebar_container.setVisible(not self.sidebar_collapsed)
-        self.sidebar_toggle.set_collapsed(self.sidebar_collapsed)
+        self._set_sidebar_collapsed(not self.sidebar_collapsed)
+        self._sidebar_auto_collapsed = False
+
+    def _set_sidebar_collapsed(self, collapsed: bool) -> None:
+        self.sidebar_collapsed = collapsed
+        self.sidebar_container.setVisible(not collapsed)
+        self.sidebar_toggle.set_collapsed(collapsed)
+
+    def _sync_sidebar_to_image(self) -> None:
+        """No file open: fold the sidebar away so the welcome screen has the
+        room. Opening a file unfolds it again - unless the user toggled it
+        themselves in between, which wins."""
+        if self.image is None and not self.sidebar_collapsed:
+            self._set_sidebar_collapsed(True)
+            self._sidebar_auto_collapsed = True
+        elif self.image is not None and self._sidebar_auto_collapsed:
+            self._set_sidebar_collapsed(False)
+            self._sidebar_auto_collapsed = False
 
     def _chunk(self, *widgets: QWidget) -> QWidget:
         box = QWidget()
@@ -1353,6 +1382,7 @@ class MaskFitsApp(QMainWindow):
         self._update_smooth_button()
         self._update_bin_button()
         self._set_status(f"loaded {entry.path}" if entry.path else "new file")
+        self._sync_sidebar_to_image()
 
         self.render()
 
@@ -2910,8 +2940,13 @@ class MaskFitsApp(QMainWindow):
         }
         self._shortcuts: list[QShortcut] = []
         for action in SHORTCUT_ACTIONS:
+            keys = effective_keys(action.id, self.settings.shortcuts)
+            menu_action = self._menu_shortcut_actions.get(action.id)
+            if menu_action is not None:
+                menu_action.setShortcuts([QKeySequence(seq) for seq in keys])
+                continue
             func, guarded = handlers[action.id]
-            for seq in effective_keys(action.id, self.settings.shortcuts):
+            for seq in keys:
                 sc = QShortcut(QKeySequence(seq), self)
                 sc.activated.connect(self._guarded(func) if guarded else func)
                 self._shortcuts.append(sc)

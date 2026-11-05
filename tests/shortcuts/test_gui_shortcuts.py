@@ -51,7 +51,9 @@ def test_help_menu_has_hotkeys_not_the_old_inline_list(qapp):
 
 def test_build_shortcuts_creates_one_qshortcut_per_default_key(qapp):
     win = MaskFitsApp([], settings=Settings())
-    total_defaults = sum(len(a.defaults) for a in SHORTCUT_ACTIONS)
+    # Menu-entry actions (open file, settings, hotkeys) carry their keys on
+    # the menu QAction instead of a QShortcut.
+    total_defaults = sum(len(a.defaults) for a in SHORTCUT_ACTIONS if a.id not in win._menu_shortcut_actions)
     assert len(win._shortcuts) == total_defaults
     assert "R" in _shortcut_key_strings(win)
 
