@@ -20,13 +20,10 @@ from maskfits.widgets import RoundButton
 
 SAMPLE_TARGET = 500_000
 
-# How far past the true pixel min/max the draggable/typeable cut range
-# extends, in multiples of the sample's standard deviation. Hard-stopping
-# exactly at data_min/data_max is too restrictive - pushing a cut past a
-# saturated star core or a cosmic-ray hit, or below the noise floor, is a
-# normal thing to want - so the allowed range gets generous headroom instead
-# of an unmovable wall right at the observed extremes.
-SIGMA_MARGIN = 10.0
+# The cuts have no limits of their own: any value can be typed, and a drag
+# can go past the plot edge (see _x_to_value). The only rule is lowcut <=
+# highcut. The view shows the cuts plus half their span on either side.
+DISPLAY_MARGIN = 0.5
 
 
 class _HistogramCanvas(QWidget):
@@ -65,9 +62,10 @@ class _HistogramCanvas(QWidget):
         return self._pad_left() + frac * (self.width() - self._pad_left() - self._pad())
 
     def _x_to_value(self, x: float, lo: float, hi: float) -> float:
+        """Not clamped to the plot: dragging past either edge keeps going,
+        on the same scale."""
         span = self.width() - self._pad_left() - self._pad()
         frac = (x - self._pad_left()) / max(span, 1)
-        frac = min(max(frac, 0.0), 1.0)
         return lo + frac * (hi - lo)
 
     # ------------------------------------------------------------- drawing
@@ -231,8 +229,6 @@ class CutsHistogram(QWidget):
         self.sample = np.array([0.0, 1.0])
         self.data_min = 0.0
         self.data_max = 1.0
-        self.range_min = 0.0
-        self.range_max = 1.0
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -303,21 +299,12 @@ class CutsHistogram(QWidget):
         self.data_max = float(sample.max())
         if self.data_max <= self.data_min:
             self.data_max = self.data_min + 1.0
-        sigma = float(np.std(sample))
-        margin = SIGMA_MARGIN * sigma if sigma > 0 else (self.data_max - self.data_min)
-        self.range_min = self.data_min - margin
-        self.range_max = self.data_max + margin
 
     def compute_disp_range(self) -> tuple[float, float]:
         if self.show_full_range:
             return self.data_min, self.data_max
-        span = safe_span(self.vmin, self.vmax)
-        margin = span * 0.5
-        lo = max(self.vmin - margin, self.range_min)
-        hi = min(self.vmax + margin, self.range_max)
-        if hi <= lo:
-            lo, hi = self.range_min, self.range_max
-        return lo, hi
+        margin = safe_span(self.vmin, self.vmax) * DISPLAY_MARGIN
+        return self.vmin - margin, self.vmax + margin
 
     def _on_toggle_range_view(self, checked: bool) -> None:
         self.show_full_range = checked
@@ -338,7 +325,6 @@ class CutsHistogram(QWidget):
         except ValueError:
             self._lo_entry.setText(self._fmt(self.vmin))
             return
-        value = max(value, self.range_min)
         value = min(value, self.vmax)
         self.set_cuts(value, self.vmax, from_entry="lo")
         self.canvas.ensure_bars(*self.compute_disp_range(), force=True)
@@ -351,7 +337,6 @@ class CutsHistogram(QWidget):
         except ValueError:
             self._hi_entry.setText(self._fmt(self.vmax))
             return
-        value = min(value, self.range_max)
         value = max(value, self.vmin)
         self.set_cuts(self.vmin, value, from_entry="hi")
         self.canvas.ensure_bars(*self.compute_disp_range(), force=True)

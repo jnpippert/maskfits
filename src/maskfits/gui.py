@@ -128,6 +128,11 @@ HOLD_GAP_S = 0.6
 # between, flat after the last point. 1 -> 5 over the first 2 s, then on to
 # 10 by 3 s.
 SLICE_HOLD_RAMP = ((0.0, 1.0), (2.0, 5.0), (3.0, 10.0))
+# Holding the grow/shrink keys (ellipse size, line thickness): (seconds
+# held, step multiplier) - same interpolation. Speeds up right away (the
+# first auto-repeat already comes ~0.4 s in) and keeps speeding up: 5x by
+# 1 s, 10x by 2 s.
+SIZE_HOLD_RAMP = ((0.0, 1.0), (0.4, 2.0), (1.0, 5.0), (2.0, 10.0))
 SIDEBAR_W = 380  # fixed - see MaskFitsApp._toggle_sidebar's docstring for why
 SIDEBAR_TOGGLE_W = 10
 ZOOM_STEP = 1.25
@@ -2160,8 +2165,13 @@ class MaskFitsApp(QMainWindow):
         ramping linearly to HOLD_MAX_FACTOR over HOLD_RAMP_S seconds."""
         return 1.0 + (HOLD_MAX_FACTOR - 1.0) * min(self._held_seconds(key) / HOLD_RAMP_S, 1.0)
 
+    def _size_hold_factor(self, key: str) -> float:
+        """Step multiplier for a held grow/shrink key - see SIZE_HOLD_RAMP."""
+        seconds, factors = zip(*SIZE_HOLD_RAMP)
+        return float(np.interp(self._held_seconds(key), seconds, factors))
+
     def _adjust_shape_size(self, direction: int) -> None:
-        step = max(1, round(5 / self.zoom_mult * self._hold_factor(f"size{direction}")))
+        step = max(1, round(5 / self.zoom_mult * self._size_hold_factor(f"size{direction}")))
         if self.tool == "ellipse":
             self.radius = max(RADIUS_MIN, min(self.radius + direction * step, MAX_SHAPE_SIZE))
         elif self.tool == "line":

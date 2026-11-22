@@ -1,6 +1,6 @@
-"""Coverage for hold-to-accelerate on the shape hotkeys (size/thickness,
-ellipticity, angle): the step ramps from 1x to HOLD_MAX_FACTOR the longer
-the key stays held, and a real key release resets it."""
+"""Coverage for hold-to-accelerate on the shape hotkeys: ellipticity and
+angle ramp from 1x to HOLD_MAX_FACTOR, size/thickness follow the faster
+SIZE_HOLD_RAMP, and a real key release resets either."""
 
 import os
 
@@ -14,7 +14,7 @@ from PySide6.QtGui import QKeyEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from maskfits import gui  # noqa: E402
-from maskfits.gui import HOLD_GAP_S, HOLD_MAX_FACTOR, HOLD_RAMP_S, MaskFitsApp  # noqa: E402
+from maskfits.gui import HOLD_GAP_S, HOLD_MAX_FACTOR, HOLD_RAMP_S, SIZE_HOLD_RAMP, MaskFitsApp  # noqa: E402
 from maskfits.settings import Settings  # noqa: E402
 
 
@@ -89,14 +89,37 @@ def test_a_real_key_release_resets_but_an_auto_repeat_one_does_not(qapp, win, cl
     assert win._hold_factor("size1") == 1.0
 
 
-def test_held_size_key_takes_3x_steps(win, clock):
+def test_size_ramp_speeds_up_early_and_keeps_going():
+    assert SIZE_HOLD_RAMP[0] == (0.0, 1.0)
+    factors = [f for _, f in SIZE_HOLD_RAMP]
+    assert factors == sorted(factors)  # never slows down
+    assert dict(SIZE_HOLD_RAMP)[1.0] >= 5.0  # well past the old 3x max within 1 s
+    assert SIZE_HOLD_RAMP[-1][1] >= 10.0
+
+
+def test_size_hold_factor_follows_the_ramp(win, clock):
+    start = clock[0]
+    assert win._size_hold_factor("size1") == 1.0
+    for t, expected in [(0.4, 2.0), (0.7, 3.5), (1.0, 5.0), (2.0, 10.0), (5.0, 10.0)]:
+        factor = None
+        while clock[0] < start + t - 1e-9:  # auto-repeat every 50 ms
+            clock[0] = min(clock[0] + 0.05, start + t)
+            factor = win._size_hold_factor("size1")
+        assert factor == pytest.approx(expected)
+
+
+def test_held_size_key_steps(win, clock):
     win.radius = 10.0
     win._adjust_shape_size(1)
     assert win.radius == 15.0  # base step 5 at zoom 1
-    _hold(clock, lambda: win._hold_factor("size1"), HOLD_RAMP_S)
+    _hold(clock, lambda: win._size_hold_factor("size1"), 1.0)
     before = win.radius
     win._adjust_shape_size(1)
-    assert win.radius == before + 15.0  # 3 x 5
+    assert win.radius == before + 25.0  # 5x at 1 s
+    _hold(clock, lambda: win._size_hold_factor("size1"), 1.0)
+    before = win.radius
+    win._adjust_shape_size(1)
+    assert win.radius == before + 50.0  # 10x from 2 s on
 
 
 def test_held_angle_and_ellipticity_keys_take_3x_steps(win, clock):
@@ -112,11 +135,11 @@ def test_held_angle_and_ellipticity_keys_take_3x_steps(win, clock):
     assert win.ellipticity == 2 + 6
 
 
-def test_held_thickness_key_takes_3x_steps(win, clock):
+def test_held_thickness_key_uses_the_size_ramp(win, clock):
     win.set_tool("line")
     win.thickness = 100
     win._adjust_shape_size(-1)
     assert win.thickness == 95
-    _hold(clock, lambda: win._hold_factor("size-1"), HOLD_RAMP_S)
+    _hold(clock, lambda: win._size_hold_factor("size-1"), 1.0)
     win._adjust_shape_size(-1)
-    assert win.thickness == 80
+    assert win.thickness == 70  # 5x at 1 s
