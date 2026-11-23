@@ -110,11 +110,6 @@ DEFAULT_ELLIPTICITY = 0
 DEFAULT_ANGLE = 0
 DEFAULT_THICKNESS = 15
 RADIUS_MIN = 0.5  # small enough to mask a single pixel
-# Holding a shape hotkey (size/thickness, ellipticity, angle) ramps its step
-# from 1x up to HOLD_MAX_FACTOR over HOLD_RAMP_S seconds. HOLD_GAP_S is the
-# longest pause between two activations still treated as the same hold - it
-# has to cover the OS's initial key-repeat delay.
-HOLD_MAX_FACTOR = 3.0
 # Center cross geometry, in screen px: gap from the center to each arm, arm
 # length, and line width (the outline adds 1px on each side).
 CROSS_GAP = 5.0
@@ -122,17 +117,19 @@ CROSS_ARM = 14.0
 CROSS_WIDTH = 2.0
 CURSOR_POLL_MS = 30  # see MaskFitsApp._poll_cursor
 STATUS_SUCCESS_MS = 1500  # how long a success status message stays green
-HOLD_RAMP_S = 1.5
+# Holding a shape hotkey (size/thickness, ellipticity, angle) speeds up its
+# step along SHAPE_HOLD_RAMP. HOLD_GAP_S is the longest pause between two
+# activations still treated as the same hold - it has to cover the OS's
+# initial key-repeat delay.
 HOLD_GAP_S = 0.6
 # Holding Left/Right in a cube: (seconds held, slices per step) - linear in
 # between, flat after the last point. 1 -> 5 over the first 2 s, then on to
 # 10 by 3 s.
 SLICE_HOLD_RAMP = ((0.0, 1.0), (2.0, 5.0), (3.0, 10.0))
-# Holding the grow/shrink keys (ellipse size, line thickness): (seconds
-# held, step multiplier) - same interpolation. Speeds up right away (the
-# first auto-repeat already comes ~0.4 s in) and keeps speeding up: 5x by
-# 1 s, 10x by 2 s.
-SIZE_HOLD_RAMP = ((0.0, 1.0), (0.4, 2.0), (1.0, 5.0), (2.0, 10.0))
+# Holding a shape hotkey: (seconds held, step multiplier) - same
+# interpolation. Speeds up right away (the first auto-repeat already comes
+# ~0.4 s in) and keeps speeding up: 5x by 1 s, 10x from 2 s.
+SHAPE_HOLD_RAMP = ((0.0, 1.0), (0.4, 2.0), (1.0, 5.0), (2.0, 10.0))
 SIDEBAR_W = 380  # fixed - see MaskFitsApp._toggle_sidebar's docstring for why
 SIDEBAR_TOGGLE_W = 10
 ZOOM_STEP = 1.25
@@ -1524,11 +1521,11 @@ class MaskFitsApp(QMainWindow):
     def _fmt(value: float) -> str:
         return f"{value:.4g}"
 
-    def _sb_calibration(self) -> Optional[tuple[float, float]]:
+    def _sb_calibration(self) -> Optional[tuple[float, float, float]]:
         image = self.image
         return None if image is None else sb_calibration(image.header, image.wcs)
 
-    def _sb_text(self, flux: float, calibration: tuple[float, float]) -> str:
+    def _sb_text(self, flux: float, calibration: tuple[float, float, float]) -> str:
         sb = surface_brightness(flux, *calibration)
         return "-\u221e" if sb is None else f"{sb:.2f}"
 
@@ -2161,17 +2158,13 @@ class MaskFitsApp(QMainWindow):
         return now - state[1]
 
     def _hold_factor(self, key: str) -> float:
-        """Step multiplier for a held shape hotkey: 1x on a fresh press,
-        ramping linearly to HOLD_MAX_FACTOR over HOLD_RAMP_S seconds."""
-        return 1.0 + (HOLD_MAX_FACTOR - 1.0) * min(self._held_seconds(key) / HOLD_RAMP_S, 1.0)
-
-    def _size_hold_factor(self, key: str) -> float:
-        """Step multiplier for a held grow/shrink key - see SIZE_HOLD_RAMP."""
-        seconds, factors = zip(*SIZE_HOLD_RAMP)
+        """Step multiplier for a held shape hotkey (size, ellipticity,
+        angle): 1x on a fresh press, then along SHAPE_HOLD_RAMP."""
+        seconds, factors = zip(*SHAPE_HOLD_RAMP)
         return float(np.interp(self._held_seconds(key), seconds, factors))
 
     def _adjust_shape_size(self, direction: int) -> None:
-        step = max(1, round(5 / self.zoom_mult * self._size_hold_factor(f"size{direction}")))
+        step = max(1, round(5 / self.zoom_mult * self._hold_factor(f"size{direction}")))
         if self.tool == "ellipse":
             self.radius = max(RADIUS_MIN, min(self.radius + direction * step, MAX_SHAPE_SIZE))
         elif self.tool == "line":

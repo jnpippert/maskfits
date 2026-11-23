@@ -324,24 +324,40 @@ def _pixel_scale_arcsec(header: "fits.Header", wcs: Optional[WCS]) -> float:
     return scale if scale is not None else ISOPY_DEFAULT_PXSCALE
 
 
-def sb_calibration(header: "fits.Header", wcs: Optional[WCS]) -> Optional[tuple[float, float]]:
-    """(zero point, pixel scale in arcsec/pixel) if both are known for this
-    image - see header_zeropoint/header_pixel_scale - else None. No
-    defaults: a surface brightness is only shown when it's real."""
+# Header keyword holding a background level (in the data's own flux units)
+# that is still in the pixel values: subtracted before converting to SB.
+BG_KEYWORDS = ("BG",)
+
+
+def header_background(header: "fits.Header") -> float:
+    """The background level from the BG header keyword, or 0.0 if absent
+    or unparseable (then pixel values are taken as already background-
+    subtracted)."""
+    value = _header_float(header, BG_KEYWORDS)
+    return 0.0 if value is None else value
+
+
+def sb_calibration(header: "fits.Header", wcs: Optional[WCS]) -> Optional[tuple[float, float, float]]:
+    """(zero point, pixel scale in arcsec/pixel, background) if zero point
+    and pixel scale are known for this image - see header_zeropoint/
+    header_pixel_scale/header_background - else None. No defaults for ZP
+    or pixel scale: a surface brightness is only shown when it's real."""
     zp = header_zeropoint(header)
     if zp is None:
         return None
     pxscale = header_pixel_scale(header, wcs)
     if pxscale is None:
         return None
-    return zp, pxscale
+    return zp, pxscale, header_background(header)
 
 
-def surface_brightness(flux: float, zp: float, pxscale: float) -> Optional[float]:
-    """Surface brightness in mag/arcsec^2 of a pixel value, or None where it
-    is undefined (zero, negative or non-finite flux). Binning averages
-    pixels and smoothing preserves flux per pixel, so the original pixel
-    scale applies to the displayed data either way."""
+def surface_brightness(flux: float, zp: float, pxscale: float, bg: float = 0.0) -> Optional[float]:
+    """Surface brightness in mag/arcsec^2 of a pixel value after subtracting
+    the background `bg`, or None where it is undefined (zero, negative or
+    non-finite flux above background). Binning averages pixels and
+    smoothing preserves flux per pixel, so the original pixel scale and
+    background apply to the displayed data either way."""
+    flux = flux - bg
     if not np.isfinite(flux) or flux <= 0:
         return None
     return float(zp - 2.5 * np.log10(flux / pxscale**2))
@@ -364,10 +380,13 @@ def isopy_cuts_and_stops(header: "fits.Header", wcs: Optional[WCS]) -> tuple[flo
     ZP comes from the header (see header_zeropoint; default 30.0 if
     absent). Pixel scale comes from the header if present, else from `wcs`
     in arcsec/pixel, else the default (1.0 "/px) - see header_pixel_scale.
+    A BG header keyword (see header_background) shifts every level up by
+    that background, matching the SB readouts.
     """
     zp = header_zeropoint(header)
     zp = ISOPY_DEFAULT_ZP if zp is None else zp
     pxscale = _pixel_scale_arcsec(header, wcs)
+    bg = header_background(header)
 
     minflux = 10 ** (-0.4 * (ISOPY_MAX_SB - zp)) * pxscale**2
     vmin = -minflux
@@ -384,7 +403,8 @@ def isopy_cuts_and_stops(header: "fits.Header", wcs: Optional[WCS]) -> tuple[flo
     # faintest-to-brightest per-magnitude tick levels, purple at vmax.
     stops = [0.0, bg_frac, colorloc[5], colorloc[4], colorloc[3], colorloc[2], colorloc[1], 1.0]
     stops = [min(max(float(t), 0.0), 1.0) for t in stops]
-    return float(vmin), float(vmax), stops
+    # Stop positions are relative, so the background only moves the cuts.
+    return float(vmin + bg), float(vmax + bg), stops
 
 
 def gaussian_smooth(data: np.ndarray, sigma: float) -> np.ndarray:

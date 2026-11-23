@@ -59,6 +59,15 @@ def test_cut_levels_show_their_surface_brightness(qapp, tmp_path):
     assert win.sb_cuts_label.text() == "SB Lowcut: 30.00   Highcut: 25.00  mag/arcsec²"
 
 
+def test_bg_keyword_is_subtracted_in_both_readouts(qapp, tmp_path):
+    win = _window(tmp_path, {"ZP": 30.0, "PXSCALE": 1.0, "BG": 90.0})
+    _hover(win)
+    # The raw value stays raw; only the SB uses value - BG = 10.
+    assert win.readout["value"].text() == "100  (SB 27.50)"
+    win.cuts_histogram.set_cuts(91.0, 190.0)
+    assert win.sb_cuts_label.text() == "SB Lowcut: 30.00   Highcut: 25.00  mag/arcsec²"
+
+
 def test_undefined_surface_brightness_shows_minus_infinity(qapp, tmp_path):
     win = _window(tmp_path, {"ZP": 30.0, "PXSCALE": 1.0}, value=-3.0)
     _hover(win)

@@ -10,6 +10,7 @@ from astropy.wcs import WCS
 from maskfits.imagedata import (
     PXSCALE_KEYWORDS,
     ZP_KEYWORDS,
+    header_background,
     header_pixel_scale,
     header_zeropoint,
     isopy_cuts_and_stops,
@@ -74,7 +75,32 @@ def test_no_pixel_scale_anywhere_is_none():
 def test_calibration_needs_both():
     assert sb_calibration(fits.Header({"ZP": 30.0}), None) is None
     assert sb_calibration(fits.Header({"PXSCALE": 0.5}), _wcs()) is None
-    assert sb_calibration(fits.Header({"ZP": 30.0}), _wcs(0.25)) == pytest.approx((30.0, 0.25))
+    assert sb_calibration(fits.Header({"ZP": 30.0}), _wcs(0.25)) == pytest.approx((30.0, 0.25, 0.0))
+
+
+def test_calibration_carries_the_bg_keyword():
+    header = fits.Header({"ZP": 30.0, "PXSCALE": 1.0, "BG": 12.5})
+    assert sb_calibration(header, None) == pytest.approx((30.0, 1.0, 12.5))
+    assert header_background(fits.Header()) == 0.0
+    assert header_background(fits.Header({"BG": "n/a"})) == 0.0
+    # BG alone is not a calibration - ZP and pixel scale are still needed.
+    assert sb_calibration(fits.Header({"BG": 12.5}), None) is None
+
+
+def test_background_is_subtracted_before_converting():
+    assert surface_brightness(101.0, 30.0, 1.0, bg=1.0) == pytest.approx(25.0)
+    assert surface_brightness(100.0, 30.0, 1.0, bg=-0.0) == pytest.approx(25.0)
+    # At or below the background there is nothing left to convert.
+    assert surface_brightness(5.0, 30.0, 1.0, bg=5.0) is None
+    assert surface_brightness(4.0, 30.0, 1.0, bg=5.0) is None
+
+
+def test_isopy_cuts_shift_by_the_background():
+    plain = isopy_cuts_and_stops(fits.Header({"ZP": 28.0, "PXSCALE": 0.5}), None)
+    with_bg = isopy_cuts_and_stops(fits.Header({"ZP": 28.0, "PXSCALE": 0.5, "BG": 3.0}), None)
+    assert with_bg[0] == pytest.approx(plain[0] + 3.0)
+    assert with_bg[1] == pytest.approx(plain[1] + 3.0)
+    assert with_bg[2] == plain[2]
 
 
 def test_surface_brightness_formula():
