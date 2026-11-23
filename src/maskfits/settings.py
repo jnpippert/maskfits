@@ -20,7 +20,7 @@ from PySide6.QtCore import QSettings
 from maskfits.colormaps import COLORMAP_NAMES
 from maskfits.custom_themes import list_custom_themes
 from maskfits.imagedata import PERCENTILE_PRESETS, STRETCH_NAMES
-from maskfits.shortcuts import sanitize_overrides
+from maskfits.shortcuts import sanitize_mouse_bindings, sanitize_overrides
 
 ORG_NAME = "maskfits"
 APP_NAME = "maskfits"
@@ -79,6 +79,9 @@ class Settings:
     # - see maskfits.shortcuts. Anything not present here still uses that
     # action's own default key(s).
     shortcuts: dict[str, list[str]] = field(default_factory=dict)
+    # Extra mouse buttons bound to actions, {action_id: "Mouse4"} - none by
+    # default (see maskfits.shortcuts' mouse section).
+    mouse_shortcuts: dict[str, str] = field(default_factory=dict)
     # Custom mask overlay color per colormap, {colormap name: "#rrggbb"} -
     # only the ones the user set; any other colormap keeps its automatic
     # color (see colormaps.mask_tint_for).
@@ -185,6 +188,7 @@ def load_settings(store: Optional[QSettings] = None) -> Settings:
         blank_color=blank if is_hex_color(blank) else None,
         cross_color=cross if is_hex_color(cross) else None,
         shortcuts=_load_shortcuts(s),
+        mouse_shortcuts=_load_mouse_shortcuts(s),
         mask_colors=_load_mask_colors(s),
     )
 
@@ -216,6 +220,13 @@ def _load_shortcuts(s: QSettings) -> dict[str, list[str]]:
     return sanitize_overrides(parsed)
 
 
+def _load_mouse_shortcuts(s: QSettings) -> dict[str, str]:
+    try:
+        return sanitize_mouse_bindings(json.loads(s.value("mouse_shortcuts_json", "", type=str) or "{}"))
+    except ValueError:
+        return {}
+
+
 def save_settings(settings: Settings, store: Optional[QSettings] = None) -> None:
     s = store if store is not None else _backing_store()
     s.setValue("theme", settings.theme)
@@ -236,5 +247,6 @@ def save_settings(settings: Settings, store: Optional[QSettings] = None) -> None
     s.setValue("blank_color", settings.blank_color or "")
     s.setValue("cross_color", settings.cross_color or "")
     s.setValue("shortcuts_json", json.dumps(settings.shortcuts))
+    s.setValue("mouse_shortcuts_json", json.dumps(settings.mouse_shortcuts))
     s.setValue("mask_colors_json", json.dumps(settings.mask_colors))
     s.sync()

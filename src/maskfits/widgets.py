@@ -18,7 +18,7 @@ import os
 import re
 from typing import Optional
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
     QEnterEvent,
@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from maskfits.shortcuts import mouse_binding, mouse_binding_label
 from maskfits.theme import current_theme, on_theme_changed
 
 _HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -768,3 +769,107 @@ class ShortcutCapture(RoundButton):
         if self._listening:
             self._stop_listening(revert=True)
         super().focusOutEvent(event)
+
+
+_QT_MODIFIER_NAMES = (
+    (Qt.KeyboardModifier.MetaModifier, "Meta"),
+    (Qt.KeyboardModifier.ControlModifier, "Ctrl"),
+    (Qt.KeyboardModifier.AltModifier, "Alt"),
+    (Qt.KeyboardModifier.ShiftModifier, "Shift"),
+)
+
+
+def mouse_event_binding(event: QMouseEvent) -> Optional[str]:
+    """The maskfits.shortcuts binding string for a mouse press ("Mouse4",
+    "Shift+Mouse5", ...), or None for a button that can't be bound."""
+    mods = event.modifiers()
+    held = tuple(name for flag, name in _QT_MODIFIER_NAMES if mods & flag)
+    return mouse_binding(event.button().value, held)
+
+
+class MouseCapture(RoundButton):
+    """Records an extra-mouse-button binding, the mouse counterpart of
+    ShortcutCapture: click to start listening, then press a side button
+    (Mouse 4 and up, optionally with modifiers held) anywhere in the
+    window. While listening, a right click or Backspace/Delete clears the
+    binding; a left/middle click or Escape cancels."""
+
+    bindingChanged = Signal(str)
+    EMPTY_TEXT = "(None)"
+
+    def __init__(self, value: str, parent: Optional[QWidget] = None):
+        super().__init__(mouse_binding_label(value) or self.EMPTY_TEXT, parent)
+        self._value = value
+        self._listening = False
+        self._filtered_window = None
+        self.clicked.connect(self._start_listening)
+
+    def value(self) -> str:
+        return self._value
+
+    def isListening(self) -> bool:  # noqa: N802
+        return self._listening
+
+    def setValue(self, value: str) -> None:  # noqa: N802 - matches Qt naming convention
+        self._stop_listening()
+        self._value = value
+        self.setText(mouse_binding_label(value) or self.EMPTY_TEXT)
+
+    def _start_listening(self) -> None:
+        if self._listening:
+            return
+        self._listening = True
+        self.setText("Press A Mouse Button...")
+        self.setFocus()
+        # Side buttons only reach the widget under the cursor - listen on
+        # the native window so the press counts wherever the pointer is.
+        handle = self.window().windowHandle()
+        if handle is not None:
+            handle.installEventFilter(self)
+            self._filtered_window = handle
+
+    def _stop_listening(self) -> None:
+        if not self._listening:
+            return
+        self._listening = False
+        if self._filtered_window is not None:
+            self._filtered_window.removeEventFilter(self)
+            self._filtered_window = None
+        self.setText(mouse_binding_label(self._value) or self.EMPTY_TEXT)
+
+    def _commit(self, value: str) -> None:
+        self._stop_listening()
+        changed = value != self._value
+        self.setValue(value)
+        if changed:
+            self.bindingChanged.emit(value)
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802
+        if not self._listening or obj is not self._filtered_window or event.type() not in (
+                QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick):
+            return False
+        binding = mouse_event_binding(event)
+        if binding is not None:
+            self._commit(binding)
+        elif event.button() == Qt.MouseButton.RightButton:
+            self._commit("")
+        else:
+            self._stop_listening()
+        return True  # the press only ends listening, it doesn't also click
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        if not self._listening:
+            super().keyPressEvent(event)
+            return
+        if event.key() in (Qt.Key.Key_Backspace, Qt.Key.Key_Delete):
+            self._commit("")
+        elif event.key() == Qt.Key.Key_Escape:
+            self._stop_listening()
+
+    def focusOutEvent(self, event) -> None:  # noqa: N802
+        self._stop_listening()
+        super().focusOutEvent(event)
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        self._stop_listening()
+        super().hideEvent(event)

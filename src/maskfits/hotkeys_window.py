@@ -1,6 +1,7 @@
-"""Help -> Hotkeys: a read-only popup listing every mouse interaction (fixed,
-not reassignable - hardcoded into the canvas's own event handlers) and every
-keyboard shortcut (see maskfits.shortcuts, live-resolved against the current
+"""Help -> Hotkeys: a read-only popup listing every mouse interaction (the
+fixed left/right/middle/wheel ones hardcoded into the canvas's own event
+handlers, plus any extra mouse buttons the user bound) and every keyboard
+shortcut (see maskfits.shortcuts, live-resolved against the current
 Settings overrides so a rebound key shows correctly here, not a stale
 default).
 """
@@ -12,7 +13,7 @@ from typing import Optional
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
-from maskfits.shortcuts import SHORTCUT_ACTIONS, effective_keys
+from maskfits.shortcuts import SHORTCUT_ACTIONS, SHORTCUT_ACTIONS_BY_ID, effective_keys, mouse_binding_label
 from maskfits.widgets import RoundButton
 
 # Mouse-button/wheel interactions - hardcoded into ImageCanvas's own event
@@ -35,14 +36,15 @@ DESC_WIDTH = 430
 
 
 class HotkeysWindow(QDialog):
-    def __init__(self, shortcut_overrides: dict[str, list[str]], parent: Optional[QWidget] = None):
+    def __init__(self, shortcut_overrides: dict[str, list[str]], parent: Optional[QWidget] = None, *,
+                 mouse_bindings: Optional[dict[str, str]] = None):
         super().__init__(parent)
         self.setWindowTitle("Hotkeys")
         # Non-modal, same as SettingsWindow/ThemeEditorWindow - see
         # SettingsWindow's __init__ docstring comment for the Cocoa
         # modal-nesting bug this avoids.
         self.setModal(False)
-        self._build(shortcut_overrides)
+        self._build(shortcut_overrides, mouse_bindings or {})
         self._center_on_parent()
 
     def _center_on_parent(self) -> None:
@@ -55,7 +57,7 @@ class HotkeysWindow(QDialog):
         y = max(geo.y() + (geo.height() - self.height()) // 2, 0)
         self.move(x, y)
 
-    def _build(self, overrides: dict[str, list[str]]) -> None:
+    def _build(self, overrides: dict[str, list[str]], mouse_bindings: dict[str, str]) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 12, 16, 16)
         layout.setSpacing(0)
@@ -69,8 +71,12 @@ class HotkeysWindow(QDialog):
         layout.addWidget(mouse_header)
         for keys, desc in MOUSE_ENTRIES:
             self._row(layout, keys, desc)
+        for action in SHORTCUT_ACTIONS:
+            binding = mouse_bindings.get(action.id)
+            if binding:
+                self._row(layout, mouse_binding_label(binding), SHORTCUT_ACTIONS_BY_ID[action.id].label)
 
-        kb_header = QLabel("Keyboard - edit these in Settings > Edit Keyboard Shortcuts...")
+        kb_header = QLabel("Keyboard - edit these and extra mouse buttons in Settings > Edit Shortcuts...")
         kb_header.setProperty("dim", True)
         layout.addSpacing(14)
         layout.addWidget(kb_header)

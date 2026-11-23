@@ -12,7 +12,7 @@ from typing import Optional
 
 import numpy as np
 from astropy.io import fits
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -91,13 +91,21 @@ from maskfits.regions import write_region_file
 from maskfits.settings import Settings, format_mask_filename, load_settings
 from maskfits.spectrum_view import SpectrumView
 from maskfits.settings_window import SettingsWindow
-from maskfits.shortcuts import SHORTCUT_ACTIONS, effective_keys
+from maskfits.shortcuts import SHORTCUT_ACTIONS, actions_for_mouse, effective_keys
 from maskfits.welcome import paint_welcome
 from maskfits.theme import current_theme, detect_os_light_mode, hex_to_rgb, on_theme_changed, theme_manager
 from maskfits import __version__
 from maskfits.update_check import GITHUB_REPO_URL, UpdateCheckWorker, check_for_updates, get_clone_url
 from maskfits.update_dialog import show_update_dialog
-from maskfits.widgets import RoundButton, RoundedPanel, RoundSlider, SegmentedControl, SidebarToggle, ThemeToggle
+from maskfits.widgets import (
+    RoundButton,
+    RoundedPanel,
+    RoundSlider,
+    SegmentedControl,
+    SidebarToggle,
+    ThemeToggle,
+    mouse_event_binding,
+)
 
 MAG_SIZE = 31
 MAG_BLOCK = 6
@@ -130,6 +138,16 @@ SLICE_HOLD_RAMP = ((0.0, 1.0), (2.0, 5.0), (3.0, 10.0))
 # interpolation. Speeds up right away (the first auto-repeat already comes
 # ~0.4 s in) and keeps speeding up: 5x by 1 s, 10x from 2 s.
 SHAPE_HOLD_RAMP = ((0.0, 1.0), (0.4, 2.0), (1.0, 5.0), (2.0, 10.0))
+# A bound extra mouse button held down repeats these actions like a held
+# key would (the OS doesn't auto-repeat mouse buttons): first repeat after
+# MOUSE_REPEAT_DELAY_MS, then every MOUSE_REPEAT_INTERVAL_MS - so the shape
+# keys' SHAPE_HOLD_RAMP and the cube slice ramp apply to the mouse too.
+MOUSE_REPEAT_ACTIONS = frozenset({
+    "grow_shape", "shrink_shape", "digit_1", "digit_2", "digit_3", "digit_4",
+    "prev_image", "next_image", "undo", "redo",
+})
+MOUSE_REPEAT_DELAY_MS = 400
+MOUSE_REPEAT_INTERVAL_MS = 50
 SIDEBAR_W = 380  # fixed - see MaskFitsApp._toggle_sidebar's docstring for why
 SIDEBAR_TOGGLE_W = 10
 ZOOM_STEP = 1.25
@@ -582,6 +600,10 @@ class MaskFitsApp(QMainWindow):
         self._auto_mask_preview: Optional[np.ndarray] = None
 
         self._hold_state: Optional[tuple[str, float, float]] = None  # (key, started, last)
+        # Bound extra mouse button currently held: (button, repeating action ids).
+        self._mouse_held: Optional[tuple[Qt.MouseButton, list[str]]] = None
+        self._mouse_repeat_timer = QTimer(self)
+        self._mouse_repeat_timer.timeout.connect(self._repeat_mouse_actions)
         self._status_timer = QTimer(self)
         self._status_timer.setSingleShot(True)
         self._status_timer.timeout.connect(lambda: self._set_status_state(""))
@@ -591,6 +613,7 @@ class MaskFitsApp(QMainWindow):
         self._cursor_timer.start(CURSOR_POLL_MS)
         self._build_ui()
         self._build_shortcuts()
+        self._mouse_filter_window = None  # QWindow the filter sits on, see showEvent
         self._rebuild_tool_options()
         self.load_current(reset_view=True)
         # load_current(reset_view=True) just ran reset_zoom(), which always
@@ -604,6 +627,27 @@ class MaskFitsApp(QMainWindow):
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
         _set_windows_titlebar_dark(self, dark=not self.light_mode)
+        # Bound extra mouse buttons are caught on the native window, before
+        # any widget sees them - side buttons only reach the widget under
+        # the pointer, which may swallow them. The QWindow only gets real
+        # input for this window, so this costs nothing for the flood of
+        # widget events a restyle sends (an app-wide filter would see all
+        # of those).
+        handle = self.windowHandle()
+        if handle is not None and handle is not self._mouse_filter_window:
+            handle.installEventFilter(self)
+            self._mouse_filter_window = handle
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802
+        if obj is self._mouse_filter_window:
+            etype = event.type()
+            if etype in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick):
+                if self._on_bound_mouse_press(event):
+                    return True
+            elif etype == QEvent.Type.MouseButtonRelease:
+                if self._on_bound_mouse_release(event):
+                    return True
+        return super().eventFilter(obj, event)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         if self._auto_mask_window is not None:
@@ -846,7 +890,7 @@ class MaskFitsApp(QMainWindow):
             self._hotkeys_window.raise_()
             self._hotkeys_window.activateWindow()
             return
-        dialog = HotkeysWindow(self.settings.shortcuts, self)
+        dialog = HotkeysWindow(self.settings.shortcuts, self, mouse_bindings=self.settings.mouse_shortcuts)
         dialog.finished.connect(self._clear_hotkeys_window)
         self._hotkeys_window = dialog
         dialog.show()
@@ -2918,12 +2962,14 @@ class MaskFitsApp(QMainWindow):
 
         return wrapped
 
-    def _build_shortcuts(self) -> None:
-        # (handler, guarded) per action id (see maskfits.shortcuts) - the
-        # metadata (label, default keys) lives there, independent of self,
-        # so both this and the Settings shortcut editor/Hotkeys popup can
-        # use it without needing a live MaskFitsApp instance.
-        handlers: dict[str, tuple[object, bool]] = {
+    def _shortcut_handlers(self) -> dict[str, tuple[object, bool]]:
+        """(handler, guarded) per action id (see maskfits.shortcuts) - the
+        metadata (label, default keys) lives there, independent of self,
+        so both this and the Settings shortcut editor/Hotkeys popup can
+        use it without needing a live MaskFitsApp instance. The menu-bound
+        actions (open file, settings, hotkeys) aren't here: their menu
+        QAction carries the key and is triggered directly."""
+        return {
             "undo": (self.undo, True),
             "redo": (self.redo, True),
             "prev_image": (self.prev_image, True),
@@ -2948,6 +2994,9 @@ class MaskFitsApp(QMainWindow):
             "digit_4": (lambda: self._hotkey_digit(4), True),
             "cancel_line": (self._cancel_pending_line, False),
         }
+
+    def _build_shortcuts(self) -> None:
+        handlers = self._shortcut_handlers()
         self._shortcuts: list[QShortcut] = []
         for action in SHORTCUT_ACTIONS:
             keys = effective_keys(action.id, self.settings.shortcuts)
@@ -2960,6 +3009,60 @@ class MaskFitsApp(QMainWindow):
                 sc = QShortcut(QKeySequence(seq), self)
                 sc.activated.connect(self._guarded(func) if guarded else func)
                 self._shortcuts.append(sc)
+
+    def _trigger_action(self, action_id: str) -> None:
+        """Runs one shortcut action by id, as its key would - used by the
+        mouse bindings. Not focus-guarded: a mouse button press is never
+        text being typed into an entry."""
+        menu_action = self._menu_shortcut_actions.get(action_id)
+        if menu_action is not None:
+            menu_action.trigger()
+            return
+        self._shortcut_handlers()[action_id][0]()
+
+    # -------------------------------------------------------- mouse binds
+
+    def _on_bound_mouse_press(self, event) -> bool:
+        """Runs the action(s) bound to this extra mouse button press (a
+        quick second press arrives as a double click and counts the same).
+        True if anything was bound, so the press isn't also handled by
+        the widget under the pointer."""
+        binding = mouse_event_binding(event)
+        if binding is None:
+            return False
+        action_ids = actions_for_mouse(binding, self.settings.mouse_shortcuts)
+        if not action_ids:
+            return False
+        self._stop_mouse_repeat()
+        for action_id in action_ids:
+            self._trigger_action(action_id)
+        repeating = [a for a in action_ids if a in MOUSE_REPEAT_ACTIONS]
+        if repeating:
+            self._mouse_held = (event.button(), repeating)
+            self._mouse_repeat_timer.start(MOUSE_REPEAT_DELAY_MS)
+        return True
+
+    def _on_bound_mouse_release(self, event) -> bool:
+        held = self._mouse_held
+        if held is None or event.button() != held[0]:
+            return False
+        self._stop_mouse_repeat()
+        return True
+
+    def _repeat_mouse_actions(self) -> None:
+        held = self._mouse_held
+        if held is None or not (QApplication.mouseButtons() & held[0]):
+            self._stop_mouse_repeat()  # the release went somewhere else
+            return
+        self._mouse_repeat_timer.setInterval(MOUSE_REPEAT_INTERVAL_MS)
+        for action_id in held[1]:
+            self._trigger_action(action_id)
+
+    def _stop_mouse_repeat(self) -> None:
+        self._mouse_repeat_timer.stop()
+        if self._mouse_held is not None:
+            self._mouse_held = None
+            self._hold_state = None  # like a real key release
 
     def _rebuild_shortcuts(self) -> None:
         """Tears down and recreates every QShortcut from the current

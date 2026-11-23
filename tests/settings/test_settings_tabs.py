@@ -42,7 +42,7 @@ def test_at_most_five_tabs(dialog):
     ("style", {"Theme", "Accent Color", "Mask Colors", "Zero/NaN Pixel Color", "Center Cross Color"}),
     ("file", {"Export Directory", "Quick Export Filename", "Quick Export Filename (multi-ext)",
               "Quick Export Filename (cube)"}),
-    ("tools", {"Default Mode", "Keyboard Shortcuts"}),
+    ("tools", {"Default Mode", "Keyboard & Mouse Shortcuts"}),
 ])
 def test_each_setting_is_on_its_tab(dialog, tab, expected):
     assert _labels(dialog.tab_pages[tab]) == expected

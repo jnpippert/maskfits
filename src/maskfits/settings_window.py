@@ -110,6 +110,7 @@ class SettingsWindow(QDialog):
         self.blank_color = settings.blank_color
         self.cross_color = settings.cross_color
         self.shortcuts: dict[str, list[str]] = dict(settings.shortcuts)
+        self.mouse_shortcuts: dict[str, str] = dict(settings.mouse_shortcuts)
         self.mask_colors: dict[str, str] = dict(settings.mask_colors)
 
         self._build()
@@ -571,8 +572,8 @@ class SettingsWindow(QDialog):
     # ----------------------------------------------------------- shortcuts
 
     def _shortcuts_row(self, layout: QVBoxLayout) -> None:
-        row = self._row_label(layout, "Keyboard Shortcuts")
-        edit_btn = RoundButton("Edit Keyboard Shortcuts...")
+        row = self._row_label(layout, "Keyboard & Mouse Shortcuts")
+        edit_btn = RoundButton("Edit Shortcuts...")
         edit_btn.clicked.connect(self._edit_shortcuts)
         row.addWidget(edit_btn)
         layout.addLayout(row)
@@ -582,7 +583,8 @@ class SettingsWindow(QDialog):
             self._shortcuts_window.raise_()
             self._shortcuts_window.activateWindow()
             return
-        editor = ShortcutsWindow(self.shortcuts, self)
+        editor = ShortcutsWindow(self.shortcuts, self, mouse_bindings=self.mouse_shortcuts)
+        editor.mouse_shortcuts_saved.connect(self._on_mouse_shortcuts_saved)
         editor.shortcuts_saved.connect(self._on_shortcuts_saved)
         editor.finished.connect(self._clear_shortcuts_window)
         self._shortcuts_window = editor
@@ -594,6 +596,9 @@ class SettingsWindow(QDialog):
 
     def _on_shortcuts_saved(self, overrides: dict) -> None:
         self.shortcuts = overrides
+
+    def _on_mouse_shortcuts_saved(self, bindings: dict) -> None:
+        self.mouse_shortcuts = bindings
 
     # ------------------------------------------------------------- setters
 
@@ -661,6 +666,7 @@ class SettingsWindow(QDialog):
             blank_color=self.blank_color,
             cross_color=self.cross_color,
             shortcuts=self.shortcuts,
+            mouse_shortcuts=self.mouse_shortcuts,
             mask_colors=self.mask_colors,
         )
 
